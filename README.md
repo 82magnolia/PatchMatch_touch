@@ -16,3 +16,8 @@ conda install nvidia::cuda-toolkit
 conda install conda-forge::pycuda
 ```
 
+## Running sample
+Use the following command. First mount `Objectfolder_touch` inside `data/`.
+```
+python demo.py --img_a data/ObjectFolder_touch/36/4_scale_50_normal.jpg --img_b data/ObjectFolder_touch/36/7_scale_50_normal.jpg --img_a_prime data/ObjectFolder_touch/36/4_scale_50_shadow.jpg --img_b_prime data/ObjectFolder_touch/36/7_scale_50_shadow.jpg
+```
