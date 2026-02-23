@@ -61,10 +61,9 @@ class PatchMatch(object):
         :return: reconstructed image
         """
         final_img = np.zeros_like(img_a)
-        size = self.nnf.shape[0]
         scale = img_a.shape[0] // self.nnf.shape[0]
-        for i in range(size):
-            for j in range(size):
+        for i in range(final_img.shape[0]):
+            for j in range(final_img.shape[1]):
                 x, y = self.nnf[i, j]
                 if final_img[scale * i:scale * (i + 1), scale * j:scale * (j + 1)].shape == img_a[scale * y:scale * (y + 1), scale * x:scale * (x + 1)].shape:
                     final_img[scale * i:scale * (i + 1), scale * j:scale * (j + 1)] = img_a[scale * y:scale * (y + 1), scale * x:scale * (x + 1)]
@@ -115,9 +114,9 @@ class PatchMatch(object):
                 dx0 = dy0 = patch_size // 2
                 dx1 = dy1 = patch_size // 2 + 1
                 dx0 = min(j, dx0)
-                dx1 = min(img.shape[0] - j, dx1)
+                dx1 = min(img.shape[1] - j, dx1)
                 dy0 = min(i, dy0)
-                dy1 = min(img.shape[1] - i, dy1)
+                dy1 = min(img.shape[0] - i, dy1)
 
                 patch = self.nnf[i - dy0:i + dy1, j - dx0:j + dx1]
 
