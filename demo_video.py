@@ -79,14 +79,11 @@ if __name__ == "__main__":
             else:
                 raise NotImplementedError("Other PatchMatch versions not supported")
 
+            # Find NNF
+            max_radius = max(img.shape)  # Set maximum random search radius as image size
+            pm.propagate(iters=10, rand_search_radius=max_radius)
+
         img_prime = vid_a_prime[i]
-
-        max_radius = max(img.shape)  # Set maximum random search radius as image size
-
-        start = time.time()
-        pm.propagate(iters=10, rand_search_radius=max_radius)
-        end = time.time()
-        print(end - start)
         ref_prime = pm.reconstruct_avg(img_prime, patch_size=1)  # Uses f and reads off from img_prime to create ref_prime
 
         reconstructed_frames.append(ref_prime)
