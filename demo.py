@@ -9,6 +9,7 @@ import pycuda.autoinit
 import pycuda.gpuarray as gpuarray
 from pycuda.compiler import SourceModule
 from PatchMatchCuda import PatchMatch
+from PatchMatchCuda_single import PatchMatchSingle
 
 
 if __name__ == "__main__":
@@ -18,6 +19,7 @@ if __name__ == "__main__":
     parser.add_argument("--img_a_prime", required=True, type=str)
     parser.add_argument("--img_b_prime", required=True, type=str)
     parser.add_argument("--save_dir", default="./log/result", type=str)
+    parser.add_argument("--pm_ver", default="double", help="Type of patchmatch algorithm to use", type=str)
     args = parser.parse_args()
 
     img = (np.array(Image.open(args.img_a)) / 255).astype(np.float32)
@@ -29,7 +31,12 @@ if __name__ == "__main__":
     max_radius = max(img.shape)  # Set maximum random search radius as image size
 
     # Initialize patchmatch
-    pm = PatchMatch(ref, ref, img, img, patch_size=3)  # Finds a mapping f from ref -> img: nearest pixel in img for each pixel in ref
+    if args.pm_ver == "double":
+        pm = PatchMatch(ref, ref, img, img, patch_size=3)  # Finds a mapping f from ref -> img: nearest pixel in img for each pixel in ref
+    elif args.pm_ver == "single":
+        pm = PatchMatchSingle(ref, img, patch_size=3)  # Finds a mapping f from ref -> img: nearest pixel in img for each pixel in ref
+    else:
+        raise NotImplementedError("Other PatchMatch versions not supported")
 
     start = time.time()
     pm.propagate(iters=10, rand_search_radius=max_radius)
