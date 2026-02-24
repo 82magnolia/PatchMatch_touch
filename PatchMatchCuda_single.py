@@ -23,6 +23,7 @@ from pycuda.compiler import SourceModule
 import cv2
 
 from PIL import Image
+import time
 
 class PatchMatchSingle(object):
     def __init__(self, a, b, patch_size):
@@ -39,6 +40,9 @@ class PatchMatchSingle(object):
         self.nnf = np.zeros(shape=(self.A.shape[0], self.A.shape[1],2)).astype(np.int32)  # the nearest neighbour field
         self.nnd = np.random.rand(self.A.shape[0], self.A.shape[1]).astype(np.float32)   # the distance map for the nnf
         self.initialise_nnf()
+
+        # Compile patchmatch cuda (NOTE: This takes around 0.2s, so to support multiple images, compile this externally from the class for future use)
+        self.mod = SourceModule(open(os.path.join(package_directory, "patchmatch_single.cu")).read(),no_extern_c=True)
 
     def initialise_nnf(self):
         """
@@ -159,8 +163,7 @@ class PatchMatchSingle(object):
         :param rand_search_radius: max radius to use in random search
         :return:
         """
-        mod = SourceModule(open(os.path.join(package_directory,"patchmatch_single.cu")).read(),no_extern_c=True)
-        patchmatch = mod.get_function("patch_match")
+        patchmatch = self.mod.get_function("patch_match")
         
         rows = self.A.shape[0]
         cols = self.A.shape[1]
