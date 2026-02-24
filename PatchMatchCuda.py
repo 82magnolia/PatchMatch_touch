@@ -135,7 +135,58 @@ class PatchMatch(object):
                     final[i, j] = value
 
         return final
-    
+
+    def reconstruct_avg_fast(self, img, patch_size=5):
+        """
+        Reconstruct image using average voting (vectorized).
+        :param img: H x W x C image
+        :param patch_size: odd patch size
+        :return: reconstructed image
+        """
+
+        H, W, C = img.shape
+        r = patch_size // 2
+
+        # Pad NNF to handle boundaries
+        nnf_pad = np.pad(
+            self.nnf,
+            ((r, r), (r, r), (0, 0)),
+            mode="edge"
+        )
+
+        # Build sliding window view over padded NNF
+        shape = (H, W, patch_size, patch_size, 2)
+        strides = (
+            nnf_pad.strides[0],
+            nnf_pad.strides[1],
+            nnf_pad.strides[0],
+            nnf_pad.strides[1],
+            nnf_pad.strides[2],
+        )
+
+        patches = np.lib.stride_tricks.as_strided(
+            nnf_pad,
+            shape=shape,
+            strides=strides,
+            writeable=False,
+        )
+
+        # Extract x and y lookup coordinates
+        xs = patches[..., 0]  # (H, W, P, P)
+        ys = patches[..., 1]
+
+        # Clip to valid image coordinates
+        xs = np.clip(xs, 0, W - 1)
+        ys = np.clip(ys, 0, H - 1)
+
+        # Vectorized lookup
+        # Result shape: (H, W, P, P, C)
+        values = img[ys, xs]
+
+        # Average over patch dimensions
+        final = values.mean(axis=(2, 3))
+
+        return final
     
     def visualize(self):
         """

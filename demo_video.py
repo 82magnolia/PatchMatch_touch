@@ -84,7 +84,7 @@ if __name__ == "__main__":
             pm.propagate(iters=10, rand_search_radius=max_radius)
 
         img_prime = vid_a_prime[i]
-        ref_prime = pm.reconstruct_avg(img_prime, patch_size=1)  # Uses f and reads off from img_prime to create ref_prime
+        ref_prime = pm.reconstruct_avg_fast(img_prime, patch_size=1)  # Uses f and reads off from img_prime to create ref_prime
 
         reconstructed_frames.append(ref_prime)
 
