@@ -102,7 +102,7 @@ class PatchMatchSingle(object):
     
     def reconstruct_avg(self, img, patch_size=5):
         """
-        Reconstruct image using average voting.
+        Reconstruct image using average voting, accelerated with OpenCV2.
         :param img: the image to reconstruct from. Numpy array of dim H*W*3
         :param patch_size: the patch size to use
         :return: reconstructed image
