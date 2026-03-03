@@ -105,6 +105,24 @@ class PatchMatchSingle(object):
         Reconstruct image using average voting.
         :param img: the image to reconstruct from. Numpy array of dim H*W*3
         :param patch_size: the patch size to use
+        :return: reconstructed image
+        """
+        map_x = self.nnf[:, :, 0].astype(np.float32)
+        map_y = self.nnf[:, :, 1].astype(np.float32)
+
+        remapped_img = cv2.remap(img, map_x, map_y, interpolation=cv2.INTER_NEAREST)
+
+        if patch_size > 1:
+            final = cv2.blur(remapped_img, (patch_size, patch_size))
+            return final
+        else:
+            return remapped_img
+
+    def reconstruct_avg_arr(self, img, patch_size=5):
+        """
+        Reconstruct image using average voting.
+        :param img: the image to reconstruct from. Numpy array of dim H*W*3
+        :param patch_size: the patch size to use
 
         :return: reconstructed image
         """

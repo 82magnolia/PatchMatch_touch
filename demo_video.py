@@ -49,6 +49,7 @@ if __name__ == "__main__":
     parser.add_argument("--vid_b", required=True, type=str)
     parser.add_argument("--vid_a_prime", required=True, type=str)
     parser.add_argument("--vid_b_prime", required=True, type=str)
+    parser.add_argument("--vid_mask", default=None, type=str, help="Mask of objects(b_prime) in contact with gel")
     parser.add_argument("--save_dir", default="./log/result", type=str)
     parser.add_argument("--pm_ver", default="double", help="Type of patchmatch algorithm to use", type=str)
     args = parser.parse_args()
@@ -58,11 +59,14 @@ if __name__ == "__main__":
     vid_b, _ = read_video(args.vid_b)
     vid_a_prime, _ = read_video(args.vid_a_prime)
     vid_b_prime_gt, _ = read_video(args.vid_b_prime)
+    if args.vid_mask is not None:
+        vid_mask, _ = read_video(args.vid_mask)
 
     assert len(vid_a) == len(vid_b) == len(vid_a_prime), \
         "All input videos must have the same number of frames."
 
     reconstructed_frames = []
+    base_frame = vid_a_prime[0]     # base_frame -> gelsight background image
 
     for i in trange(len(vid_a)):
         print(f"Processing frame {i+1}/{len(vid_a)}")
@@ -86,7 +90,13 @@ if __name__ == "__main__":
         img_prime = vid_a_prime[i]
         ref_prime = pm.reconstruct_avg(img_prime, patch_size=1)  # Uses f and reads off from img_prime to create ref_prime
 
-        reconstructed_frames.append(ref_prime)
+        if args.vid_mask is not None:
+            mask = vid_mask[i]
+            final_frame = (mask * ref_prime) + ((1.0 - mask) * base_frame)
+        else:
+            final_frame = ref_prime
+
+        reconstructed_frames.append(final_frame)
 
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir, exist_ok=True)
@@ -100,6 +110,6 @@ if __name__ == "__main__":
 
     # Save reconstructed video
     print("Saving reconstructed video...")
-    write_video(os.path.join(args.save_dir, "vid_b_prime.mp4"), reconstructed_frames, fps)
+    write_video(os.path.join(args.save_dir, "vid_b_prime_mask.mp4"), reconstructed_frames, fps)
 
     print("All videos saved under:", args.save_dir)
