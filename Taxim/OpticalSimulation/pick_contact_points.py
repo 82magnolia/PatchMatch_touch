@@ -184,11 +184,26 @@ def main():
     parser.add_argument("--obj_path", required=True, help="Path to .obj file")
     parser.add_argument("--output_ply", default="./picked_points.ply",
                         help="Output .ply file path (default: ./picked_points.ply)")
+    parser.add_argument("--num_fps_points", default=None, type=int,
+                        help="If set, skip the GUI and sample this many points via "
+                             "farthest point sampling on the mesh surface")
     args = parser.parse_args()
 
     tr_mesh = trimesh.load(args.obj_path, force="mesh", process=False)
     if not isinstance(tr_mesh, trimesh.Trimesh):
         raise ValueError("Could not load a single Trimesh from the .obj file.")
+
+    os.makedirs(os.path.dirname(os.path.abspath(args.output_ply)), exist_ok=True)
+
+    if args.num_fps_points is not None:
+        # Headless FPS: densely sample the surface then downsample via FPS
+        o3d_mesh = o3d.io.read_triangle_mesh(args.obj_path)
+        dense_pcd = o3d_mesh.sample_points_uniformly(
+            number_of_points=max(args.num_fps_points * 100, 100_000))
+        fps_pcd = dense_pcd.farthest_point_down_sample(args.num_fps_points)
+        o3d.io.write_point_cloud(args.output_ply, fps_pcd)
+        print(f"Saved {args.num_fps_points} FPS point(s) → {args.output_ply}")
+        return
 
     # Center mesh at origin so rotation orbits the centroid
     centroid = tr_mesh.centroid.copy()
@@ -200,8 +215,6 @@ def main():
     scene.add(pyrender.Mesh.from_trimesh(tr_mesh, smooth=False))
 
     intersector = trimesh.ray.ray_triangle.RayMeshIntersector(tr_mesh)
-
-    os.makedirs(os.path.dirname(os.path.abspath(args.output_ply)), exist_ok=True)
 
     # Launching the Viewer blocks until the window is closed
     PointPickerViewer(scene, tr_mesh, intersector, args.output_ply, centroid)
