@@ -110,6 +110,6 @@ if __name__ == "__main__":
 
     # Save reconstructed video
     print("Saving reconstructed video...")
-    write_video(os.path.join(args.save_dir, "vid_b_prime_mask.mp4"), reconstructed_frames, fps)
+    write_video(os.path.join(args.save_dir, "vid_b_prime.mp4"), reconstructed_frames, fps)
 
     print("All videos saved under:", args.save_dir)
