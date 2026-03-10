@@ -249,26 +249,29 @@ def save_results(query_entries, ref_entries, topk_idxs, save_dir, topk_sims=None
 # Visualization
 # ---------------------------------------------------------------------------
 
-def make_figure(query_idx, query_path, ref_entries, topk_ref_list_idxs, save_dir,
-                modality, k, topk_sims_list=None):
-    """Save a single-row retrieval figure for one query entry.
+def make_figure(query_idx, query_paths_by_mod, ref_entries_by_mod, topk_ref_list_idxs,
+                save_dir, modalities, k, topk_sims_list=None):
+    """Save a retrieval figure for one query entry.
 
-    Layout: [Query | Rank-1 | Rank-2 | ... | Rank-K]
+    Grid layout: rows = modalities, columns = [Query | Rank-1 | ... | Rank-K]
+    Modality labels appear on the left; entry labels appear on the top row only.
 
     Args:
-        query_idx:          int, contact-point index of this query
-        query_path:         str, path to query image
-        ref_entries:        list of (ref_idx, ref_path) for the full reference set
-        topk_ref_list_idxs: list of int — positions into ref_entries (not contact idx)
-        save_dir:           str
-        modality:           str
-        k:                  int
-        topk_sims_list:     list of float or None (no sim scores in TSV mode)
+        query_idx:           int, contact-point index of this query
+        query_paths_by_mod:  dict {modality: path} for this query
+        ref_entries_by_mod:  dict {modality: [(ref_idx, ref_path), ...]} (full ref set,
+                             aligned to the same contact-point order across modalities)
+        topk_ref_list_idxs:  list of int — positions into the ref lists
+        save_dir:            str
+        modalities:          list of str
+        k:                   int
+        topk_sims_list:      list of float or None (TSV mode has no scores)
     """
+    M = len(modalities)
     n_cols = 1 + len(topk_ref_list_idxs)
-    fig, axes = plt.subplots(1, n_cols, figsize=(3 * n_cols, 3.5))
-    if n_cols == 1:
-        axes = [axes]
+    fig, axes = plt.subplots(M, n_cols,
+                             figsize=(3 * n_cols, 3 * M + 0.5),
+                             squeeze=False)
 
     def read_rgb(path):
         img = cv2.imread(path)
@@ -276,23 +279,34 @@ def make_figure(query_idx, query_path, ref_entries, topk_ref_list_idxs, save_dir
             raise FileNotFoundError(f"Cannot read: {path}")
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    # Query column
-    axes[0].imshow(read_rgb(query_path))
-    axes[0].set_title(f"Query #{query_idx}\n({modality})", fontsize=9)
-    axes[0].axis("off")
+    for row, mod in enumerate(modalities):
+        ref_ents_mod = ref_entries_by_mod[mod]
 
-    # Retrieved columns
-    for rank, list_idx in enumerate(topk_ref_list_idxs, start=1):
-        ref_idx, ref_path = ref_entries[list_idx]
-        if topk_sims_list is not None:
-            sim_str = f" | sim={topk_sims_list[rank - 1]:.3f}"
-        else:
-            sim_str = ""
-        axes[rank].imshow(read_rgb(ref_path))
-        axes[rank].set_title(f"Ref #{ref_idx}\nrank {rank}{sim_str}", fontsize=9)
-        axes[rank].axis("off")
+        # Query column
+        ax = axes[row, 0]
+        ax.imshow(read_rgb(query_paths_by_mod[mod]))
+        if row == 0:
+            ax.set_title(f"Query #{query_idx}", fontsize=9, fontweight="bold")
+        # Modality row label on the left edge
+        ax.text(-0.05, 0.5, mod, transform=ax.transAxes,
+                ha="right", va="center", rotation=90, fontsize=9)
+        ax.axis("off")
 
-    fig.suptitle(f"Query #{query_idx} — Top-{k} retrieval ({modality})", fontsize=10)
+        # Retrieved columns
+        for rank, list_idx in enumerate(topk_ref_list_idxs, start=1):
+            ref_idx, ref_path = ref_ents_mod[list_idx]
+            ax = axes[row, rank]
+            ax.imshow(read_rgb(ref_path))
+            if row == 0:
+                sim_str = (f"\nsim={topk_sims_list[rank - 1]:.3f}"
+                           if topk_sims_list is not None else "")
+                ax.set_title(f"Ref #{ref_idx} (rank {rank}){sim_str}", fontsize=9)
+            ax.axis("off")
+
+    fig.suptitle(
+        f"Query #{query_idx} — Top-{k} retrieval ({', '.join(modalities)})",
+        fontsize=10,
+    )
     plt.tight_layout()
 
     out_path = osp.join(save_dir, f"query_{query_idx}_retrieval.png")
@@ -313,9 +327,11 @@ def main():
                         help="Path to reference touch outputs folder.")
     parser.add_argument("--query_dir", required=True, type=str,
                         help="Path to query touch outputs folder.")
-    parser.add_argument("--modality", required=True,
+    parser.add_argument("--modality", required=True, nargs='+',
                         choices=["color", "normal", "curvature", "height"],
-                        help="Static modality to use for indexing / visualization.")
+                        help="Modality(ies) to use for indexing. If multiple are given, "
+                             "DINOv2 features are extracted independently per modality and "
+                             "concatenated. The first modality is used for visualization.")
     parser.add_argument("--scale", default=None, type=int,
                         help="Scale suffix in mm (e.g. 25 for _scale25_). "
                              "Omit to use base-resolution files.")
@@ -346,32 +362,48 @@ def main():
 
     os.makedirs(args.save_dir, exist_ok=True)
 
-    # -----------------------------------------------------------------------
-    # Discover files (needed in both modes for image paths)
-    # -----------------------------------------------------------------------
-    print(f"Discovering reference files in: {args.ref_dir}")
-    ref_entries = discover_files(args.ref_dir, args.modality, args.scale)
-    if not ref_entries:
-        scale_str = f"_scale{args.scale}_" if args.scale else "_"
-        raise FileNotFoundError(
-            f"No files matching '{{}}{scale_str}{args.modality}.jpg' found in {args.ref_dir}"
-        )
-    print(f"  Found {len(ref_entries)} reference entries.")
+    def _discover_all_modalities(folder, modalities, scale):
+        """Discover files for each modality; return (by_mod, common_idxs).
 
-    print(f"Discovering query files in: {args.query_dir}")
-    query_entries = discover_files(args.query_dir, args.modality, args.scale)
-    if not query_entries:
-        scale_str = f"_scale{args.scale}_" if args.scale else "_"
-        raise FileNotFoundError(
-            f"No files matching '{{}}{scale_str}{args.modality}.jpg' found in {args.query_dir}"
-        )
-    print(f"  Found {len(query_entries)} query entries.")
+        by_mod:       dict {modality -> {idx: path}}
+        common_idxs:  sorted list of contact-point indices present in all modalities.
+        """
+        by_mod = {}
+        for mod in modalities:
+            entries = discover_files(folder, mod, scale)
+            if not entries:
+                scale_str = f"_scale{scale}_" if scale else "_"
+                raise FileNotFoundError(
+                    f"No files matching '{{}}{scale_str}{mod}.jpg' found in {folder}"
+                )
+            by_mod[mod] = {idx: p for idx, p in entries}
+        common_idxs = sorted(set.intersection(*[set(d) for d in by_mod.values()]))
+        return by_mod, common_idxs
+
+    def _build_entries_by_mod(by_mod, common_idxs, modalities):
+        """Build {modality -> [(idx, path), ...]} aligned to common_idxs."""
+        return {mod: [(idx, by_mod[mod][idx]) for idx in common_idxs]
+                for mod in modalities}
 
     # -----------------------------------------------------------------------
-    # Build lookup: contact-point index → position in entries list
+    # Discover files for all modalities (both modes need them for figures)
     # -----------------------------------------------------------------------
-    ref_idx_to_pos = {idx: pos for pos, (idx, _) in enumerate(ref_entries)}
-    query_idx_to_pos = {idx: pos for pos, (idx, _) in enumerate(query_entries)}
+    print(f"Discovering reference files ({', '.join(args.modality)}) in: {args.ref_dir}")
+    ref_by_mod, common_ref_idxs = _discover_all_modalities(
+        args.ref_dir, args.modality, args.scale)
+    ref_entries_by_mod = _build_entries_by_mod(ref_by_mod, common_ref_idxs, args.modality)
+    print(f"  Found {len(common_ref_idxs)} reference entries.")
+
+    print(f"Discovering query files ({', '.join(args.modality)}) in: {args.query_dir}")
+    query_by_mod, common_query_idxs = _discover_all_modalities(
+        args.query_dir, args.modality, args.scale)
+    query_entries_by_mod = _build_entries_by_mod(query_by_mod, common_query_idxs, args.modality)
+    print(f"  Found {len(common_query_idxs)} query entries.")
+
+    # Canonical (single-modality) entry lists used for save_results and index lookups
+    vis_modality  = args.modality[0]
+    ref_entries   = ref_entries_by_mod[vis_modality]
+    query_entries = query_entries_by_mod[vis_modality]
 
     # -----------------------------------------------------------------------
     # Branch on retrieval mode
@@ -381,32 +413,38 @@ def main():
         print(f"Loading DINOv2 model '{args.dino_model}' on {device}...")
         model, transform = load_dino_model(args.dino_model, device)
 
-        ref_paths = [p for _, p in ref_entries]
-        query_paths = [p for _, p in query_entries]
+        # Extract features per modality, concatenate, re-normalise
+        ref_feats_list, query_feats_list = [], []
+        for mod in args.modality:
+            ref_paths_mod   = [ref_by_mod[mod][idx]   for idx in common_ref_idxs]
+            query_paths_mod = [query_by_mod[mod][idx] for idx in common_query_idxs]
+            print(f"Extracting reference features ({mod})...")
+            ref_feats_list.append(
+                extract_features(model, transform, ref_paths_mod, device,
+                                 mask_mode=args.mask_mode))
+            print(f"Extracting query features ({mod})...")
+            query_feats_list.append(
+                extract_features(model, transform, query_paths_mod, device,
+                                 mask_mode=args.mask_mode))
 
-        print("Extracting reference features...")
-        ref_feats = extract_features(model, transform, ref_paths, device,
-                                     mask_mode=args.mask_mode)
-
-        print("Extracting query features...")
-        query_feats = extract_features(model, transform, query_paths, device,
-                                       mask_mode=args.mask_mode)
+        ref_feats   = F.normalize(torch.cat(ref_feats_list,   dim=-1), dim=-1)
+        query_feats = F.normalize(torch.cat(query_feats_list, dim=-1), dim=-1)
 
         print(f"Computing top-{args.top_k} retrievals...")
         topk_idxs, topk_sims = compute_topk(query_feats, ref_feats, args.top_k)
-        # topk_idxs: (N_q, K) — positions into ref_entries
-        topk_idxs_list = topk_idxs.tolist()
-        topk_sims_list = topk_sims.tolist()
-
-        active_query_entries = query_entries
+        topk_idxs_list  = topk_idxs.tolist()
+        topk_sims_list  = topk_sims.tolist()
+        active_query_entries_by_mod = query_entries_by_mod
         k = args.top_k
 
     else:  # tsv
         print(f"Loading retrieval results from TSV: {args.tsv}")
         tsv_rows = load_tsv(args.tsv)
 
-        # Resolve TSV contact-point indices to list positions; skip missing entries
-        active_query_entries = []
+        ref_idx_to_pos   = {idx: pos for pos, (idx, _) in enumerate(ref_entries)}
+        query_idx_to_pos = {idx: pos for pos, (idx, _) in enumerate(query_entries)}
+
+        active_query_positions = []   # positions into query_entries_by_mod lists
         topk_idxs_list = []
         topk_sims_list = None   # TSV carries no similarity scores
 
@@ -414,22 +452,25 @@ def main():
             if q_idx not in query_idx_to_pos:
                 print(f"  Warning: query idx {q_idx} not found in query folder, skipping.")
                 continue
-            resolved_ref_positions = []
+            resolved = []
             for r_idx in ref_contact_idxs:
                 if r_idx not in ref_idx_to_pos:
                     print(f"  Warning: ref idx {r_idx} not found in ref folder, skipping.")
                     continue
-                resolved_ref_positions.append(ref_idx_to_pos[r_idx])
+                resolved.append(ref_idx_to_pos[r_idx])
+            active_query_positions.append(query_idx_to_pos[q_idx])
+            topk_idxs_list.append(resolved)
 
-            q_pos = query_idx_to_pos[q_idx]
-            active_query_entries.append(query_entries[q_pos])
-            topk_idxs_list.append(resolved_ref_positions)
-
+        active_query_entries_by_mod = {
+            mod: [query_entries_by_mod[mod][pos] for pos in active_query_positions]
+            for mod in args.modality
+        }
         k = max((len(r) for r in topk_idxs_list), default=0)
 
     # -----------------------------------------------------------------------
     # Save results
     # -----------------------------------------------------------------------
+    active_query_entries = active_query_entries_by_mod[vis_modality]
     save_results(
         query_entries=active_query_entries,
         ref_entries=ref_entries,
@@ -442,16 +483,17 @@ def main():
     # Figures
     # -----------------------------------------------------------------------
     print("Generating retrieval figures...")
-    for qi, (q_idx, q_path) in enumerate(tqdm(active_query_entries, desc="Figures")):
-        list_idxs = topk_idxs_list[qi]
+    for qi, (q_idx, _) in enumerate(tqdm(active_query_entries, desc="Figures")):
+        query_paths_by_mod = {mod: active_query_entries_by_mod[mod][qi][1]
+                              for mod in args.modality}
         sims = topk_sims_list[qi] if topk_sims_list is not None else None
         make_figure(
             query_idx=q_idx,
-            query_path=q_path,
-            ref_entries=ref_entries,
-            topk_ref_list_idxs=list_idxs,
+            query_paths_by_mod=query_paths_by_mod,
+            ref_entries_by_mod=ref_entries_by_mod,
+            topk_ref_list_idxs=topk_idxs_list[qi],
             save_dir=args.save_dir,
-            modality=args.modality,
+            modalities=args.modality,
             k=k,
             topk_sims_list=sims,
         )
