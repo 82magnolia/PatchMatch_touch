@@ -23,6 +23,8 @@ import pickle
 from os import path as osp
 
 import cv2
+import matplotlib.colors
+import matplotlib.pyplot as plt
 import numpy as np
 import pycuda.autoinit  # noqa: F401 – initialises CUDA context
 from tqdm import tqdm
@@ -84,6 +86,85 @@ def build_combined_static(folder, idx, modalities, scale):
     if len(imgs) == 1:
         return imgs[0]
     return np.concatenate(imgs, axis=-1).copy(order="C")
+
+
+# ---------------------------------------------------------------------------
+# NNF figure
+# ---------------------------------------------------------------------------
+
+def _make_ref_color_grid(ref_shape):
+    """Rainbow grid: hue sweeps diagonally from red (top-left) to purple (bottom-right)."""
+    H_ref, W_ref = ref_shape[:2]
+    xs = np.linspace(0, 1, W_ref, dtype=np.float32)
+    ys = np.linspace(0, 1, H_ref, dtype=np.float32)
+    xg, yg = np.meshgrid(xs, ys)
+    hue = (xg + yg) / 2 * 0.75           # [0, 0.75]: red → yellow → green → blue → purple
+    sat = np.ones_like(hue)
+    val = np.ones_like(hue)
+    return matplotlib.colors.hsv_to_rgb(np.stack([hue, sat, val], axis=-1))
+
+
+def _make_nnf_warped(pm, ref_color_grid):
+    """Warp a canonical HSV position grid through the NNF.
+
+    Reveals which reference regions are sampled at each query location.
+    """
+    return pm.reconstruct_avg(ref_color_grid, patch_size=1)
+
+
+def make_nnf_figure(query_idx, ref_idx, query_dir, ref_dir, modalities, scale,
+                    pm, ref_shape, save_dir):
+    """Save a (M+1) × 2 diagnostic figure for one query entry.
+
+    Rows 0..M-1 : [Query modality_i]  [Ref modality_i]
+    Row M       : [NNF colormap]       [NNF warped]
+    """
+    M      = len(modalities)
+    n_rows = M + 1
+    fig, axes = plt.subplots(n_rows, 2,
+                             figsize=(6, 3 * n_rows + 0.5),
+                             squeeze=False)
+
+    def read_rgb(folder, idx, mod):
+        img = load_static_image(folder, idx, mod, scale)   # float32 [0,1]
+        return img[:, :, :3]                               # drop extra channels if any
+
+    # -- Modality rows -------------------------------------------------------
+    for row, mod in enumerate(modalities):
+        for col, (folder, idx, label) in enumerate([
+            (query_dir, query_idx, f"Query #{query_idx}"),
+            (ref_dir,   ref_idx,   f"Ref #{ref_idx}"),
+        ]):
+            ax = axes[row, col]
+            ax.imshow(read_rgb(folder, idx, mod))
+            if row == 0:
+                ax.set_title(label, fontsize=9,
+                             fontweight="bold" if col == 0 else "normal")
+            ax.text(-0.05, 0.5, mod, transform=ax.transAxes,
+                    ha="right", va="center", rotation=90, fontsize=9)
+            ax.axis("off")
+
+    # -- NNF row -------------------------------------------------------------
+    ref_color_grid = _make_ref_color_grid(ref_shape)
+    nnf_imgs   = [_make_nnf_warped(pm, ref_color_grid), ref_color_grid]
+    nnf_titles = ["NNF warped", "ref color grid"]
+    for col, (img, title) in enumerate(zip(nnf_imgs, nnf_titles)):
+        ax = axes[M, col]
+        ax.imshow(np.clip(img, 0, 1))
+        ax.set_title(title, fontsize=9)
+        if col == 0:
+            ax.text(-0.05, 0.5, "NNF", transform=ax.transAxes,
+                    ha="right", va="center", rotation=90, fontsize=9)
+        ax.axis("off")
+
+    fig.suptitle(f"Query #{query_idx} → Ref #{ref_idx} — NNF ({', '.join(modalities)})",
+                 fontsize=10)
+    plt.tight_layout()
+
+    out_path = osp.join(save_dir, f"{query_idx}_nnf.png")
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +248,16 @@ def main():
         pm = PatchMatchSingle(query_static, ref_static, patch_size=args.patch_size)  # Finds a mapping f from ref -> img: nearest pixel in img for each pixel in ref
         pm.propagate(iters=args.iters, rand_search_radius=max_radius)
 
+        # -- NNF figure -------------------------------------------------------
+        fig_path = make_nnf_figure(
+            query_idx=query_idx, ref_idx=ref_idx,
+            query_dir=args.query_dir, ref_dir=args.ref_dir,
+            modalities=args.modality, scale=args.scale,
+            pm=pm, ref_shape=ref_static.shape,
+            save_dir=args.save_dir,
+        )
+        print(f"  Saved NNF figure: {fig_path}")
+
         # -- Load reference touch video ------------------------------------
         vid_path = osp.join(args.ref_dir, f"{ref_idx}_{args.video_type}.mp4")
         if not osp.exists(vid_path):
@@ -199,7 +290,21 @@ def main():
 
             transferred.append(output)
 
-        # -- Save output video --------------------------------------------
+        # -- Save videos ------------------------------------------------------
+        # Query touch video
+        q_vid_path = osp.join(args.query_dir, f"{query_idx}_{args.video_type}.mp4")
+        if osp.exists(q_vid_path):
+            q_frames, q_fps = read_video(q_vid_path)
+            write_video(osp.join(args.save_dir,
+                                 f"{query_idx}_query_{args.video_type}.mp4"),
+                        q_frames, q_fps)
+
+        # Reference touch video
+        write_video(osp.join(args.save_dir,
+                             f"{query_idx}_ref_{args.video_type}.mp4"),
+                    ref_frames, fps)
+
+        # Transferred video
         out_path = osp.join(args.save_dir, f"{query_idx}_transferred.mp4")
         write_video(out_path, transferred, fps)
         print(f"  Saved: {out_path}")
