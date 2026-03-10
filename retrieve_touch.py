@@ -1,15 +1,32 @@
 """
-Top-K touch retrieval using DINOv2 features.
+Top-K touch retrieval — DINOv2 or pre-specified TSV.
 
-Given a reference folder and a query folder of touch outputs from gen_contact_video.py,
-builds a DINOv2 feature database for the reference entries and retrieves the top-K most
-similar reference entries for each query entry based on a chosen static modality.
+Two retrieval modes selected via --retrieval_mode:
 
-Usage:
+  dinov2 (default):
+    Builds a DINOv2 feature database for the reference entries and retrieves
+    the top-K most similar ones for each query.
+
     python retrieve_touch.py \
         --ref_dir Taxim/results/gen_contact \
         --query_dir Taxim/results/gen_contact \
-        --modality normal --scale 25 --top_k 5
+        --modality normal --scale 25 --top_k 5 \
+        --retrieval_mode dinov2
+
+  tsv:
+    Loads pre-specified retrieval results from a TSV file (--tsv). The TSV
+    must have a header "query\\tref" and one row per query with tab-separated
+    query index and comma-separated reference indices, e.g.:
+
+        query   ref
+        0       0,1,2,3
+        1       1,2,3,4
+
+    python retrieve_touch.py \
+        --ref_dir Taxim/results/gen_contact \
+        --query_dir Taxim/results/gen_contact \
+        --modality normal --scale 25 \
+        --retrieval_mode tsv --tsv obj_36.tsv
 """
 
 import argparse
@@ -52,6 +69,35 @@ def discover_files(folder, modality, scale):
 
     entries.sort(key=lambda x: x[0])
     return entries
+
+
+# ---------------------------------------------------------------------------
+# TSV loading
+# ---------------------------------------------------------------------------
+
+def load_tsv(tsv_path):
+    """Parse a retrieval TSV file.
+
+    Expected format (tab-separated, header required):
+        query   ref
+        0       0,1,2,3
+        1       1,2,3,4
+
+    Returns:
+        List of (query_idx: int, ref_indices: list[int]) in file order.
+    """
+    results = []
+    with open(tsv_path, newline="") as f:
+        header = f.readline()   # consume header
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("\t")
+            q_idx = int(parts[0])
+            ref_idxs = [int(x) for x in parts[1].split(",")]
+            results.append((q_idx, ref_idxs))
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -131,20 +177,20 @@ def compute_topk(query_feats, ref_feats, k):
 # Save results
 # ---------------------------------------------------------------------------
 
-def save_results(query_entries, ref_entries, topk_idxs, topk_sims, save_dir):
+def save_results(query_entries, ref_entries, topk_idxs, save_dir, topk_sims=None):
     """Save retrieval results as a .pkl file.
 
     The pkl contains a list of dicts, one per query, each with:
       - 'query_idx': int contact-point index in query folder
       - 'topk_ref_indices': list of int contact-point indices in ref folder (rank 1 first)
-      - 'topk_similarities': list of float cosine similarity scores
+      - 'topk_similarities': list of float cosine similarities, or None if unavailable
     """
     results = []
     for qi, (q_idx, _) in enumerate(query_entries):
         row = {
             "query_idx": q_idx,
-            "topk_ref_indices": [ref_entries[ri][0] for ri in topk_idxs[qi].tolist()],
-            "topk_similarities": topk_sims[qi].tolist(),
+            "topk_ref_indices": [ref_entries[ri][0] for ri in topk_idxs[qi]],
+            "topk_similarities": topk_sims[qi] if topk_sims is not None else None,
         }
         results.append(row)
 
@@ -159,8 +205,8 @@ def save_results(query_entries, ref_entries, topk_idxs, topk_sims, save_dir):
 # Visualization
 # ---------------------------------------------------------------------------
 
-def make_figure(query_idx, query_path, ref_entries, topk_ref_list_idxs, topk_sims_list,
-                save_dir, modality, k):
+def make_figure(query_idx, query_path, ref_entries, topk_ref_list_idxs, save_dir,
+                modality, k, topk_sims_list=None):
     """Save a single-row retrieval figure for one query entry.
 
     Layout: [Query | Rank-1 | Rank-2 | ... | Rank-K]
@@ -170,10 +216,10 @@ def make_figure(query_idx, query_path, ref_entries, topk_ref_list_idxs, topk_sim
         query_path:         str, path to query image
         ref_entries:        list of (ref_idx, ref_path) for the full reference set
         topk_ref_list_idxs: list of int — positions into ref_entries (not contact idx)
-        topk_sims_list:     list of float
         save_dir:           str
         modality:           str
         k:                  int
+        topk_sims_list:     list of float or None (no sim scores in TSV mode)
     """
     n_cols = 1 + len(topk_ref_list_idxs)
     fig, axes = plt.subplots(1, n_cols, figsize=(3 * n_cols, 3.5))
@@ -192,10 +238,14 @@ def make_figure(query_idx, query_path, ref_entries, topk_ref_list_idxs, topk_sim
     axes[0].axis("off")
 
     # Retrieved columns
-    for rank, (list_idx, sim) in enumerate(zip(topk_ref_list_idxs, topk_sims_list), start=1):
+    for rank, list_idx in enumerate(topk_ref_list_idxs, start=1):
         ref_idx, ref_path = ref_entries[list_idx]
+        if topk_sims_list is not None:
+            sim_str = f" | sim={topk_sims_list[rank - 1]:.3f}"
+        else:
+            sim_str = ""
         axes[rank].imshow(read_rgb(ref_path))
-        axes[rank].set_title(f"Ref #{ref_idx}\nrank {rank} | sim={sim:.3f}", fontsize=9)
+        axes[rank].set_title(f"Ref #{ref_idx}\nrank {rank}{sim_str}", fontsize=9)
         axes[rank].axis("off")
 
     fig.suptitle(f"Query #{query_idx} — Top-{k} retrieval ({modality})", fontsize=10)
@@ -213,7 +263,7 @@ def make_figure(query_idx, query_path, ref_entries, topk_ref_list_idxs, topk_sim
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Top-K touch retrieval using DINOv2 features."
+        description="Top-K touch retrieval using DINOv2 features or a pre-specified TSV."
     )
     parser.add_argument("--ref_dir", required=True, type=str,
                         help="Path to reference touch outputs folder.")
@@ -221,24 +271,34 @@ def main():
                         help="Path to query touch outputs folder.")
     parser.add_argument("--modality", required=True,
                         choices=["color", "normal", "curvature", "height"],
-                        help="Static modality to use for indexing.")
+                        help="Static modality to use for indexing / visualization.")
     parser.add_argument("--scale", default=None, type=int,
                         help="Scale suffix in mm (e.g. 25 for _scale25_). "
                              "Omit to use base-resolution files.")
+    parser.add_argument("--retrieval_mode", default="dinov2", choices=["dinov2", "tsv"],
+                        help="Retrieval mode: 'dinov2' runs feature extraction; "
+                             "'tsv' loads pre-specified results from --tsv.")
+    # dinov2-mode args
     parser.add_argument("--top_k", default=5, type=int,
-                        help="Number of top retrievals per query entry.")
-    parser.add_argument("--save_dir", default="./log/touch_retrieval", type=str,
-                        help="Output directory for results and figures.")
+                        help="Number of top retrievals per query (dinov2 mode).")
     parser.add_argument("--dino_model", default="dinov2_vits14",
                         choices=["dinov2_vits14", "dinov2_vitb14",
                                  "dinov2_vitl14", "dinov2_vitg14"],
-                        help="DINOv2 model variant.")
+                        help="DINOv2 model variant (dinov2 mode).")
+    # tsv-mode args
+    parser.add_argument("--tsv", default=None, type=str,
+                        help="Path to retrieval TSV file (tsv mode).")
+    parser.add_argument("--save_dir", default="./log/touch_retrieval", type=str,
+                        help="Output directory for results and figures.")
     args = parser.parse_args()
+
+    if args.retrieval_mode == "tsv" and args.tsv is None:
+        parser.error("--tsv is required when --retrieval_mode tsv is set.")
 
     os.makedirs(args.save_dir, exist_ok=True)
 
     # -----------------------------------------------------------------------
-    # Discover files
+    # Discover files (needed in both modes for image paths)
     # -----------------------------------------------------------------------
     print(f"Discovering reference files in: {args.ref_dir}")
     ref_entries = discover_files(args.ref_dir, args.modality, args.scale)
@@ -259,51 +319,90 @@ def main():
     print(f"  Found {len(query_entries)} query entries.")
 
     # -----------------------------------------------------------------------
-    # Load model
+    # Build lookup: contact-point index → position in entries list
     # -----------------------------------------------------------------------
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Loading DINOv2 model '{args.dino_model}' on {device}...")
-    model, transform = load_dino_model(args.dino_model, device)
+    ref_idx_to_pos = {idx: pos for pos, (idx, _) in enumerate(ref_entries)}
+    query_idx_to_pos = {idx: pos for pos, (idx, _) in enumerate(query_entries)}
 
     # -----------------------------------------------------------------------
-    # Extract features
+    # Branch on retrieval mode
     # -----------------------------------------------------------------------
-    ref_paths = [p for _, p in ref_entries]
-    query_paths = [p for _, p in query_entries]
+    if args.retrieval_mode == "dinov2":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Loading DINOv2 model '{args.dino_model}' on {device}...")
+        model, transform = load_dino_model(args.dino_model, device)
 
-    print("Extracting reference features...")
-    ref_feats = extract_features(model, transform, ref_paths, device)   # (N_r, D)
+        ref_paths = [p for _, p in ref_entries]
+        query_paths = [p for _, p in query_entries]
 
-    print("Extracting query features...")
-    query_feats = extract_features(model, transform, query_paths, device)  # (N_q, D)
+        print("Extracting reference features...")
+        ref_feats = extract_features(model, transform, ref_paths, device)
 
-    # -----------------------------------------------------------------------
-    # Retrieval
-    # -----------------------------------------------------------------------
-    print(f"Computing top-{args.top_k} retrievals...")
-    topk_idxs, topk_sims = compute_topk(query_feats, ref_feats, args.top_k)
+        print("Extracting query features...")
+        query_feats = extract_features(model, transform, query_paths, device)
+
+        print(f"Computing top-{args.top_k} retrievals...")
+        topk_idxs, topk_sims = compute_topk(query_feats, ref_feats, args.top_k)
+        # topk_idxs: (N_q, K) — positions into ref_entries
+        topk_idxs_list = topk_idxs.tolist()
+        topk_sims_list = topk_sims.tolist()
+
+        active_query_entries = query_entries
+        k = args.top_k
+
+    else:  # tsv
+        print(f"Loading retrieval results from TSV: {args.tsv}")
+        tsv_rows = load_tsv(args.tsv)
+
+        # Resolve TSV contact-point indices to list positions; skip missing entries
+        active_query_entries = []
+        topk_idxs_list = []
+        topk_sims_list = None   # TSV carries no similarity scores
+
+        for q_idx, ref_contact_idxs in tsv_rows:
+            if q_idx not in query_idx_to_pos:
+                print(f"  Warning: query idx {q_idx} not found in query folder, skipping.")
+                continue
+            resolved_ref_positions = []
+            for r_idx in ref_contact_idxs:
+                if r_idx not in ref_idx_to_pos:
+                    print(f"  Warning: ref idx {r_idx} not found in ref folder, skipping.")
+                    continue
+                resolved_ref_positions.append(ref_idx_to_pos[r_idx])
+
+            q_pos = query_idx_to_pos[q_idx]
+            active_query_entries.append(query_entries[q_pos])
+            topk_idxs_list.append(resolved_ref_positions)
+
+        k = max((len(r) for r in topk_idxs_list), default=0)
 
     # -----------------------------------------------------------------------
     # Save results
     # -----------------------------------------------------------------------
-    save_results(query_entries, ref_entries, topk_idxs, topk_sims, args.save_dir)
+    save_results(
+        query_entries=active_query_entries,
+        ref_entries=ref_entries,
+        topk_idxs=topk_idxs_list,
+        save_dir=args.save_dir,
+        topk_sims=topk_sims_list if args.retrieval_mode == "dinov2" else None,
+    )
 
     # -----------------------------------------------------------------------
     # Figures
     # -----------------------------------------------------------------------
     print("Generating retrieval figures...")
-    for qi, (q_idx, q_path) in enumerate(tqdm(query_entries, desc="Figures")):
-        list_idxs = topk_idxs[qi].tolist()
-        sims = topk_sims[qi].tolist()
+    for qi, (q_idx, q_path) in enumerate(tqdm(active_query_entries, desc="Figures")):
+        list_idxs = topk_idxs_list[qi]
+        sims = topk_sims_list[qi] if topk_sims_list is not None else None
         make_figure(
             query_idx=q_idx,
             query_path=q_path,
             ref_entries=ref_entries,
             topk_ref_list_idxs=list_idxs,
-            topk_sims_list=sims,
             save_dir=args.save_dir,
             modality=args.modality,
-            k=args.top_k,
+            k=k,
+            topk_sims_list=sims,
         )
 
     print(f"Done. Results saved to: {args.save_dir}")
