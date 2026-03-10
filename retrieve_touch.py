@@ -124,8 +124,46 @@ def load_dino_model(model_name, device):
 # Feature extraction
 # ---------------------------------------------------------------------------
 
-def extract_features(model, transform, paths, device, batch_size=32):
+def compute_patch_mask(img_rgb, mask_mode, patch_size=14, img_size=224):
+    """Compute a (num_patches,) boolean mask for DINOv2's forward_features.
+
+    Pixels matching mask_mode are aggregated to patch level (any-pixel rule).
+    True = masked patch (replaced by DINOv2's learned mask token).
+    Returns None when mask_mode is 'none'.
+
+    Args:
+        img_rgb:    H×W×3 uint8 RGB array
+        mask_mode:  'black_pixels' | 'white_pixels' | 'none'
+        patch_size: ViT patch size in pixels (14 for all DINOv2 variants)
+        img_size:   model input resolution (224)
+    """
+    if mask_mode == "none":
+        return None
+
+    if mask_mode == "black_pixels":
+        pixel_mask = np.all(img_rgb == 0, axis=-1).astype(np.uint8)
+    else:  # white_pixels
+        pixel_mask = np.all(img_rgb == 255, axis=-1).astype(np.uint8)
+
+    # Resize to model input size with nearest-neighbor to keep values binary
+    mask_resized = cv2.resize(pixel_mask, (img_size, img_size),
+                              interpolation=cv2.INTER_NEAREST)
+
+    # Aggregate to patch grid: a patch is masked if any pixel inside it is masked
+    n = img_size // patch_size   # 16 for 224/14
+    patch_mask = mask_resized.reshape(n, patch_size, n, patch_size).any(axis=(1, 3))
+    return torch.from_numpy(patch_mask.flatten())   # (n*n,) bool
+
+
+def extract_features(model, transform, paths, device, batch_size=32, mask_mode="none"):
     """Extract DINOv2 CLS-token features for a list of image paths.
+
+    Args:
+        mask_mode: 'black_pixels' | 'white_pixels' | 'none'
+                   When set, a patch-level boolean mask is derived from each image
+                   and passed to model.forward_features(..., masks=masks) so that
+                   DINOv2 replaces the flagged patch tokens with its learned mask
+                   token before computing features.
 
     Returns:
         Tensor of shape (N, D), L2-normalised.
@@ -133,16 +171,22 @@ def extract_features(model, transform, paths, device, batch_size=32):
     all_feats = []
     for i in tqdm(range(0, len(paths), batch_size), desc="  Extracting features", leave=False):
         batch_paths = paths[i:i + batch_size]
-        imgs = []
+        imgs, patch_masks = [], []
         for p in batch_paths:
             img_bgr = cv2.imread(p)
             if img_bgr is None:
                 raise FileNotFoundError(f"Cannot read image: {p}")
             img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+            pm = compute_patch_mask(img_rgb, mask_mode)
             imgs.append(transform(img_rgb))
+            if pm is not None:
+                patch_masks.append(pm)
+
         batch = torch.stack(imgs).to(device)
+        batch_masks = torch.stack(patch_masks).to(device) if patch_masks else None
+
         with torch.no_grad():
-            out = model.forward_features(batch)
+            out = model.forward_features(batch, masks=batch_masks)
             feats = out["x_norm_clstoken"]   # (B, D)
         feats = F.normalize(feats, dim=-1)
         all_feats.append(feats.cpu())
@@ -281,6 +325,11 @@ def main():
     # dinov2-mode args
     parser.add_argument("--top_k", default=5, type=int,
                         help="Number of top retrievals per query (dinov2 mode).")
+    parser.add_argument("--mask_mode", default="none",
+                        choices=["black_pixels", "white_pixels", "none"],
+                        help="Pixels to mask during DINOv2 feature extraction. "
+                             "Matching patches are replaced with DINOv2's learned "
+                             "mask token. Default: none.")
     parser.add_argument("--dino_model", default="dinov2_vits14",
                         choices=["dinov2_vits14", "dinov2_vitb14",
                                  "dinov2_vitl14", "dinov2_vitg14"],
@@ -336,10 +385,12 @@ def main():
         query_paths = [p for _, p in query_entries]
 
         print("Extracting reference features...")
-        ref_feats = extract_features(model, transform, ref_paths, device)
+        ref_feats = extract_features(model, transform, ref_paths, device,
+                                     mask_mode=args.mask_mode)
 
         print("Extracting query features...")
-        query_feats = extract_features(model, transform, query_paths, device)
+        query_feats = extract_features(model, transform, query_paths, device,
+                                       mask_mode=args.mask_mode)
 
         print(f"Computing top-{args.top_k} retrievals...")
         topk_idxs, topk_sims = compute_topk(query_feats, ref_feats, args.top_k)
