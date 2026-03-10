@@ -45,8 +45,10 @@ def write_video(path, frames, fps):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--vid_a", required=True, type=str)
-    parser.add_argument("--vid_b", required=True, type=str)
+    parser.add_argument("--vid_a", default=None, type=str)
+    parser.add_argument("--vid_b", default=None, type=str)
+    parser.add_argument("--img_a", default=None, type=str, help="Static image to use instead of vid_a[0] for NNF computation")
+    parser.add_argument("--img_b", default=None, type=str, help="Static image to use instead of vid_b[0] for NNF computation")
     parser.add_argument("--vid_a_prime", required=True, type=str)
     parser.add_argument("--vid_b_prime", required=True, type=str)
     parser.add_argument("--vid_mask", default=None, type=str, help="Mask of objects(b_prime) in contact with gel")
@@ -54,26 +56,39 @@ if __name__ == "__main__":
     parser.add_argument("--pm_ver", default="double", help="Type of patchmatch algorithm to use", type=str)
     args = parser.parse_args()
 
+    if args.vid_a is None and args.img_a is None:
+        parser.error("--img_a is required when --vid_a is not provided")
+    if args.vid_b is None and args.img_b is None:
+        parser.error("--img_b is required when --vid_b is not provided")
+
     print("Loading videos...")
-    vid_a, fps = read_video(args.vid_a)
-    vid_b, _ = read_video(args.vid_b)
-    vid_a_prime, _ = read_video(args.vid_a_prime)
+    vid_a = read_video(args.vid_a)[0] if args.vid_a is not None else None
+    vid_b = read_video(args.vid_b)[0] if args.vid_b is not None else None
+    vid_a_prime, fps = read_video(args.vid_a_prime)
     vid_b_prime_gt, _ = read_video(args.vid_b_prime)
     if args.vid_mask is not None:
         vid_mask, _ = read_video(args.vid_mask)
 
-    assert len(vid_a) == len(vid_b) == len(vid_a_prime), \
-        "All input videos must have the same number of frames."
+    if vid_a is not None:
+        assert len(vid_a) == len(vid_a_prime), \
+            "vid_a and vid_a_prime must have the same number of frames."
+    if vid_b is not None:
+        assert len(vid_b) == len(vid_a_prime), \
+            "vid_b and vid_a_prime must have the same number of frames."
 
     reconstructed_frames = []
     base_frame = vid_a_prime[0]     # base_frame -> gelsight background image
 
-    for i in trange(len(vid_a)):
-        print(f"Processing frame {i+1}/{len(vid_a)}")
+    for i in trange(len(vid_a_prime)):
+        print(f"Processing frame {i+1}/{len(vid_a_prime)}")
 
         if i == 0:  # Find PatchMatch only for initial frame
-            img = vid_a[i]
-            ref = vid_b[i]
+            def _load_img(path):
+                bgr = cv2.imread(path)
+                return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+
+            img = _load_img(args.img_a) if args.img_a is not None else vid_a[i]
+            ref = _load_img(args.img_b) if args.img_b is not None else vid_b[i]
 
             # Initialize patchmatch
             if args.pm_ver == "double":
@@ -103,8 +118,10 @@ if __name__ == "__main__":
 
     # Save original videos
     print("Saving input videos...")
-    write_video(os.path.join(args.save_dir, "vid_a.mp4"), vid_a, fps)
-    write_video(os.path.join(args.save_dir, "vid_b.mp4"), vid_b, fps)
+    if vid_a is not None:
+        write_video(os.path.join(args.save_dir, "vid_a.mp4"), vid_a, fps)
+    if vid_b is not None:
+        write_video(os.path.join(args.save_dir, "vid_b.mp4"), vid_b, fps)
     write_video(os.path.join(args.save_dir, "vid_a_prime.mp4"), vid_a_prime, fps)
     write_video(os.path.join(args.save_dir, "vid_b_prime_gt.mp4"), vid_b_prime_gt, fps)
 
