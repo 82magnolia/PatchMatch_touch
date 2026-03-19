@@ -171,15 +171,28 @@ def make_nnf_figure(query_idx, ref_idx, query_dir, ref_dir, modalities, scale,
 # Contact mask
 # ---------------------------------------------------------------------------
 
-def compute_contact_mask(ref_frame, base_frame, threshold):
-    """Binary mask of pixels where contact has occurred.
+def compute_contact_mask(ref_frame, base_frame, threshold,
+                         blur_sigma=3.0, morph_radius=5):
+    """Robust binary mask of pixels where contact has occurred.
 
-    mask[y,x] = 1  iff  ||ref_frame[y,x] - base_frame[y,x]|| > threshold
+    Pipeline:
+      1. Compute per-pixel L2 difference magnitude.
+      2. Gaussian blur to suppress JPEG block artifacts.
+      3. Threshold the blurred magnitude.
+      4. Morphological open  (removes isolated noise blobs).
+      5. Morphological close (fills holes inside the contact region).
+
     Returns float32 (H, W, 1).
     """
     diff = np.abs(ref_frame - base_frame)
-    magnitude = np.linalg.norm(diff, axis=-1, keepdims=True).astype(np.float32)
-    return (magnitude > threshold).astype(np.float32)
+    magnitude = np.linalg.norm(diff, axis=-1).astype(np.float32)  # (H, W)
+    blurred = cv2.GaussianBlur(magnitude, (0, 0), blur_sigma)
+    binary = (blurred > threshold).astype(np.uint8)
+    k = morph_radius * 2 + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN,  kernel)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    return binary[..., np.newaxis].astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -258,9 +271,17 @@ def main():
                              "reference video. Non-contact pixels are kept as the "
                              "pre-contact base frame.")
     parser.add_argument("--ref_contact_threshold", default=0.05, type=float,
-                        help="Threshold on ||ref_frame - base_frame|| to define the "
-                             "reference contact mask (default: 0.05). Only used when "
+                        help="Threshold on blurred ||ref_frame - base_frame|| to define "
+                             "the reference contact mask (default: 0.05). Only used when "
                              "--use_ref_contact_mask is set.")
+    parser.add_argument("--ref_contact_blur_sigma", default=3.0, type=float,
+                        help="Gaussian blur sigma applied to the difference magnitude "
+                             "before thresholding, suppressing JPEG block artifacts "
+                             "(default: 3.0). Only used when --use_ref_contact_mask is set.")
+    parser.add_argument("--ref_contact_morph_radius", default=5, type=int,
+                        help="Radius of the elliptical structuring element used for "
+                             "morphological open+close on the contact mask (default: 5). "
+                             "Only used when --use_ref_contact_mask is set.")
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -341,8 +362,9 @@ def main():
                 init = ref_frames[0] if i == 0 else transferred[-1]
                 ref_contact_mask = None
                 if args.use_ref_contact_mask:
-                    ref_contact_mask = compute_contact_mask(ref_frame, base_frame,
-                                                            args.ref_contact_threshold)
+                    ref_contact_mask = compute_contact_mask(
+                        ref_frame, base_frame, args.ref_contact_threshold,
+                        args.ref_contact_blur_sigma, args.ref_contact_morph_radius)
                     ref_contact_masks.append(ref_contact_mask)
                 output, last_pm = em_transfer_frame(
                     query_static, ref_static, ref_frame, init,
