@@ -26,6 +26,8 @@ from PIL import Image
 import time
 
 class PatchMatchSingle(object):
+    _mod = None  # compiled CUDA module shared across all instances
+
     def __init__(self, a, b, patch_size):
         """
         Initialize Patchmatch Object.
@@ -33,7 +35,6 @@ class PatchMatchSingle(object):
         be optimized.
         """
         assert a.shape == b.shape, "Dimensions were unequal for patch-matching input"
-        print("called")
         self.A = a.copy(order='C')
         self.B = b.copy(order='C')
         self.patch_size = patch_size
@@ -41,8 +42,9 @@ class PatchMatchSingle(object):
         self.nnd = np.random.rand(self.A.shape[0], self.A.shape[1]).astype(np.float32)   # the distance map for the nnf
         self.initialise_nnf()
 
-        # Compile patchmatch cuda (NOTE: This takes around 0.2s, so to support multiple images, compile this externally from the class for future use)
-        self.mod = SourceModule(open(os.path.join(package_directory, "patchmatch_single.cu")).read(),no_extern_c=True)
+        if PatchMatchSingle._mod is None:
+            PatchMatchSingle._mod = SourceModule(open(os.path.join(package_directory, "patchmatch_single.cu")).read(), no_extern_c=True)
+        self.mod = PatchMatchSingle._mod
 
     def initialise_nnf(self):
         """

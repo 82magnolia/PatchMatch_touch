@@ -168,6 +168,35 @@ def make_nnf_figure(query_idx, ref_idx, query_dir, ref_dir, modalities, scale,
 
 
 # ---------------------------------------------------------------------------
+# EM-style transfer
+# ---------------------------------------------------------------------------
+
+def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
+                      em_iters, patch_size, pm_iters):
+    """EM-style single-frame transfer.
+
+    Iteratively refines correspondences by combining static + current-touch
+    channels into the NNF computation.
+
+    E-step: NNF via PatchMatchSingle(concat(query_static, estimate),
+                                     concat(ref_static,   ref_frame))
+    M-step: estimate = reconstruct_avg(ref_frame) → output in query space
+
+    Returns (transferred_frame, final_pm).
+    """
+    estimate = init_estimate.copy()
+    max_radius = int(max(query_static.shape[:2]))
+    pm = None
+    for _ in range(em_iters):
+        query_combined = np.concatenate([query_static, estimate], axis=-1).copy(order="C")
+        ref_combined   = np.concatenate([ref_static,   ref_frame], axis=-1).copy(order="C")
+        pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size)
+        pm.propagate(iters=pm_iters, rand_search_radius=max_radius)
+        estimate = pm.reconstruct_avg(ref_frame, patch_size=1)
+    return estimate, pm
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -200,6 +229,12 @@ def main():
                         help="PatchMatch patch size (default: 3).")
     parser.add_argument("--iters", default=10, type=int,
                         help="PatchMatch propagation iterations (default: 10).")
+    parser.add_argument("--em", action="store_true",
+                        help="Use EM-style iterative synthesis (combines static + "
+                             "current touch estimate in each NNF computation).")
+    parser.add_argument("--em_iters", default=3, type=int,
+                        help="Number of EM iterations per frame (default: 3). "
+                             "Only used when --em is set.")
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -243,20 +278,12 @@ def main():
                   f"query={query_static.shape} ref={ref_static.shape}")
             continue
 
-        # -- Compute NNF: maps query coords → ref coords -------------------
-        max_radius = int(max(query_static.shape[:2]))
-        pm = PatchMatchSingle(query_static, ref_static, patch_size=args.patch_size)  # Finds a mapping f from ref -> img: nearest pixel in img for each pixel in ref
-        pm.propagate(iters=args.iters, rand_search_radius=max_radius)
-
-        # -- NNF figure -------------------------------------------------------
-        fig_path = make_nnf_figure(
-            query_idx=query_idx, ref_idx=ref_idx,
-            query_dir=args.query_dir, ref_dir=args.ref_dir,
-            modalities=args.modality, scale=args.scale,
-            pm=pm, ref_shape=ref_static.shape,
-            save_dir=args.save_dir,
-        )
-        print(f"  Saved NNF figure: {fig_path}")
+        # -- Compute NNF (standard) or defer to EM loop below ----------------
+        if not args.em:
+            max_radius = int(max(query_static.shape[:2]))
+            pm = PatchMatchSingle(query_static, ref_static, patch_size=args.patch_size)
+            pm.propagate(iters=args.iters, rand_search_radius=max_radius)
+            fig_pm = pm
 
         # -- Load reference touch video ------------------------------------
         vid_path = osp.join(args.ref_dir, f"{ref_idx}_{args.video_type}.mp4")
@@ -281,14 +308,36 @@ def main():
 
         # -- Transfer each frame ------------------------------------------
         transferred = []
-        for i, frame in enumerate(ref_frames):
-            output = pm.reconstruct_avg(frame, patch_size=1)
+        if args.em:
+            fig_pm = None
+            for i, ref_frame in enumerate(tqdm(ref_frames, desc="Transferring frames", leave=False)):
+                init = ref_frames[0] if i == 0 else transferred[-1]
+                output, last_pm = em_transfer_frame(
+                    query_static, ref_static, ref_frame, init,
+                    args.em_iters, args.patch_size, args.iters)
+                if i == 0:
+                    fig_pm = last_pm  # pm from frame-0 final EM iter for figure
+                if mask_frames is not None:
+                    mask = mask_frames[i] if i < len(mask_frames) else mask_frames[-1]
+                    output = mask * output + (1.0 - mask) * base_frame
+                transferred.append(output)
+        else:
+            for i, frame in enumerate(tqdm(ref_frames, desc="Transferring frames", leave=False)):
+                output = pm.reconstruct_avg(frame, patch_size=1)
+                if mask_frames is not None:
+                    mask = mask_frames[i] if i < len(mask_frames) else mask_frames[-1]
+                    output = mask * output + (1.0 - mask) * base_frame
+                transferred.append(output)
 
-            if mask_frames is not None:
-                mask = mask_frames[i] if i < len(mask_frames) else mask_frames[-1]
-                output = mask * output + (1.0 - mask) * base_frame
-
-            transferred.append(output)
+        # -- NNF figure -------------------------------------------------------
+        fig_path = make_nnf_figure(
+            query_idx=query_idx, ref_idx=ref_idx,
+            query_dir=args.query_dir, ref_dir=args.ref_dir,
+            modalities=args.modality, scale=args.scale,
+            pm=fig_pm, ref_shape=ref_static.shape,
+            save_dir=args.save_dir,
+        )
+        print(f"  Saved NNF figure: {fig_path}")
 
         # -- Save videos ------------------------------------------------------
         # Query touch video
@@ -305,7 +354,8 @@ def main():
                     ref_frames, fps)
 
         # Transferred video
-        out_path = osp.join(args.save_dir, f"{query_idx}_transferred.mp4")
+        suffix = "_em" if args.em else ""
+        out_path = osp.join(args.save_dir, f"{query_idx}_transferred{suffix}.mp4")
         write_video(out_path, transferred, fps)
         print(f"  Saved: {out_path}")
 
