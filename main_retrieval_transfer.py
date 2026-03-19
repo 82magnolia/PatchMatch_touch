@@ -168,11 +168,26 @@ def make_nnf_figure(query_idx, ref_idx, query_dir, ref_dir, modalities, scale,
 
 
 # ---------------------------------------------------------------------------
+# Contact mask
+# ---------------------------------------------------------------------------
+
+def compute_contact_mask(ref_frame, base_frame, threshold):
+    """Binary mask of pixels where contact has occurred.
+
+    mask[y,x] = 1  iff  ||ref_frame[y,x] - base_frame[y,x]|| > threshold
+    Returns float32 (H, W, 1).
+    """
+    diff = np.abs(ref_frame - base_frame)
+    magnitude = np.linalg.norm(diff, axis=-1, keepdims=True).astype(np.float32)
+    return (magnitude > threshold).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
 # EM-style transfer
 # ---------------------------------------------------------------------------
 
 def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
-                      em_iters, patch_size, pm_iters):
+                      em_iters, patch_size, pm_iters, ref_contact_mask=None):
     """EM-style single-frame transfer.
 
     Iteratively refines correspondences by combining static + current-touch
@@ -185,6 +200,7 @@ def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
     Returns (transferred_frame, final_pm).
     """
     estimate = init_estimate.copy()
+    init_orig = init_estimate  # fixed reference for non-contact regions
     max_radius = int(max(query_static.shape[:2]))
     pm = None
     for _ in range(em_iters):
@@ -193,6 +209,8 @@ def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
         pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size)
         pm.propagate(iters=pm_iters, rand_search_radius=max_radius)
         estimate = pm.reconstruct_avg(ref_frame, patch_size=1)
+        if ref_contact_mask is not None:
+            estimate = ref_contact_mask * estimate + (1.0 - ref_contact_mask) * init_orig
     return estimate, pm
 
 
@@ -235,6 +253,14 @@ def main():
     parser.add_argument("--em_iters", default=3, type=int,
                         help="Number of EM iterations per frame (default: 3). "
                              "Only used when --em is set.")
+    parser.add_argument("--use_ref_contact_mask", action="store_true",
+                        help="Gate reconstruction to contact regions detected in the "
+                             "reference video. Non-contact pixels are kept as the "
+                             "pre-contact base frame.")
+    parser.add_argument("--ref_contact_threshold", default=0.05, type=float,
+                        help="Threshold on ||ref_frame - base_frame|| to define the "
+                             "reference contact mask (default: 0.05). Only used when "
+                             "--use_ref_contact_mask is set.")
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -308,13 +334,20 @@ def main():
 
         # -- Transfer each frame ------------------------------------------
         transferred = []
+        ref_contact_masks = []
         if args.em:
             fig_pm = None
             for i, ref_frame in enumerate(tqdm(ref_frames, desc="Transferring frames", leave=False)):
                 init = ref_frames[0] if i == 0 else transferred[-1]
+                ref_contact_mask = None
+                if args.use_ref_contact_mask:
+                    ref_contact_mask = compute_contact_mask(ref_frame, base_frame,
+                                                            args.ref_contact_threshold)
+                    ref_contact_masks.append(ref_contact_mask)
                 output, last_pm = em_transfer_frame(
                     query_static, ref_static, ref_frame, init,
-                    args.em_iters, args.patch_size, args.iters)
+                    args.em_iters, args.patch_size, args.iters,
+                    ref_contact_mask=ref_contact_mask)
                 if i == 0:
                     fig_pm = last_pm  # pm from frame-0 final EM iter for figure
                 if mask_frames is not None:
@@ -324,6 +357,11 @@ def main():
         else:
             for i, frame in enumerate(tqdm(ref_frames, desc="Transferring frames", leave=False)):
                 output = pm.reconstruct_avg(frame, patch_size=1)
+                if args.use_ref_contact_mask:
+                    ref_contact_mask = compute_contact_mask(frame, base_frame,
+                                                            args.ref_contact_threshold)
+                    ref_contact_masks.append(ref_contact_mask)
+                    output = ref_contact_mask * output + (1.0 - ref_contact_mask) * base_frame
                 if mask_frames is not None:
                     mask = mask_frames[i] if i < len(mask_frames) else mask_frames[-1]
                     output = mask * output + (1.0 - mask) * base_frame
@@ -358,6 +396,12 @@ def main():
         out_path = osp.join(args.save_dir, f"{query_idx}_transferred{suffix}.mp4")
         write_video(out_path, transferred, fps)
         print(f"  Saved: {out_path}")
+
+        # Reference contact mask video
+        if ref_contact_masks:
+            mask_vid = [np.repeat(m, 3, axis=-1) for m in ref_contact_masks]
+            write_video(osp.join(args.save_dir, f"{query_idx}_ref_contact_mask.mp4"),
+                        mask_vid, fps)
 
     print(f"\nDone. Transferred videos saved to: {args.save_dir}")
 
