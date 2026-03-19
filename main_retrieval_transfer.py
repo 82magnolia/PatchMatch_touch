@@ -67,7 +67,10 @@ def write_video(path, frames, fps):
 # ---------------------------------------------------------------------------
 
 def load_static_image(folder, idx, modality, scale):
-    """Load a static modality image as float32 RGB in [0, 1]."""
+    """Load a color-coded static modality JPG as float32 RGB in [0, 1].
+
+    Used for visualization only.
+    """
     if scale is not None:
         fname = f"{idx}_scale{scale}_{modality}.jpg"
     else:
@@ -80,9 +83,39 @@ def load_static_image(folder, idx, modality, scale):
     return img_rgb.astype(np.float32) / 255.0
 
 
+def load_static_raw(folder, idx, modality, scale):
+    """Load static modality data for NNF computation.
+
+    Modalities prefixed with "raw_" (e.g. "raw_normal", "raw_height") are loaded
+    from the corresponding .npz file using the base name as the array key:
+      raw_normal → {idx}[_scale{N}]_normal.npz, key "normal" → (H, W, 3) float32
+      raw_height → {idx}[_scale{N}]_height.npz, key "height" → (H, W, 1) float32
+
+    All other modalities are loaded from .jpg via load_static_image.
+    """
+    if not modality.startswith("raw_"):
+        return load_static_image(folder, idx, modality, scale)
+
+    base = modality[len("raw_"):]          # e.g. "raw_normal" → "normal"
+    if scale is not None:
+        fname = f"{idx}_scale{scale}_{base}.npz"
+    else:
+        fname = f"{idx}_{base}.npz"
+    path = osp.join(folder, fname)
+    if not osp.exists(path):
+        raise FileNotFoundError(f"Cannot read raw modality file: {path}")
+    arr = np.load(path)[base].astype(np.float32)
+    if arr.ndim == 2:                      # height: (H, W) → (H, W, 1)
+        arr = arr[..., np.newaxis]
+    return arr
+
+
 def build_combined_static(folder, idx, modalities, scale):
-    """Load and channel-concatenate one or more static modality images."""
-    imgs = [load_static_image(folder, idx, mod, scale) for mod in modalities]
+    """Load and channel-concatenate one or more static modality images.
+
+    Modalities prefixed with "raw_" use .npz raw values; others use color-coded JPGs.
+    """
+    imgs = [load_static_raw(folder, idx, mod, scale) for mod in modalities]
     if len(imgs) == 1:
         return imgs[0]
     return np.concatenate(imgs, axis=-1).copy(order="C")
@@ -126,8 +159,9 @@ def make_nnf_figure(query_idx, ref_idx, query_dir, ref_dir, modalities, scale,
                              squeeze=False)
 
     def read_rgb(folder, idx, mod):
-        img = load_static_image(folder, idx, mod, scale)   # float32 [0,1]
-        return img[:, :, :3]                               # drop extra channels if any
+        vis_mod = mod[len("raw_"):] if mod.startswith("raw_") else mod
+        img = load_static_image(folder, idx, vis_mod, scale)   # always JPG, float32 [0,1]
+        return img[:, :, :3]                                   # drop extra channels if any
 
     # -- Modality rows -------------------------------------------------------
     for row, mod in enumerate(modalities):
@@ -242,9 +276,12 @@ def main():
     parser.add_argument("--retrieval_pkl", required=True, type=str,
                         help="Path to results.pkl from retrieve_touch.py.")
     parser.add_argument("--modality", required=True, nargs="+",
-                        choices=["color", "normal", "curvature", "height"],
+                        choices=["color", "normal", "curvature", "height",
+                                 "raw_normal", "raw_height"],
                         help="Static modality(ies) used to compute the NNF. "
-                             "Multiple modalities are channel-concatenated.")
+                             "Multiple modalities are channel-concatenated. "
+                             "Prefix with 'raw_' to load raw .npz values instead "
+                             "of color-coded JPGs (e.g. raw_normal, raw_height).")
     parser.add_argument("--video_type", required=True,
                         choices=["shadow", "sim"],
                         help="Touch video variant to transfer.")
