@@ -799,6 +799,51 @@ def height2laplacian(H):
     L = (255 * (L - L.min()) / (L.max() - L.min())).astype(np.uint8)
     return L
 
+def height2shapeindex(H):
+    """
+    Convert a height map to a 3-channel geometric feature map.
+    R: Maximum Principal Curvature (k1)
+    G: Minimum Principal Curvature (k2)
+    B: Shape Index (S)
+    """
+    # First derivative
+    gy, gx = np.gradient(H)
+    
+    # Second derivative (Hessian components)
+    gxx = np.gradient(gx, axis=1)
+    gyy = np.gradient(gy, axis=0)
+    gxy = np.gradient(gx, axis=0)
+    
+    # Smoothing to reduce noise
+    gxx = cv2.GaussianBlur(gxx, (5, 5), 0)
+    gyy = cv2.GaussianBlur(gyy, (5, 5), 0)
+    gxy = cv2.GaussianBlur(gxy, (5, 5), 0)
+    
+    # Gauss curvature(K), Mean curvature(M)
+    K = gxx * gyy - gxy**2
+    M = (gxx + gyy) / 2.0
+    
+    # principal curvatures
+    diff = np.sqrt(np.maximum(M**2 - K, 0)) 
+    k1 = M + diff  # maximun principal curvatures
+    k2 = M - diff  # minimum principal curvatures
+
+    # Shape Index
+    denominator = k1 - k2
+    denominator[denominator == 0] = 1e-8
+    
+    # -1(concave) < S < 1(convex)
+    S = (2.0 / np.pi) * np.arctan((k1 + k2) / denominator)
+
+    # 0~255 uint8 normalization
+    def normalize_to_uint8(C):
+        C_norm = (C - C.min()) / (C.max() - C.min() + 1e-8)
+        return (255 * C_norm).astype(np.uint8)
+
+    ShapeIndex = normalize_to_uint8(S)
+   
+    return ShapeIndex
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-obj", nargs='?', default='square',

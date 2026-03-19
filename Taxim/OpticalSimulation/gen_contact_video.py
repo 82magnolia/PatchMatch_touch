@@ -11,7 +11,7 @@ from matplotlib import colormaps
 from tqdm import tqdm
 
 sys.path.append("..")
-from simOptical import height2laplacian, mesh_simulator
+from simOptical import height2laplacian, mesh_simulator, height2shapeindex
 
 
 def build_press_depth_arr(mode, press_min, press_max, num_step):
@@ -154,6 +154,8 @@ if __name__ == "__main__":
 
                     cv2.imwrite(osp.join(args.save_dir, f"{tag}_curvature.jpg"),
                                 height2laplacian(scale_height_map))
+                    cv2.imwrite(osp.join(args.save_dir, f"{tag}_shapeindex.jpg"),
+                                height2shapeindex(scale_height_map))
 
             # Write video frames
             sim_video.write(cv2.cvtColor(sim_img_u8, cv2.COLOR_RGB2BGR))
