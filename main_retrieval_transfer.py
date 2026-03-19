@@ -234,7 +234,8 @@ def compute_contact_mask(ref_frame, base_frame, threshold,
 # ---------------------------------------------------------------------------
 
 def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
-                      em_iters, patch_size, pm_iters, ref_contact_mask=None):
+                      em_iters, patch_size, pm_iters,
+                      ref_contact_mask=None, ref_static_mask=None):
     """EM-style single-frame transfer.
 
     Iteratively refines correspondences by combining static + current-touch
@@ -256,9 +257,15 @@ def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
         pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size)
         pm.propagate(iters=pm_iters, rand_search_radius=max_radius)
         estimate = pm.reconstruct_avg(ref_frame, patch_size=1)
+        valid = np.ones((estimate.shape[0], estimate.shape[1], 1), dtype=np.float32)
         if ref_contact_mask is not None:
-            estimate = ref_contact_mask * estimate + (1.0 - ref_contact_mask) * init_orig
-    return estimate, pm
+            valid = valid * ref_contact_mask
+        if ref_static_mask is not None:
+            valid = valid * ref_static_mask
+        # valid is in reference coordinates; warp to query coordinates via NNF
+        valid_q = (np.atleast_3d(pm.reconstruct_avg(valid, patch_size=1))[..., :1] > 0.5).astype(np.float32)
+        estimate = valid_q * estimate + (1.0 - valid_q) * init_orig
+    return estimate, pm, valid_q
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +326,9 @@ def main():
                         help="Radius of the elliptical structuring element used for "
                              "morphological open+close on the contact mask (default: 5). "
                              "Only used when --use_ref_contact_mask is set.")
+    parser.add_argument("--use_ref_static_mask", action="store_true",
+                        help="Prevent overwriting estimates for pixels where ref_static "
+                             "is zero (e.g. background / invalid regions).")
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -390,9 +400,15 @@ def main():
 
         base_frame = ref_frames[0]  # pre-contact background from reference
 
+        # Mask out ref_static zero regions (invalid / background pixels)
+        ref_static_mask = None
+        if args.use_ref_static_mask:
+            ref_static_mask = (ref_static != 0).any(axis=-1, keepdims=True).astype(np.float32)
+
         # -- Transfer each frame ------------------------------------------
         transferred = []
         ref_contact_masks = []
+        valid_q_frames = []
         if args.em:
             fig_pm = None
             for i, ref_frame in enumerate(tqdm(ref_frames, desc="Transferring frames", leave=False)):
@@ -403,10 +419,13 @@ def main():
                         ref_frame, base_frame, args.ref_contact_threshold,
                         args.ref_contact_blur_sigma, args.ref_contact_morph_radius)
                     ref_contact_masks.append(ref_contact_mask)
-                output, last_pm = em_transfer_frame(
+                output, last_pm, valid_q = em_transfer_frame(
                     query_static, ref_static, ref_frame, init,
                     args.em_iters, args.patch_size, args.iters,
-                    ref_contact_mask=ref_contact_mask)
+                    ref_contact_mask=ref_contact_mask,
+                    ref_static_mask=ref_static_mask)
+                if valid_q is not None:
+                    valid_q_frames.append(valid_q)
                 if i == 0:
                     fig_pm = last_pm  # pm from frame-0 final EM iter for figure
                 if mask_frames is not None:
@@ -416,11 +435,18 @@ def main():
         else:
             for i, frame in enumerate(tqdm(ref_frames, desc="Transferring frames", leave=False)):
                 output = pm.reconstruct_avg(frame, patch_size=1)
+                valid = np.ones((output.shape[0], output.shape[1], 1), dtype=np.float32)
                 if args.use_ref_contact_mask:
                     ref_contact_mask = compute_contact_mask(frame, base_frame,
                                                             args.ref_contact_threshold)
                     ref_contact_masks.append(ref_contact_mask)
-                    output = ref_contact_mask * output + (1.0 - ref_contact_mask) * base_frame
+                    valid = valid * ref_contact_mask
+                if ref_static_mask is not None:
+                    valid = valid * ref_static_mask
+                # valid is in reference coordinates; warp to query coordinates via NNF
+                valid_q = (np.atleast_3d(pm.reconstruct_avg(valid, patch_size=1))[..., :1] > 0.5).astype(np.float32)
+                valid_q_frames.append(valid_q)
+                output = valid_q * output + (1.0 - valid_q) * base_frame
                 if mask_frames is not None:
                     mask = mask_frames[i] if i < len(mask_frames) else mask_frames[-1]
                     output = mask * output + (1.0 - mask) * base_frame
@@ -455,6 +481,11 @@ def main():
         out_path = osp.join(args.save_dir, f"{query_idx}_transferred{suffix}.mp4")
         write_video(out_path, transferred, fps)
         print(f"  Saved: {out_path}")
+
+        # valid_q video (query-space composite mask)
+        if valid_q_frames:
+            write_video(osp.join(args.save_dir, f"{query_idx}_valid_q.mp4"),
+                        [np.repeat(m, 3, axis=-1) for m in valid_q_frames], fps)
 
         # Reference contact mask video
         if ref_contact_masks:
