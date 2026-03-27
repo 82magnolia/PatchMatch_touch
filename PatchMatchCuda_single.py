@@ -28,7 +28,7 @@ import time
 class PatchMatchSingle(object):
     _mod = None  # compiled CUDA module shared across all instances
 
-    def __init__(self, a, b, patch_size):
+    def __init__(self, a, b, patch_size, init_nnf=None):
         """
         Initialize Patchmatch Object.
         This method also randomizes the nnf , which will eventually
@@ -38,9 +38,17 @@ class PatchMatchSingle(object):
         self.A = a.copy(order='C')
         self.B = b.copy(order='C')
         self.patch_size = patch_size
-        self.nnf = np.zeros(shape=(self.A.shape[0], self.A.shape[1],2)).astype(np.int32)  # the nearest neighbour field
-        self.nnd = np.random.rand(self.A.shape[0], self.A.shape[1]).astype(np.float32)   # the distance map for the nnf
-        self.initialise_nnf()
+        
+        # If previous NNF is provided from the outside
+        if init_nnf is not None:
+            self.nnf = init_nnf.copy(order='C')
+            # Reinitialize the NND (distance map) randomly so it gets recalculated for the updated images.
+            self.nnd = np.random.rand(self.A.shape[0], self.A.shape[1]).astype(np.float32)
+        # If no NNF is provided (Initial execution)
+        else:
+            self.nnf = np.zeros(shape=(self.A.shape[0], self.A.shape[1],2)).astype(np.int32)
+            self.nnd = np.random.rand(self.A.shape[0], self.A.shape[1]).astype(np.float32)
+            self.initialise_nnf()
 
         if PatchMatchSingle._mod is None:
             PatchMatchSingle._mod = SourceModule(open(os.path.join(package_directory, "patchmatch_single.cu")).read(), no_extern_c=True)
