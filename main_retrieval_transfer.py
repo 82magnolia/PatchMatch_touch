@@ -284,7 +284,7 @@ def main():
                         help="Path to results.pkl from retrieve_touch.py.")
     parser.add_argument("--modality", required=True, nargs="+",
                         choices=["color", "normal", "curvature", "height",
-                                 "raw_normal", "raw_height"],
+                                 "raw_normal", "raw_height", "shapeindex"],
                         help="Static modality(ies) used to compute the NNF. "
                              "Multiple modalities are channel-concatenated. "
                              "Prefix with 'raw_' to load raw .npz values instead "

@@ -328,7 +328,7 @@ def main():
     parser.add_argument("--query_dir", required=True, type=str,
                         help="Path to query touch outputs folder.")
     parser.add_argument("--modality", required=True, nargs='+',
-                        choices=["color", "normal", "curvature", "height"],
+                        choices=["color", "normal", "curvature", "height", "shapeindex"],
                         help="Modality(ies) to use for indexing. If multiple are given, "
                              "DINOv2 features are extracted independently per modality and "
                              "concatenated. The first modality is used for visualization.")
