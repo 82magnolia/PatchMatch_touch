@@ -29,6 +29,12 @@ import numpy as np
 import pycuda.autoinit  # noqa: F401 – initialises CUDA context
 from tqdm import tqdm
 
+import torch
+import lpips
+from skimage.metrics import mean_squared_error as compute_mse
+from skimage.metrics import peak_signal_noise_ratio as compute_psnr
+from skimage.metrics import structural_similarity as compute_ssim
+
 from PatchMatchCuda_single import PatchMatchSingle
 from retrieve_touch import discover_files
 
@@ -235,7 +241,8 @@ def compute_contact_mask(ref_frame, base_frame, threshold,
 
 def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
                       em_iters, patch_size, pm_iters,
-                      ref_contact_mask=None, ref_static_mask=None, init_nnf=None):
+                      ref_contact_mask=None, ref_static_mask=None,
+                      init_nnf=None, use_accel=False):
     """EM-style single-frame transfer.
 
     Iteratively refines correspondences by combining static + current-touch
@@ -256,20 +263,23 @@ def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
         query_combined = np.concatenate([query_static, estimate], axis=-1).copy(order="C")
         ref_combined   = np.concatenate([ref_static,   ref_frame], axis=-1).copy(order="C")
         
-        if em_step == 0 and current_nnf is None:
+        if current_nnf is None or not use_accel:
             current_iters = pm_iters
             current_radius = max_radius
+            pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=None)
         else:
             # If NNF already exists (from a previous frame or previous EM step), perform only fine-tuning
             current_iters = max(1, pm_iters // 3)  # Reduce iterations to 1/3
             current_radius = max(5, int(max_radius * 0.1)) # Reduce search radius to 10%
+            pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=current_nnf) # Pass the initial NNF
 
-        # Pass the initial NNF
-        pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=current_nnf)
         pm.propagate(iters=current_iters, rand_search_radius=current_radius)
         
         # Save the updated NNF for the next EM step
-        current_nnf = pm.nnf
+        if use_accel:
+            current_nnf = pm.nnf
+        else:
+            current_nnf = None
 
         estimate = pm.reconstruct_avg(ref_frame, patch_size=1)
         valid = np.ones((estimate.shape[0], estimate.shape[1], 1), dtype=np.float32)
@@ -282,6 +292,44 @@ def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
         estimate = valid_q * estimate + (1.0 - valid_q) * init_orig
     return estimate, pm, valid_q
 
+# ---------------------------------------------------------------------------
+# Video frame evaluation function
+# ---------------------------------------------------------------------------
+def evaluate_video_metrics(frames_gt, frames_pred, lpips_model, device):
+    """Calculates average MSE, PSNR, SSIM, and LPIPS given lists of GT and predicted frames."""
+    # Match to the shorter length in case the number of frames differs
+    num_frames = min(len(frames_gt), len(frames_pred))
+    
+    mse_sum, psnr_sum, ssim_sum, lpips_sum = 0.0, 0.0, 0.0, 0.0
+
+    for i in range(num_frames):
+        gt = frames_gt[i]      # [0, 1] float32 RGB
+        pred = frames_pred[i]  # [0, 1] float32 RGB
+        
+        # Prevent resolution mismatch (resize prediction to match GT)
+        if gt.shape != pred.shape:
+            pred = cv2.resize(pred, (gt.shape[1], gt.shape[0]))
+
+        # 1. MSE, PSNR
+        mse_sum += compute_mse(gt, pred)
+        psnr_sum += compute_psnr(gt, pred, data_range=1.0)
+        
+        # 2. SSIM (Set channel_axis=-1 for multi-channel images)
+        ssim_sum += compute_ssim(gt, pred, data_range=1.0, channel_axis=-1)
+        
+        # 3. LPIPS (Requires PyTorch Tensor [N, C, H, W] in [-1, 1] range)
+        gt_tensor = torch.from_numpy(gt).permute(2, 0, 1).unsqueeze(0).to(device) * 2.0 - 1.0
+        pred_tensor = torch.from_numpy(pred).permute(2, 0, 1).unsqueeze(0).to(device) * 2.0 - 1.0
+        
+        with torch.no_grad():
+            lpips_sum += lpips_model(gt_tensor, pred_tensor).item()
+
+    return {
+        "MSE": mse_sum / num_frames,
+        "PSNR": psnr_sum / num_frames,
+        "SSIM": ssim_sum / num_frames,
+        "LPIPS": lpips_sum / num_frames
+    }
 
 # ---------------------------------------------------------------------------
 # Main
@@ -344,9 +392,25 @@ def main():
     parser.add_argument("--use_ref_static_mask", action="store_true",
                         help="Prevent overwriting estimates for pixels where ref_static "
                              "is zero (e.g. background / invalid regions).")
+    parser.add_argument("--use_accel", action="store_true",
+                        help="Enable acceleration mode (inter-frame NNF transfer)")
+    parser.add_argument("--em_iters_subseq", default=10, type=int,
+                        help="Number of reduced EM iterations for subsequent frames (default: 10). "
+                             "Only used when --em is set.")
+    parser.add_argument("--eval", action="store_true",
+                        help="Enable evaluation mode (calculate metrics against GT video)")
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Load LPIPS model if evaluation mode is enabled
+    # ------------------------------------------------------------------
+    loss_fn_vgg = None
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.eval:
+        print(f"Loading LPIPS model on {device}...")
+        loss_fn_vgg = lpips.LPIPS(net='alex').to(device)
 
     # ------------------------------------------------------------------
     # Load retrieval results
@@ -437,14 +501,17 @@ def main():
                     ref_contact_masks.append(ref_contact_mask)
                 
                 # Full EM iterations for the first frame, fewer for subsequent frames
-                current_em_iters = args.em_iters if i == 0 else 3
+                current_em_iters = args.em_iters if i == 0 else args.em_iters_subseq
                 # Pass prev_nnf
+                if args.use_accel is False:
+                    prev_nnf = None
                 output, last_pm, valid_q = em_transfer_frame(
                     query_static, ref_static, ref_frame, init,
                     current_em_iters, args.patch_size, args.iters,
                     ref_contact_mask=ref_contact_mask,
                     ref_static_mask=ref_static_mask,
-                    init_nnf=prev_nnf)      # <-- Passed here
+                    init_nnf=prev_nnf,
+                    use_accel=args.use_accel)      # <-- Passed here
                 prev_nnf = last_pm.nnf
                 if valid_q is not None:
                     valid_q_frames.append(valid_q)
@@ -514,6 +581,24 @@ def main():
             mask_vid = [np.repeat(m, 3, axis=-1) for m in ref_contact_masks]
             write_video(osp.join(args.save_dir, f"{query_idx}_ref_contact_mask.mp4"),
                         mask_vid, fps)
+            
+        # Quantitative Evaluation Logic
+        if args.eval:
+            q_vid_path = osp.join(args.query_dir, f"{query_idx}_{args.video_type}.mp4")
+            if not osp.exists(q_vid_path):
+                print(f"  [Eval] Query(GT) video not found for eval: {q_vid_path}")
+                continue
+            
+            # Load GT video (Query)
+            q_frames, _ = read_video(q_vid_path)
+            
+            # Evaluate the result from the accelerated code (transferred)
+            metrics_accel = evaluate_video_metrics(q_frames, transferred, loss_fn_vgg, device)
+            
+            print("\n  [Evaluation Results]")
+            print("  ---------------------------------------------------------")
+            print(f"  [Accel Code]  MSE: {metrics_accel['MSE']:.5f} | PSNR: {metrics_accel['PSNR']:.2f} | "
+                  f"SSIM: {metrics_accel['SSIM']:.4f} | LPIPS: {metrics_accel['LPIPS']:.4f}")
 
     print(f"\nDone. Transferred videos saved to: {args.save_dir}")
 
