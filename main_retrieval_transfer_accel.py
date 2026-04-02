@@ -394,11 +394,13 @@ def main():
                              "is zero (e.g. background / invalid regions).")
     parser.add_argument("--use_accel", action="store_true",
                         help="Enable acceleration mode (inter-frame NNF transfer)")
-    parser.add_argument("--em_iters_subseq", default=10, type=int,
+    parser.add_argument("--em_iters_subseq", default=-1, type=int,
                         help="Number of reduced EM iterations for subsequent frames (default: 10). "
                              "Only used when --em is set.")
     parser.add_argument("--eval", action="store_true",
                         help="Enable evaluation mode (calculate metrics against GT video)")
+    parser.add_argument("--use_keyframe", action="store_true",
+                             help="Use keyframe to propagate the NNF forwards and backwards from it")
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -488,58 +490,140 @@ def main():
         transferred = []
         ref_contact_masks = []
         valid_q_frames = []
-        if args.em:
+        if args.use_keyframe:
+            assert args.em  # Keyframes are only used for EM
             fig_pm = None
-            prev_nnf = None  # <-- Add a variable to pass NNF between frames
-            for i, ref_frame in enumerate(tqdm(ref_frames, desc="Transferring frames", leave=False)):
-                init = ref_frames[0] if i == 0 else transferred[-1]
-                ref_contact_mask = None
+            transferred = [None] * len(ref_frames)
+            valid_q_frames = [None] * len(ref_frames)
+            ref_contact_masks = [None] * len(ref_frames)
+
+            # Pre-compute contact masks & find the Anchor frame
+            deformation_scores = []
+            for i, ref_frame in enumerate(ref_frames):
                 if args.use_ref_contact_mask:
-                    ref_contact_mask = compute_contact_mask(
+                    mask = compute_contact_mask(
                         ref_frame, base_frame, args.ref_contact_threshold,
                         args.ref_contact_blur_sigma, args.ref_contact_morph_radius)
-                    ref_contact_masks.append(ref_contact_mask)
-                
-                # Full EM iterations for the first frame, fewer for subsequent frames
-                current_em_iters = args.em_iters if i == 0 else args.em_iters_subseq
-                # Pass prev_nnf
-                if args.use_accel is False:
-                    prev_nnf = None
+                    ref_contact_masks[i] = mask
+                    deformation_scores.append(np.sum(mask))
+                else:
+                    # Fallback metric: L1 difference if contact mask is not used
+                    diff = np.abs(ref_frame - base_frame)
+                    deformation_scores.append(np.sum(diff))
+                    
+            anchor_idx = int(np.argmax(deformation_scores))
+            print(f"  [Info] Anchor frame selected: {anchor_idx}/{len(ref_frames)-1} (Max deformation)")
+
+            # Helper function to process a single frame inside the loop
+            def process_frame(i, current_em_iters, pass_nnf, init_frame):
                 output, last_pm, valid_q = em_transfer_frame(
-                    query_static, ref_static, ref_frame, init,
+                    query_static, ref_static, ref_frames[i], init_frame,
                     current_em_iters, args.patch_size, args.iters,
-                    ref_contact_mask=ref_contact_mask,
+                    ref_contact_mask=ref_contact_masks[i],
                     ref_static_mask=ref_static_mask,
-                    init_nnf=prev_nnf,
-                    use_accel=args.use_accel)      # <-- Passed here
+                    init_nnf=pass_nnf,
+                    use_accel=args.use_accel)
+                
+                # Apply render mask if provided
+                if mask_frames is not None:
+                    mask = mask_frames[i] if i < len(mask_frames) else mask_frames[-1]
+                    output = mask * output + (1.0 - mask) * base_frame
+                    
+                transferred[i] = output
+                valid_q_frames[i] = valid_q
+                return last_pm
+
+            # Process Anchor Frame (Full Search)
+            anchor_pm = process_frame(
+                i=anchor_idx, 
+                current_em_iters=args.em_iters, 
+                pass_nnf=None, 
+                init_frame=base_frame)
+            
+            fig_pm = anchor_pm  # Save best NNF for the visualization figure
+
+            # Forward Propagation (Anchor -> End)
+            prev_nnf = anchor_pm.nnf
+            if args.em_iters_subseq == -1:
+                current_em_iters = args.em_iters
+            else:
+                current_em_iters = args.em_iters_subseq
+            for i in tqdm(range(anchor_idx + 1, len(ref_frames)), desc="Forward Pass", leave=False):
+                pass_nnf = prev_nnf if args.use_accel else None
+                last_pm = process_frame(
+                    i=i, 
+                    current_em_iters=current_em_iters, 
+                    pass_nnf=pass_nnf, 
+                    init_frame=transferred[i - 1])
                 prev_nnf = last_pm.nnf
-                if valid_q is not None:
-                    valid_q_frames.append(valid_q)
-                if i == 0:
-                    fig_pm = last_pm  # pm from frame-0 final EM iter for figure
-                if mask_frames is not None:
-                    mask = mask_frames[i] if i < len(mask_frames) else mask_frames[-1]
-                    output = mask * output + (1.0 - mask) * base_frame
-                transferred.append(output)
+
+            # Step 4: Backward Propagation (Anchor -> Start)
+            prev_nnf = anchor_pm.nnf
+            for i in tqdm(range(anchor_idx - 1, -1, -1), desc="Backward Pass", leave=False):
+                pass_nnf = prev_nnf if args.use_accel else None
+                # init_frame uses the temporally adjacent frame we just processed (i + 1)
+                last_pm = process_frame(
+                    i=i, 
+                    current_em_iters=current_em_iters, 
+                    pass_nnf=pass_nnf, 
+                    init_frame=transferred[i + 1])
+                prev_nnf = last_pm.nnf
         else:
-            for i, frame in enumerate(tqdm(ref_frames, desc="Transferring frames", leave=False)):
-                output = pm.reconstruct_avg(frame, patch_size=1)
-                valid = np.ones((output.shape[0], output.shape[1], 1), dtype=np.float32)
-                if args.use_ref_contact_mask:
-                    ref_contact_mask = compute_contact_mask(frame, base_frame,
-                                                            args.ref_contact_threshold)
-                    ref_contact_masks.append(ref_contact_mask)
-                    valid = valid * ref_contact_mask
-                if ref_static_mask is not None:
-                    valid = valid * ref_static_mask
-                # valid is in reference coordinates; warp to query coordinates via NNF
-                valid_q = (np.atleast_3d(pm.reconstruct_avg(valid, patch_size=1))[..., :1] > 0.5).astype(np.float32)
-                valid_q_frames.append(valid_q)
-                output = valid_q * output + (1.0 - valid_q) * base_frame
-                if mask_frames is not None:
-                    mask = mask_frames[i] if i < len(mask_frames) else mask_frames[-1]
-                    output = mask * output + (1.0 - mask) * base_frame
-                transferred.append(output)
+            if args.em:
+                fig_pm = None
+                prev_nnf = None  # <-- Add a variable to pass NNF between frames
+                for i, ref_frame in enumerate(tqdm(ref_frames, desc="Transferring frames", leave=False)):
+                    init = ref_frames[0] if i == 0 else transferred[-1]
+                    ref_contact_mask = None
+                    if args.use_ref_contact_mask:
+                        ref_contact_mask = compute_contact_mask(
+                            ref_frame, base_frame, args.ref_contact_threshold,
+                            args.ref_contact_blur_sigma, args.ref_contact_morph_radius)
+                        ref_contact_masks.append(ref_contact_mask)
+                    
+                    # Full EM iterations for the first frame, fewer for subsequent frames
+                    if args.em_iters_subseq == -1 or i == 0:
+                        current_em_iters = args.em_iters
+                    else:
+                        current_em_iters = args.em_iters_subseq
+                    # Pass prev_nnf
+                    if args.use_accel is False:
+                        prev_nnf = None
+                    output, last_pm, valid_q = em_transfer_frame(
+                        query_static, ref_static, ref_frame, init,
+                        current_em_iters, args.patch_size, args.iters,
+                        ref_contact_mask=ref_contact_mask,
+                        ref_static_mask=ref_static_mask,
+                        init_nnf=prev_nnf,
+                        use_accel=args.use_accel)      # <-- Passed here
+                    prev_nnf = last_pm.nnf
+                    if valid_q is not None:
+                        valid_q_frames.append(valid_q)
+                    if i == 0:
+                        fig_pm = last_pm  # pm from frame-0 final EM iter for figure
+                    if mask_frames is not None:
+                        mask = mask_frames[i] if i < len(mask_frames) else mask_frames[-1]
+                        output = mask * output + (1.0 - mask) * base_frame
+                    transferred.append(output)
+            else:
+                for i, frame in enumerate(tqdm(ref_frames, desc="Transferring frames", leave=False)):
+                    output = pm.reconstruct_avg(frame, patch_size=1)
+                    valid = np.ones((output.shape[0], output.shape[1], 1), dtype=np.float32)
+                    if args.use_ref_contact_mask:
+                        ref_contact_mask = compute_contact_mask(frame, base_frame,
+                                                                args.ref_contact_threshold)
+                        ref_contact_masks.append(ref_contact_mask)
+                        valid = valid * ref_contact_mask
+                    if ref_static_mask is not None:
+                        valid = valid * ref_static_mask
+                    # valid is in reference coordinates; warp to query coordinates via NNF
+                    valid_q = (np.atleast_3d(pm.reconstruct_avg(valid, patch_size=1))[..., :1] > 0.5).astype(np.float32)
+                    valid_q_frames.append(valid_q)
+                    output = valid_q * output + (1.0 - valid_q) * base_frame
+                    if mask_frames is not None:
+                        mask = mask_frames[i] if i < len(mask_frames) else mask_frames[-1]
+                        output = mask * output + (1.0 - mask) * base_frame
+                    transferred.append(output)
 
         # -- NNF figure -------------------------------------------------------
         fig_path = make_nnf_figure(
