@@ -574,16 +574,31 @@ def main():
             fig_pm = None
             prev_nnf = None
             
-            # If -1, treat the entire video as a single chunk. If positive, process in chunks of that size.
+            # If -1, treat the entire video as a single chunk. If positive, set as the number of frames per chunk (n)
             chunk_size = len(ref_frames) if args.use_video_concate == -1 else args.use_video_concate
             
-            for start_idx in tqdm(range(0, len(ref_frames), chunk_size), desc="Transferring chunks", leave=False):
-                end_idx = min(start_idx + chunk_size, len(ref_frames))
-                chunk_frames = ref_frames[start_idx:end_idx]
+            # Total number of chunks required to group exactly by chunk_size
+            num_offsets = (len(ref_frames) + chunk_size - 1) // chunk_size
+
+            # Pre-allocate arrays since we are processing frames out of temporal order
+            transferred = [None] * len(ref_frames)
+            valid_q_frames = [None] * len(ref_frames)
+            ref_contact_masks = [None] * len(ref_frames)
+            
+            for offset in tqdm(range(num_offsets), desc="Transferring interleaved chunks", leave=False):
+                # Generate interleaved indices (e.g., if stride=5 -> [0, 5, 10, 15...], [1, 6, 11, 16...])
+                chunk_indices = list(range(offset, len(ref_frames), num_offsets))
+                if not chunk_indices:
+                    continue
                 
-                # Calculate NNF for em transfer (using the first frame of the chunk as the representative)
+                chunk_frames = [ref_frames[idx] for idx in chunk_indices]
+                
+                # Calculate NNF (using the first frame of the current interleaved chunk)
+                first_idx = chunk_indices[0]
                 current_ref_frame = chunk_frames[0]
-                init = ref_frames[0] if start_idx == 0 else transferred[-1]
+                
+                # Use the previously transferred frame as init (temporally adjacent)
+                init = ref_frames[0] if first_idx == 0 else transferred[first_idx - 1]
                 
                 ref_contact_mask = None
                 if args.use_ref_contact_mask:
@@ -591,7 +606,8 @@ def main():
                         current_ref_frame, base_frame, args.ref_contact_threshold,
                         args.ref_contact_blur_sigma, args.ref_contact_morph_radius)
                 
-                if args.em_iters_subseq == -1 or start_idx == 0:
+                # Determine EM iterations (full iterations for the first offset, reduced for subsequent)
+                if args.em_iters_subseq == -1 or offset == 0:
                     current_em_iters = args.em_iters
                 else:
                     current_em_iters = args.em_iters_subseq
@@ -608,24 +624,23 @@ def main():
                         init_nnf=pass_nnf,
                         use_accel=args.use_accel)
                 
-                # If EM is disabled, the code reuses the `pm` object initialized outside this loop.
-                if start_idx == 0:
+                if offset == 0:
                     fig_pm = pm
                 prev_nnf = pm.nnf
                 
-                # Concatenate frames and masks
-                concat_ref = np.concatenate(chunk_frames, axis=-1)
+                # Concatenate frames -> Shape: (H, W, 3 * C)
+                concat_ref = np.concatenate(chunk_frames, axis=-1) 
                 
                 chunk_valids = []
-                for j in range(len(chunk_frames)):
-                    frame = chunk_frames[j]
+                for idx in chunk_indices:
+                    frame = ref_frames[idx]
                     valid = np.ones((frame.shape[0], frame.shape[1], 1), dtype=np.float32)
                     
                     if args.use_ref_contact_mask:
                         c_mask = compute_contact_mask(
                             frame, base_frame, args.ref_contact_threshold,
                             args.ref_contact_blur_sigma, args.ref_contact_morph_radius)
-                        ref_contact_masks.append(c_mask)
+                        ref_contact_masks[idx] = c_mask
                         valid = valid * c_mask
                         
                     if ref_static_mask is not None:
@@ -633,21 +648,22 @@ def main():
                         
                     chunk_valids.append(valid)
                 
+                # Concatenate masks -> Shape: (H, W, 1 * C)
                 concat_valid = np.concatenate(chunk_valids, axis=-1)
                 
                 # Reconstruct entirely via PatchMatch
                 concat_out = pm.reconstruct_avg(concat_ref, patch_size=1)
                 concat_valid_q = pm.reconstruct_avg(concat_valid, patch_size=1)
                 
-                # Split back and blend frame by frame
+                # Split back and insert into the correct temporal positions
                 out_frames = np.split(concat_out, len(chunk_frames), axis=-1)
                 valid_q_frames_chunk = np.split(concat_valid_q, len(chunk_frames), axis=-1)
                 
                 for j, (out_f, valid_q_f) in enumerate(zip(out_frames, valid_q_frames_chunk)):
-                    global_i = start_idx + j
+                    global_i = chunk_indices[j]
                     
                     valid_q = (np.atleast_3d(valid_q_f) > 0.5).astype(np.float32)
-                    valid_q_frames.append(valid_q)
+                    valid_q_frames[global_i] = valid_q
                     
                     # Composite with the query background
                     final_out = valid_q * out_f + (1.0 - valid_q) * base_frame
@@ -657,7 +673,8 @@ def main():
                         mask = mask_frames[global_i] if global_i < len(mask_frames) else mask_frames[-1]
                         final_out = mask * final_out + (1.0 - mask) * base_frame
                         
-                    transferred.append(final_out)
+                    # Place the transferred frame in its correct chronological spot
+                    transferred[global_i] = final_out
         else:
             if args.em:
                 fig_pm = None
@@ -740,7 +757,7 @@ def main():
 
             # Original reference touch image at key frame
             save_rgb_image(ref_frames[anchor_idx], 
-                        osp.join(args.save_dir, f"{query_idx}_keyframe_ref_touch.png"))       
+                        osp.join(args.save_dir, f"{query_idx}_keyframe_ref_touch.png"))      
 
         # -- Save videos ------------------------------------------------------
         # Query touch video
@@ -773,7 +790,7 @@ def main():
             write_video(osp.join(args.save_dir, f"{query_idx}_ref_contact_mask.mp4"),
                         mask_vid, fps)
             
-        # Quantitative Evaluation Logic
+        # Qutive Evaluation Logic
         if args.eval:
             q_vid_path = osp.join(args.query_dir, f"{query_idx}_{args.video_type}.mp4")
             if not osp.exists(q_vid_path):
@@ -790,7 +807,7 @@ def main():
             print("  ---------------------------------------------------------")
             print(f"  [Accel Code]  MSE: {metrics_accel['MSE']:.5f} | PSNR: {metrics_accel['PSNR']:.2f} | "
                   f"SSIM: {metrics_accel['SSIM']:.4f} | LPIPS: {metrics_accel['LPIPS']:.4f}")
-            
+
             print("MSE\tPSNR\tSSIM\tLPIPS")
             print(f"{metrics_accel['MSE']:.5f}\t{metrics_accel['PSNR']:.2f}\t{metrics_accel['SSIM']:.4f}\t{metrics_accel['LPIPS']:.4f}\n")
 
