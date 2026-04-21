@@ -292,6 +292,60 @@ def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
         estimate = valid_q * estimate + (1.0 - valid_q) * init_orig
     return estimate, pm, valid_q
 
+
+def static_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
+                          em_iters, patch_size, pm_iters,
+                          ref_contact_mask=None, ref_static_mask=None,
+                          init_nnf=None, use_accel=False):
+    """Static-only single-frame transfer.
+
+    Excludes the dynamic touch frames (ref_frame, estimate) from the PatchMatch
+    search phase. It computes the NNF using ONLY the static background 
+    modalities (query_static, ref_static).
+
+    Returns: (transferred_frame, final_pm, valid_q)
+    """
+    estimate = query_static.copy()
+    init_orig = init_estimate.copy()  # fixed reference for non-contact regions
+    max_radius = int(max(query_static.shape[:2]))
+    pm = None
+    current_nnf = init_nnf  # <-- Start with the passed NNF (None if it's the first)
+    for em_step in range(em_iters):
+        query_combined = np.concatenate([query_static, estimate], axis=-1).copy(order="C")
+        ref_combined   = np.concatenate([ref_static,   ref_static], axis=-1).copy(order="C")
+        
+        if current_nnf is None or not use_accel:
+            current_iters = pm_iters
+            current_radius = max_radius
+            pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=None)
+        else:
+            # If NNF already exists (from a previous frame or previous EM step), perform only fine-tuning
+            current_iters = max(1, pm_iters // 3)  # Reduce iterations to 1/3
+            current_radius = max(5, int(max_radius * 0.1)) # Reduce search radius to 10%
+            pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=current_nnf) # Pass the initial NNF
+
+        pm.propagate(iters=current_iters, rand_search_radius=current_radius)
+        
+        # Save the updated NNF for the next EM step
+        if use_accel:
+            current_nnf = pm.nnf
+        else:
+            current_nnf = None
+
+        estimate = pm.reconstruct_avg(ref_static, patch_size=1)
+        
+        estimate_touch = pm.reconstruct_avg(ref_frame, patch_size=1)
+        valid = np.ones((estimate_touch.shape[0], estimate_touch.shape[1], 1), dtype=np.float32)
+        if ref_contact_mask is not None:
+            valid = valid * ref_contact_mask
+        if ref_static_mask is not None:
+            valid = valid * ref_static_mask
+        # valid is in reference coordinates; warp to query coordinates via NNF
+        valid_q = (np.atleast_3d(pm.reconstruct_avg(valid, patch_size=1))[..., :1] > 0.5).astype(np.float32)
+        estimate_touch = valid_q * estimate_touch + (1.0 - valid_q) * init_orig
+    return estimate_touch, pm, valid_q
+
+
 # ---------------------------------------------------------------------------
 # Video frame evaluation function
 # ---------------------------------------------------------------------------
@@ -403,6 +457,8 @@ def main():
                              help="Use keyframe to propagate the NNF forwards and backwards from it")
     parser.add_argument("--use_video_concate", default=None, type=int,
                              help="concatenate video")
+    parser.add_argument("--only_normal", action="store_true",
+                             help="Patchmatch propagation with only normal")
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -600,13 +656,22 @@ def main():
                 
                 if args.em:
                     # Generate the NNF map for the current chunk
-                    _, pm, _ = em_transfer_frame(
-                        query_static, ref_static, current_ref_frame, init,
-                        current_em_iters, args.patch_size, args.iters,
-                        ref_contact_mask=ref_contact_mask,
-                        ref_static_mask=ref_static_mask,
-                        init_nnf=pass_nnf,
-                        use_accel=args.use_accel)
+                    if args.only_normal:
+                        _, pm, _ = static_transfer_frame(
+                            query_static, ref_static, current_ref_frame, init,
+                            current_em_iters, args.patch_size, args.iters,
+                            ref_contact_mask=ref_contact_mask,
+                            ref_static_mask=ref_static_mask,
+                            init_nnf=pass_nnf,
+                            use_accel=args.use_accel)
+                    else:
+                        _, pm, _ = em_transfer_frame(
+                            query_static, ref_static, current_ref_frame, init,
+                            current_em_iters, args.patch_size, args.iters,
+                            ref_contact_mask=ref_contact_mask,
+                            ref_static_mask=ref_static_mask,
+                            init_nnf=pass_nnf,
+                            use_accel=args.use_accel)
                 
                 # If EM is disabled, the code reuses the `pm` object initialized outside this loop.
                 if start_idx == 0:
