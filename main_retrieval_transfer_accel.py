@@ -242,7 +242,7 @@ def compute_contact_mask(ref_frame, base_frame, threshold,
 def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
                       em_iters, patch_size, pm_iters,
                       ref_contact_mask=None, ref_static_mask=None,
-                      init_nnf=None, use_accel=False):
+                      init_nnf=None, use_accel=False, downsample=1):
     """EM-style single-frame transfer.
 
     Iteratively refines correspondences by combining static + current-touch
@@ -259,6 +259,19 @@ def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
     max_radius = int(max(query_static.shape[:2]))
     pm = None
     current_nnf = init_nnf  # <-- Start with the passed NNF (None if it's the first)
+    H, W = init_estimate.shape[0], init_estimate.shape[1]
+    
+    if current_nnf is None and downsample > 1:
+        W_d, H_d = int(W // downsample), int(H // downsample)
+        query = cv2.resize(query_static, (W_d, H_d))
+        ref = cv2.resize(ref_static, (W_d, H_d))
+        pm_low = PatchMatchSingle(query, ref, patch_size=patch_size, init_nnf=None)
+        pm_low.propagate(iters=pm_iters, rand_search_radius=int(max(H_d, W_d)))
+
+        nnf_low = cv2.resize(pm_low.nnf.astype(np.float32), (W, H), interpolation=cv2.INTER_NEAREST)
+        current_nnf = (nnf_low * downsample).astype(np.int32)
+        em_iters -= 1
+    
     for em_step in range(em_iters):
         query_combined = np.concatenate([query_static, estimate], axis=-1).copy(order="C")
         ref_combined   = np.concatenate([ref_static,   ref_frame], axis=-1).copy(order="C")
@@ -292,6 +305,107 @@ def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
         estimate = valid_q * estimate + (1.0 - valid_q) * init_orig
     return estimate, pm, valid_q
 
+def em_transfer_frame_downsample(query_static, ref_static, ref_frame, init_estimate,
+                      em_iters, patch_size, pm_iters,
+                      ref_contact_mask=None, ref_static_mask=None,
+                      init_nnf=None, use_accel=False, downsample=1):
+    """EM-style single-frame transfer."""
+    
+    init_orig = init_estimate.copy()
+    H, W = init_estimate.shape[0], init_estimate.shape[1]
+
+    if downsample > 1:
+        W_d, H_d = int(W // downsample), int(H // downsample)
+        
+        query_low = cv2.resize(query_static, (W_d, H_d), interpolation=cv2.INTER_AREA)
+        static_low = cv2.resize(ref_static, (W_d, H_d), interpolation=cv2.INTER_AREA)
+        ref_frame_low = cv2.resize(ref_frame, (W_d, H_d), interpolation=cv2.INTER_AREA)
+        estimate_low = cv2.resize(init_estimate.copy(), (W_d, H_d), interpolation=cv2.INTER_AREA)
+        init_orig_low = cv2.resize(init_orig, (W_d, H_d), interpolation=cv2.INTER_AREA)
+        
+        c_mask_low = cv2.resize(ref_contact_mask, (W_d, H_d), interpolation=cv2.INTER_NEAREST)[..., None] if ref_contact_mask is not None else None
+        s_mask_low = cv2.resize(ref_static_mask, (W_d, H_d), interpolation=cv2.INTER_NEAREST)[..., None] if ref_static_mask is not None else None
+
+        current_nnf = init_nnf
+        pm_low = None
+
+        import time
+        start = time.time()
+        for em_step in range(em_iters):
+            q_comb = np.concatenate([query_low, estimate_low], axis=-1).copy(order="C")
+            r_comb = np.concatenate([static_low, ref_frame_low], axis=-1).copy(order="C")
+            
+            if current_nnf is None or not use_accel:
+                cur_iters = pm_iters
+                cur_radius = int(max(W_d, H_d))
+                pm_low = PatchMatchSingle(q_comb, r_comb, patch_size=patch_size, init_nnf=None)
+            else:
+                cur_iters = max(1, pm_iters // 3)
+                cur_radius = max(5, int(max(W_d, H_d) * 0.1))
+                pm_low = PatchMatchSingle(q_comb, r_comb, patch_size=patch_size, init_nnf=current_nnf)
+
+            pm_low.propagate(iters=cur_iters, rand_search_radius=cur_radius)
+            current_nnf = pm_low.nnf
+
+            estimate_low = pm_low.reconstruct_avg(ref_frame_low, patch_size=1)
+            valid = np.ones((H_d, W_d, 1), dtype=np.float32)
+            if c_mask_low is not None:
+                valid = valid * c_mask_low
+            if s_mask_low is not None:
+                valid = valid * s_mask_low
+                
+            val_q_low = (np.atleast_3d(pm_low.reconstruct_avg(valid, patch_size=1))[..., :1] > 0.5).astype(np.float32)
+            estimate_low = val_q_low * estimate_low + (1.0 - val_q_low) * init_orig_low
+        print("Low res nnf: ", time.time() - start)
+
+        nnf_high = cv2.resize(pm_low.nnf.astype(np.float32), (W, H), interpolation=cv2.INTER_NEAREST)
+        nnf_high = (nnf_high * downsample).astype(np.int32)
+        
+        start = time.time()
+        pm_high = PatchMatchSingle(query_static, ref_static, patch_size=patch_size, init_nnf=nnf_high)
+        estimate_high = pm_high.reconstruct_avg(ref_frame, patch_size=1)
+        print("Recon. avg: ", time.time() - start)
+
+        val_high = np.ones((H, W, 1), dtype=np.float32)
+        if ref_contact_mask is not None: val_high = val_high * ref_contact_mask
+        if ref_static_mask is not None: val_high = val_high * ref_static_mask
+            
+        valid_q_high = (np.atleast_3d(pm_high.reconstruct_avg(val_high, patch_size=1))[..., :1] > 0.5).astype(np.float32)
+        estimate_high = valid_q_high * estimate_high + (1.0 - valid_q_high) * init_orig
+        
+        return estimate_high, pm_low, valid_q_high
+
+    else:
+        estimate = init_estimate.copy()
+        max_radius = int(max(W, H))
+        pm = None
+        current_nnf = init_nnf
+
+        for em_step in range(em_iters):
+            query_combined = np.concatenate([query_static, estimate], axis=-1).copy(order="C")
+            ref_combined   = np.concatenate([ref_static,   ref_frame], axis=-1).copy(order="C")
+            
+            if current_nnf is None or not use_accel:
+                current_iters = pm_iters
+                current_radius = max_radius
+                pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=None)
+            else:
+                current_iters = max(1, pm_iters // 3)
+                current_radius = max(5, int(max_radius * 0.1))
+                pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=current_nnf)
+
+            pm.propagate(iters=current_iters, rand_search_radius=current_radius)
+            current_nnf = pm.nnf
+
+            estimate = pm.reconstruct_avg(ref_frame, patch_size=1)
+            valid = np.ones((H, W, 1), dtype=np.float32)
+            if ref_contact_mask is not None: valid *= ref_contact_mask
+            if ref_static_mask is not None: valid *= ref_static_mask
+                
+            valid_q = (np.atleast_3d(pm.reconstruct_avg(valid, patch_size=1))[..., :1] > 0.5).astype(np.float32)
+            estimate = valid_q * estimate + (1.0 - valid_q) * init_orig
+            
+        return estimate, pm, valid_q
 
 def static_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
                           em_iters, patch_size, pm_iters,
@@ -459,6 +573,8 @@ def main():
                              help="concatenate video")
     parser.add_argument("--only_normal", action="store_true",
                              help="Patchmatch propagation with only normal")
+    parser.add_argument("--downsample_res", default=1, type=int,
+                        help="Downsampling input video resolution to find small NNF")
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -490,6 +606,8 @@ def main():
     # ------------------------------------------------------------------
     # Process each query
     # ------------------------------------------------------------------
+    import time
+    start_time = time.time()
     for entry in tqdm(retrieval_results, desc="Transferring"):
         query_idx = entry["query_idx"]
         ref_idx   = entry["topk_ref_indices"][0]  # top-1
@@ -750,7 +868,8 @@ def main():
                         ref_contact_mask=ref_contact_mask,
                         ref_static_mask=ref_static_mask,
                         init_nnf=prev_nnf,
-                        use_accel=args.use_accel)      # <-- Passed here
+                        use_accel=args.use_accel,               # <-- Passed here
+                        downsample=args.downsample_res)      
                     prev_nnf = last_pm.nnf
                     if valid_q is not None:
                         valid_q_frames.append(valid_q)
@@ -857,8 +976,9 @@ def main():
                   f"SSIM: {metrics_accel['SSIM']:.4f} | LPIPS: {metrics_accel['LPIPS']:.4f}")
             
             print("MSE\tPSNR\tSSIM\tLPIPS")
-            print(f"{metrics_accel['MSE']:.5f}\t{metrics_accel['PSNR']:.2f}\t{metrics_accel['SSIM']:.4f}\t{metrics_accel['LPIPS']:.4f}\n")
+            print(f"{metrics_accel['MSE']:.5f}\t{metrics_accel['PSNR']:.2f}\t{metrics_accel['SSIM']:.4f}\t{metrics_accel['LPIPS']:.4f}\t{(time.time() - start_time):.3f}\n")
 
+    print(f"\n{(time.time() - start_time):.3f}s")
     print(f"\nDone. Transferred videos saved to: {args.save_dir}")
 
 
