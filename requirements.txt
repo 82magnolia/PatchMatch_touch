@@ -12,3 +12,5 @@ jupyter
 torch==2.4.1
 torchvision==0.19.1+cu118
 xformers==0.0.28
+lpips
+scikit-image
