@@ -239,20 +239,21 @@ def compute_contact_mask(ref_frame, base_frame, threshold,
 # EM-style transfer
 # ---------------------------------------------------------------------------
 
-def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
+def em_transfer_frame_fullres(query_static, ref_static, ref_frame, init_estimate,
                       em_iters, patch_size, pm_iters,
                       ref_contact_mask=None, ref_static_mask=None,
                       init_nnf=None, use_accel=False, downsample=1):
-    """EM-style single-frame transfer.
+    """EM-style single-frame transfer with all EM iterations at full resolution.
 
-    Iteratively refines correspondences by combining static + current-touch
-    channels into the NNF computation.
+    When no prior NNF exists and downsample > 1, computes a one-shot low-res
+    NNF seed (upsampled to full res) before running the EM loop. All EM
+    iterations then run at full resolution.
 
     E-step: NNF via PatchMatchSingle(concat(query_static, estimate),
                                      concat(ref_static,   ref_frame))
     M-step: estimate = reconstruct_avg(ref_frame) → output in query space
 
-    Returns (transferred_frame, final_pm).
+    Returns (transferred_frame, final_pm, valid_q).
     """
     estimate = init_estimate.copy()
     init_orig = init_estimate  # fixed reference for non-contact regions
@@ -304,6 +305,7 @@ def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
         valid_q = (np.atleast_3d(pm.reconstruct_avg(valid, patch_size=1))[..., :1] > 0.5).astype(np.float32)
         estimate = valid_q * estimate + (1.0 - valid_q) * init_orig
     return estimate, pm, valid_q
+
 
 def em_transfer_frame_downsample(query_static, ref_static, ref_frame, init_estimate,
                       em_iters, patch_size, pm_iters,
@@ -575,6 +577,11 @@ def main():
                              help="Patchmatch propagation with only normal")
     parser.add_argument("--downsample_res", default=1, type=int,
                         help="Downsampling input video resolution to find small NNF")
+    parser.add_argument("--use_downsample_em", action="store_true",
+                        help="Run all EM iterations at downsampled resolution "
+                             "(em_transfer_frame_downsample) instead of the default "
+                             "full-resolution EM with a one-shot low-res seed "
+                             "(em_transfer_frame_fullres). Only used when --em is set.")
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -691,14 +698,16 @@ def main():
             print(f"  [Info] Anchor frame selected: {anchor_idx}/{len(ref_frames)-1} (Max deformation)")
 
             # Helper function to process a single frame inside the loop
+            em_fn = em_transfer_frame_downsample if args.use_downsample_em else em_transfer_frame_fullres
             def process_frame(i, current_em_iters, pass_nnf, init_frame):
-                output, last_pm, valid_q = em_transfer_frame(
+                output, last_pm, valid_q = em_fn(
                     query_static, ref_static, ref_frames[i], init_frame,
                     current_em_iters, args.patch_size, args.iters,
                     ref_contact_mask=ref_contact_masks[i],
                     ref_static_mask=ref_static_mask,
                     init_nnf=pass_nnf,
-                    use_accel=args.use_accel)
+                    use_accel=args.use_accel,
+                    downsample=args.downsample_res)
                 
                 # Apply render mask if provided
                 if mask_frames is not None:
@@ -783,13 +792,15 @@ def main():
                             init_nnf=pass_nnf,
                             use_accel=args.use_accel)
                     else:
-                        _, pm, _ = em_transfer_frame(
+                        em_fn = em_transfer_frame_downsample if args.use_downsample_em else em_transfer_frame_fullres
+                        _, pm, _ = em_fn(
                             query_static, ref_static, current_ref_frame, init,
                             current_em_iters, args.patch_size, args.iters,
                             ref_contact_mask=ref_contact_mask,
                             ref_static_mask=ref_static_mask,
                             init_nnf=pass_nnf,
-                            use_accel=args.use_accel)
+                            use_accel=args.use_accel,
+                            downsample=args.downsample_res)
                 
                 # If EM is disabled, the code reuses the `pm` object initialized outside this loop.
                 if start_idx == 0:
@@ -862,14 +873,15 @@ def main():
                     # Pass prev_nnf
                     if args.use_accel is False:
                         prev_nnf = None
-                    output, last_pm, valid_q = em_transfer_frame(
+                    em_fn = em_transfer_frame_downsample if args.use_downsample_em else em_transfer_frame_fullres
+                    output, last_pm, valid_q = em_fn(
                         query_static, ref_static, ref_frame, init,
                         current_em_iters, args.patch_size, args.iters,
                         ref_contact_mask=ref_contact_mask,
                         ref_static_mask=ref_static_mask,
                         init_nnf=prev_nnf,
-                        use_accel=args.use_accel,               # <-- Passed here
-                        downsample=args.downsample_res)      
+                        use_accel=args.use_accel,
+                        downsample=args.downsample_res)
                     prev_nnf = last_pm.nnf
                     if valid_q is not None:
                         valid_q_frames.append(valid_q)
