@@ -37,6 +37,8 @@ if __name__ == "__main__":
                         help="Scaling method: 'max_len' normalizes longest axis to --obj_scale_factor mm")
     parser.add_argument("--override_hw", default=None, type=int, nargs=2, metavar=("H", "W"))
     parser.add_argument("--contact_theta", default=0.0, type=float)
+    parser.add_argument("--rand_contact_theta", action="store_true",
+                        help="Sample a random contact_theta from [0, 2*pi] for each contact point")
     parser.add_argument("--save_dir", default="../results/gen_contact", type=str)
     args = parser.parse_args()
 
@@ -91,6 +93,7 @@ if __name__ == "__main__":
 
     # Per-contact-point loop
     for idx, contact_point in enumerate(tqdm(contact_points, desc="Contact points")):
+        contact_theta = np.random.uniform(0, 2 * np.pi) if args.rand_contact_theta else args.contact_theta
         sim_video = None
         shadow_video = None
         mask_video = None
@@ -100,7 +103,7 @@ if __name__ == "__main__":
             height_map, gel_map, render_contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map = \
                 sims[0].generateHeightMap(gelpad_model_path, press_depth, dx=0, dy=0,
                                           contact_point=contact_point,
-                                          contact_theta=args.contact_theta)
+                                          contact_theta=contact_theta)
             heightMap, contact_mask, contact_height = sims[0].deformApprox(press_depth, height_map, gel_map, render_contact_mask)
             sim_img, shadow_sim_img = sims[0].simulating(heightMap, contact_mask, contact_height, shadow=True)
 
@@ -130,7 +133,7 @@ if __name__ == "__main__":
                     [(raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map)]
                     + [extra_sim.generateHeightMap(gelpad_model_path, press_depth, dx=0, dy=0,
                                                    contact_point=contact_point,
-                                                   contact_theta=args.contact_theta)[3:]
+                                                   contact_theta=contact_theta)[3:]
                        for extra_sim in sims[1:]],
                 ):
                     tag = f"{idx}_scale{int(scale_mm)}"
