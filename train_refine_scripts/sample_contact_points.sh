@@ -10,15 +10,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-OBJ_TOUCH_DIR="$PROJECT_ROOT/data/ObjectFolder_touch"
-OBJ_DIR="$PROJECT_ROOT/data/ObjectFolder"
+OBJ_DIR="$PROJECT_ROOT/Taxim/data/ObjectFolder"
 OUT_BASE="$PROJECT_ROOT/Taxim/results/object_folder_touch"
 PICKER="$PROJECT_ROOT/Taxim/OpticalSimulation/pick_contact_points.py"
 NUM_FPS_POINTS=8
 
-for obj_touch_path in "$OBJ_TOUCH_DIR"/*/; do
-    idx=$(basename "$obj_touch_path")
-    obj_path="$OBJ_DIR/$idx/model.obj"
+for obj_dir in "$OBJ_DIR"/*/; do
+    idx=$(basename "$obj_dir")
+    obj_path="$obj_dir/model.obj"
     out_ply="$OUT_BASE/$idx/picked_points_fps.ply"
 
     if [ ! -f "$obj_path" ]; then
