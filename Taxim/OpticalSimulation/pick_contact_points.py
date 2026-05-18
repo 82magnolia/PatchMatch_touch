@@ -197,9 +197,10 @@ def main():
 
     if args.num_fps_points is not None:
         # Headless FPS: densely sample the surface then downsample via FPS
-        o3d_mesh = o3d.io.read_triangle_mesh(args.obj_path)
-        dense_pcd = o3d_mesh.sample_points_uniformly(
-            number_of_points=max(args.num_fps_points * 100, 100_000))
+        dense_pts = trimesh.sample.sample_surface(
+            tr_mesh, max(args.num_fps_points * 100, 100_000))[0]
+        dense_pcd = o3d.geometry.PointCloud()
+        dense_pcd.points = o3d.utility.Vector3dVector(dense_pts)
         fps_pcd = dense_pcd.farthest_point_down_sample(args.num_fps_points)
         o3d.io.write_point_cloud(args.output_ply, fps_pcd)
         print(f"Saved {args.num_fps_points} FPS point(s) → {args.output_ply}")
