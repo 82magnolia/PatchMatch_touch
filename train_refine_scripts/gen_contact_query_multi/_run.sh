@@ -10,6 +10,11 @@ NUM_GPUS=8
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_VISIBLE_DEVICES=$GPU_ID
 export PYOPENGL_PLATFORM=egl
+# EGL device ordering differs from CUDA PCI bus ordering on this server.
+# Mapping discovered empirically: EGL {0..7} → physical GPU {3,2,1,0,7,6,5,4}.
+# Reverse map so run_gpuN.sh uses physical GPU N.
+_EGL_MAP=(3 2 1 0 7 6 5 4)
+export EGL_DEVICE_ID=${_EGL_MAP[$GPU_ID]}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
