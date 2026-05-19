@@ -526,7 +526,7 @@ class simulator(object):
 
 
 class mesh_simulator(simulator):
-    def __init__(self, data_folder, filePath, obj, obj_scale_factor=1., override_hw=None, renderer=None, normal_renderer=None):
+    def __init__(self, data_folder, filePath, obj, obj_scale_factor=1., override_hw=None, renderer=None):
         """
         Initialize the simulator.
         1) load the object,
@@ -590,14 +590,6 @@ class mesh_simulator(simulator):
             )
         else:  # NOTE: Renderer should only be set once to enable off-screen rendering
             self.renderer = renderer
-
-        if normal_renderer is None:  # Set new renderer
-            self.normal_renderer = pyrender.OffscreenRenderer(
-                viewport_width=self.psp_w,
-                viewport_height=self.psp_h
-            )
-        else:  # NOTE: Renderer should only be set once to enable off-screen rendering
-            self.normal_renderer = normal_renderer
 
         # polytable
         calib_data = osp.join(data_folder, "polycalib.npz")
@@ -755,7 +747,8 @@ class mesh_simulator(simulator):
         heightMap = height_raw / self.height_psp_mm
 
         # Obtain normal map
-        normal_rgb, _ = self.normal_renderer.render(normal_scene, flags=pyrender.RenderFlags.FLAT)
+        normal_rgb, _ = self.renderer.render(normal_scene, flags=pyrender.RenderFlags.FLAT)
+
         normal = 2 * normal_rgb.astype(float) / 255 - 1.
         invalid_normal_loc = np.all(normal_rgb == 255, axis=-1)
         normal[invalid_normal_loc] = 0.

@@ -68,25 +68,20 @@ if __name__ == "__main__":
     num_step = int(num_step)
     press_depth_arr = build_press_depth_arr(args.mode, press_min, press_max, num_step)
 
-    # Create shared renderers (must be created once for off-screen rendering)
+    # Create shared renderer (must be created once for off-screen rendering)
     override_hw = tuple(args.override_hw) if args.override_hw is not None else None
     renderer = pyrender.OffscreenRenderer(
         viewport_width=args.override_hw[1] if args.override_hw else 640,
         viewport_height=args.override_hw[0] if args.override_hw else 480,
     )
-    normal_renderer = pyrender.OffscreenRenderer(
-        viewport_width=args.override_hw[1] if args.override_hw else 640,
-        viewport_height=args.override_hw[0] if args.override_hw else 480,
-    )
 
-    # Instantiate one simulator per scale factor, all sharing the same renderers
+    # Instantiate one simulator per scale factor, all sharing the same renderer
     sims = [
         mesh_simulator(
             data_folder, file_path, obj,
             obj_scale_factor=scale_factor,
             override_hw=override_hw,
             renderer=renderer,
-            normal_renderer=normal_renderer,
         )
         for scale_factor in obj_scale_factors
     ]
@@ -173,5 +168,4 @@ if __name__ == "__main__":
             render_mask_video.release()
 
     renderer.delete()
-    normal_renderer.delete()
     print(f"Done. Results saved to: {args.save_dir}")
