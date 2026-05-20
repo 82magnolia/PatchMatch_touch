@@ -355,6 +355,8 @@ def main():
                         help="Path to retrieval TSV file (tsv mode).")
     parser.add_argument("--save_dir", default="./log/touch_retrieval", type=str,
                         help="Output directory for results and figures.")
+    parser.add_argument("--no_figures", action="store_true",
+                        help="Skip saving per-query retrieval figures.")
     args = parser.parse_args()
 
     if args.retrieval_mode == "tsv" and args.tsv is None:
@@ -482,6 +484,10 @@ def main():
     # -----------------------------------------------------------------------
     # Figures
     # -----------------------------------------------------------------------
+    if args.no_figures:
+        print(f"Done. Results saved to: {args.save_dir}")
+        return
+
     print("Generating retrieval figures...")
     for qi, (q_idx, _) in enumerate(tqdm(active_query_entries, desc="Figures")):
         query_paths_by_mod = {mod: active_query_entries_by_mod[mod][qi][1]
