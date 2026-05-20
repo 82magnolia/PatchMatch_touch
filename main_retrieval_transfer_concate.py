@@ -434,6 +434,7 @@ def main():
     # ------------------------------------------------------------------
     # Process each query
     # ------------------------------------------------------------------
+    all_touch_metrics = {}  # query_idx -> metric dict; populated when --eval is set
     for entry in tqdm(retrieval_results, desc="Transferring"):
         query_idx = entry["query_idx"]
         ref_idx   = entry["topk_ref_indices"][0]  # top-1
@@ -790,26 +791,39 @@ def main():
             write_video(osp.join(args.save_dir, f"{query_idx}_ref_contact_mask.mp4"),
                         mask_vid, fps)
             
-        # Qutive Evaluation Logic
+        # Quantitative Evaluation Logic
         if args.eval:
             q_vid_path = osp.join(args.query_dir, f"{query_idx}_{args.video_type}.mp4")
             if not osp.exists(q_vid_path):
                 print(f"  [Eval] Query(GT) video not found for eval: {q_vid_path}")
                 continue
-            
-            # Load GT video (Query)
+
             q_frames, _ = read_video(q_vid_path)
-            
-            # Evaluate the result from the accelerated code (transferred)
-            metrics_accel = evaluate_video_metrics(q_frames, transferred, loss_fn_vgg, device)
-            
+            metrics = evaluate_video_metrics(q_frames, transferred, loss_fn_vgg, device)
+            all_touch_metrics[query_idx] = metrics
+
             print("\n  [Evaluation Results]")
             print("  ---------------------------------------------------------")
-            print(f"  [Accel Code]  MSE: {metrics_accel['MSE']:.5f} | PSNR: {metrics_accel['PSNR']:.2f} | "
-                  f"SSIM: {metrics_accel['SSIM']:.4f} | LPIPS: {metrics_accel['LPIPS']:.4f}")
-
+            print(f"  MSE: {metrics['MSE']:.5f} | PSNR: {metrics['PSNR']:.2f} | "
+                  f"SSIM: {metrics['SSIM']:.4f} | LPIPS: {metrics['LPIPS']:.4f}")
             print("MSE\tPSNR\tSSIM\tLPIPS")
-            print(f"{metrics_accel['MSE']:.5f}\t{metrics_accel['PSNR']:.2f}\t{metrics_accel['SSIM']:.4f}\t{metrics_accel['LPIPS']:.4f}\n")
+            print(f"{metrics['MSE']:.5f}\t{metrics['PSNR']:.2f}\t{metrics['SSIM']:.4f}\t{metrics['LPIPS']:.4f}\n")
+
+    # ------------------------------------------------------------------
+    # Save metrics pkl
+    # ------------------------------------------------------------------
+    if args.eval and all_touch_metrics:
+        metric_keys = ["MSE", "PSNR", "SSIM", "LPIPS"]
+        avg = {k: sum(m[k] for m in all_touch_metrics.values()) / len(all_touch_metrics)
+               for k in metric_keys}
+        metrics_out = {"per_touch": all_touch_metrics, "average": avg}
+        metrics_pkl_path = osp.join(args.save_dir, "metrics.pkl")
+        with open(metrics_pkl_path, "wb") as f:
+            pickle.dump(metrics_out, f)
+        print(f"\nMetrics saved to: {metrics_pkl_path}")
+        print(f"Average ({len(all_touch_metrics)} touch locations) — "
+              f"MSE: {avg['MSE']:.5f} | PSNR: {avg['PSNR']:.2f} | "
+              f"SSIM: {avg['SSIM']:.4f} | LPIPS: {avg['LPIPS']:.4f}")
 
     print(f"\nDone. Transferred videos saved to: {args.save_dir}")
 

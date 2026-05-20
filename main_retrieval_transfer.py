@@ -29,6 +29,12 @@ import numpy as np
 import pycuda.autoinit  # noqa: F401 – initialises CUDA context
 from tqdm import tqdm
 
+import torch
+import lpips
+from skimage.metrics import mean_squared_error as compute_mse
+from skimage.metrics import peak_signal_noise_ratio as compute_psnr
+from skimage.metrics import structural_similarity as compute_ssim
+
 from PatchMatchCuda_single import PatchMatchSingle
 from retrieve_touch import discover_files
 
@@ -269,6 +275,34 @@ def em_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
 
 
 # ---------------------------------------------------------------------------
+# Video frame evaluation function
+# ---------------------------------------------------------------------------
+
+def evaluate_video_metrics(frames_gt, frames_pred, lpips_model, device):
+    """Calculates average MSE, PSNR, SSIM, and LPIPS given lists of GT and predicted frames."""
+    num_frames = min(len(frames_gt), len(frames_pred))
+    mse_sum, psnr_sum, ssim_sum, lpips_sum = 0.0, 0.0, 0.0, 0.0
+    for i in range(num_frames):
+        gt   = frames_gt[i]
+        pred = frames_pred[i]
+        if gt.shape != pred.shape:
+            pred = cv2.resize(pred, (gt.shape[1], gt.shape[0]))
+        mse_sum  += compute_mse(gt, pred)
+        psnr_sum += compute_psnr(gt, pred, data_range=1.0)
+        ssim_sum += compute_ssim(gt, pred, data_range=1.0, channel_axis=-1)
+        gt_t   = torch.from_numpy(gt).permute(2, 0, 1).unsqueeze(0).to(device) * 2.0 - 1.0
+        pred_t = torch.from_numpy(pred).permute(2, 0, 1).unsqueeze(0).to(device) * 2.0 - 1.0
+        with torch.no_grad():
+            lpips_sum += lpips_model(gt_t, pred_t).item()
+    return {
+        "MSE":   mse_sum  / num_frames,
+        "PSNR":  psnr_sum / num_frames,
+        "SSIM":  ssim_sum / num_frames,
+        "LPIPS": lpips_sum / num_frames,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -329,9 +363,20 @@ def main():
     parser.add_argument("--use_ref_static_mask", action="store_true",
                         help="Prevent overwriting estimates for pixels where ref_static "
                              "is zero (e.g. background / invalid regions).")
+    parser.add_argument("--eval", action="store_true",
+                        help="Enable evaluation mode (calculate metrics against GT video)")
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Load LPIPS model if evaluation mode is enabled
+    # ------------------------------------------------------------------
+    loss_fn_vgg = None
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.eval:
+        print(f"Loading LPIPS model on {device}...")
+        loss_fn_vgg = lpips.LPIPS(net='alex').to(device)
 
     # ------------------------------------------------------------------
     # Load retrieval results
@@ -351,6 +396,7 @@ def main():
     # ------------------------------------------------------------------
     # Process each query
     # ------------------------------------------------------------------
+    all_touch_metrics = {}  # query_idx -> metric dict; populated when --eval is set
     for entry in tqdm(retrieval_results, desc="Transferring"):
         query_idx = entry["query_idx"]
         ref_idx   = entry["topk_ref_indices"][0]  # top-1
@@ -492,6 +538,40 @@ def main():
             mask_vid = [np.repeat(m, 3, axis=-1) for m in ref_contact_masks]
             write_video(osp.join(args.save_dir, f"{query_idx}_ref_contact_mask.mp4"),
                         mask_vid, fps)
+
+        # Quantitative Evaluation Logic
+        if args.eval:
+            q_vid_path = osp.join(args.query_dir, f"{query_idx}_{args.video_type}.mp4")
+            if not osp.exists(q_vid_path):
+                print(f"  [Eval] Query(GT) video not found for eval: {q_vid_path}")
+                continue
+
+            q_frames, _ = read_video(q_vid_path)
+            metrics = evaluate_video_metrics(q_frames, transferred, loss_fn_vgg, device)
+            all_touch_metrics[query_idx] = metrics
+
+            print("\n  [Evaluation Results]")
+            print("  ---------------------------------------------------------")
+            print(f"  MSE: {metrics['MSE']:.5f} | PSNR: {metrics['PSNR']:.2f} | "
+                  f"SSIM: {metrics['SSIM']:.4f} | LPIPS: {metrics['LPIPS']:.4f}")
+            print("MSE\tPSNR\tSSIM\tLPIPS")
+            print(f"{metrics['MSE']:.5f}\t{metrics['PSNR']:.2f}\t{metrics['SSIM']:.4f}\t{metrics['LPIPS']:.4f}\n")
+
+    # ------------------------------------------------------------------
+    # Save metrics pkl
+    # ------------------------------------------------------------------
+    if args.eval and all_touch_metrics:
+        metric_keys = ["MSE", "PSNR", "SSIM", "LPIPS"]
+        avg = {k: sum(m[k] for m in all_touch_metrics.values()) / len(all_touch_metrics)
+               for k in metric_keys}
+        metrics_out = {"per_touch": all_touch_metrics, "average": avg}
+        metrics_pkl_path = osp.join(args.save_dir, "metrics.pkl")
+        with open(metrics_pkl_path, "wb") as f:
+            pickle.dump(metrics_out, f)
+        print(f"\nMetrics saved to: {metrics_pkl_path}")
+        print(f"Average ({len(all_touch_metrics)} touch locations) — "
+              f"MSE: {avg['MSE']:.5f} | PSNR: {avg['PSNR']:.2f} | "
+              f"SSIM: {avg['SSIM']:.4f} | LPIPS: {avg['LPIPS']:.4f}")
 
     print(f"\nDone. Transferred videos saved to: {args.save_dir}")
 
