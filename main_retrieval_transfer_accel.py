@@ -331,8 +331,6 @@ def em_transfer_frame_downsample(query_static, ref_static, ref_frame, init_estim
         current_nnf = init_nnf
         pm_low = None
 
-        import time
-        start = time.time()
         for em_step in range(em_iters):
             q_comb = np.concatenate([query_low, estimate_low], axis=-1).copy(order="C")
             r_comb = np.concatenate([static_low, ref_frame_low], axis=-1).copy(order="C")
@@ -358,15 +356,12 @@ def em_transfer_frame_downsample(query_static, ref_static, ref_frame, init_estim
                 
             val_q_low = (np.atleast_3d(pm_low.reconstruct_avg(valid, patch_size=1))[..., :1] > 0.5).astype(np.float32)
             estimate_low = val_q_low * estimate_low + (1.0 - val_q_low) * init_orig_low
-        print("Low res nnf: ", time.time() - start)
 
         nnf_high = cv2.resize(pm_low.nnf.astype(np.float32), (W, H), interpolation=cv2.INTER_NEAREST)
         nnf_high = (nnf_high * downsample).astype(np.int32)
-        
-        start = time.time()
+
         pm_high = PatchMatchSingle(query_static, ref_static, patch_size=patch_size, init_nnf=nnf_high)
         estimate_high = pm_high.reconstruct_avg(ref_frame, patch_size=1)
-        print("Recon. avg: ", time.time() - start)
 
         val_high = np.ones((H, W, 1), dtype=np.float32)
         if ref_contact_mask is not None: val_high = val_high * ref_contact_mask
@@ -613,8 +608,6 @@ def main():
     # ------------------------------------------------------------------
     # Process each query
     # ------------------------------------------------------------------
-    import time
-    start_time = time.time()
     all_touch_metrics = {}  # query_idx -> metric dict; populated when --eval is set
     for entry in tqdm(retrieval_results, desc="Transferring"):
         query_idx = entry["query_idx"]
@@ -986,7 +979,7 @@ def main():
             print(f"  MSE: {metrics['MSE']:.5f} | PSNR: {metrics['PSNR']:.2f} | "
                   f"SSIM: {metrics['SSIM']:.4f} | LPIPS: {metrics['LPIPS']:.4f}")
             print("MSE\tPSNR\tSSIM\tLPIPS")
-            print(f"{metrics['MSE']:.5f}\t{metrics['PSNR']:.2f}\t{metrics['SSIM']:.4f}\t{metrics['LPIPS']:.4f}\t{(time.time() - start_time):.3f}\n")
+            print(f"{metrics['MSE']:.5f}\t{metrics['PSNR']:.2f}\t{metrics['SSIM']:.4f}\t{metrics['LPIPS']:.4f}\n")
 
     # ------------------------------------------------------------------
     # Save metrics pkl
@@ -1004,7 +997,6 @@ def main():
               f"MSE: {avg['MSE']:.5f} | PSNR: {avg['PSNR']:.2f} | "
               f"SSIM: {avg['SSIM']:.4f} | LPIPS: {avg['LPIPS']:.4f}")
 
-    print(f"\n{(time.time() - start_time):.3f}s")
     print(f"\nDone. Transferred videos saved to: {args.save_dir}")
 
 

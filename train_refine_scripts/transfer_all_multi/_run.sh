@@ -10,6 +10,10 @@ WORKER_ID=$((GPU_ID - 2))   # map physical GPU index (2-7) to worker slot (0-5)
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_VISIBLE_DEVICES=$GPU_ID
+# NVCC 12.4 (conda) generates cubins that require a CUDA 12.x driver, but the
+# installed driver only supports CUDA 11.4.  Use CUDA 11.8 nvcc instead — within
+# CUDA 11.x all minor versions are ABI-compatible with each other.
+export PATH="/usr/local/cuda-11.8/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"

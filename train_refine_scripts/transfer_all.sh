@@ -8,6 +8,11 @@
 
 set -euo pipefail
 
+# NVCC 12.4 (conda) generates cubins that require a CUDA 12.x driver, but the
+# installed driver only supports CUDA 11.4.  Use CUDA 11.8 nvcc instead — within
+# CUDA 11.x all minor versions are ABI-compatible with each other.
+export PATH="/usr/local/cuda-11.8/bin:$PATH"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
