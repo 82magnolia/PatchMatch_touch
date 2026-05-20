@@ -768,6 +768,9 @@ def main():
             write_video(osp.join(args.save_dir,
                                  f"{query_idx}_query_{args.video_type}.mp4"),
                         q_frames, q_fps)
+            if args.use_keyframe:
+                save_rgb_image(q_frames[anchor_idx],
+                               osp.join(args.save_dir, f"{query_idx}_keyframe_query_touch.png"))
 
         # Reference touch video
         write_video(osp.join(args.save_dir,
