@@ -564,6 +564,8 @@ def main():
                              "Only used when --em is set.")
     parser.add_argument("--eval", action="store_true",
                         help="Enable evaluation mode (calculate metrics against GT video)")
+    parser.add_argument("--no_nnf_figures", action="store_true",
+                        help="Skip saving per-query NNF diagnostic figures.")
     parser.add_argument("--use_keyframe", action="store_true",
                              help="Use keyframe to propagate the NNF forwards and backwards from it")
     parser.add_argument("--use_video_concate", default=None, type=int,
@@ -906,14 +908,15 @@ def main():
                     transferred.append(output)
 
         # -- NNF figure -------------------------------------------------------
-        fig_path = make_nnf_figure(
-            query_idx=query_idx, ref_idx=ref_idx,
-            query_dir=args.query_dir, ref_dir=args.ref_dir,
-            modalities=args.modality, scale=args.scale,
-            pm=fig_pm, ref_shape=ref_static.shape,
-            save_dir=args.save_dir,
-        )
-        print(f"  Saved NNF figure: {fig_path}")
+        if not args.no_nnf_figures:
+            fig_path = make_nnf_figure(
+                query_idx=query_idx, ref_idx=ref_idx,
+                query_dir=args.query_dir, ref_dir=args.ref_dir,
+                modalities=args.modality, scale=args.scale,
+                pm=fig_pm, ref_shape=ref_static.shape,
+                save_dir=args.save_dir,
+            )
+            print(f"  Saved NNF figure: {fig_path}")
 
         # -- Save individual keyframe images ----------------------------------
         # Ensure anchor_idx exists

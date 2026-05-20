@@ -76,7 +76,8 @@ for ref_dir in "$REF_BASE"/*/; do
         --em_iters_subseq 1 \
         --downsample_res 4 \
         --use_downsample_em \
-        --use_keyframe
+        --use_keyframe \
+        --no_nnf_figures
 
     done_touch=$((done_touch + TOUCHES_PER_OBJ))
     echo "  → done  ($done_touch/$total_touch touch locations transferred)"
