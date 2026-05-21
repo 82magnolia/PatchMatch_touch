@@ -43,14 +43,20 @@ class Trainer:
         self.model.train()
         total_loss = 0.0
         n_steps = len(self.train_loader)
-        log_interval = max(1, n_steps // 10)
+        log_interval = self.args.log_interval
 
         for i, batch in enumerate(self.train_loader):
             lq = batch['lq'].to(self.device)   # (B, 2, 3, H, W)
             gt = batch['gt'].to(self.device)   # (B, 3, H, W)
 
             pred = self.model(lq)              # (B, 3, H, W)
-            loss = _charbonnier_loss(pred, gt)
+
+            with torch.no_grad():
+                loss_mask = (gt - lq[:, 1]).abs().amax(dim=1, keepdim=True) > 1e-2
+            if not loss_mask.any():
+                continue
+            loss = _charbonnier_loss(pred[loss_mask.expand_as(pred)],
+                                     gt[loss_mask.expand_as(gt)])
 
             self.optimizer.zero_grad()
             loss.backward()

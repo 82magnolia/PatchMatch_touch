@@ -102,4 +102,35 @@ log/transfer/{idx}/                              # transferred output videos
 ```
 
 ### rebot-net (`rebot-net/`)
-A video restoration network (ReBotNet). `configs.py` benchmarks model variants (XS/S/M/L); `dataset_loader.py` handles data loading. Separate from the PatchMatch pipeline.
+Post-processing enhancement network (ReBotNet) that takes PatchMatch-transferred tactile videos as input and outputs cleaner videos closer to the ground-truth query. Separate from the PatchMatch pipeline.
+
+Key files:
+- **`models/archs.py`** (`rebotnet`) — ConvNeXt encoder + bottleneck MLP-mixer transformer + skip-connection decoder. `forward` expects `(B, 2, 3, H, W)` (frame pair); `x[:,1,...]` is the main frame used for the residual output. The bottleneck uses `F.adaptive_avg_pool2d` to normalize token counts to 576 (24×24) regardless of input resolution, then bilinear-upsamples back to encoder spatial dims before the decoder. H and W must be divisible by 16.
+- **`dataset.py`** (`TactileTransferDataset`) — builds a flat `(obj_id, pair_idx, frame_idx)` sample list; `__getitem__` returns `lq (2,3,H,W)` frame pair (t-1, t) and `gt (3,H,W)`; `iter_video_pairs` yields sequential frames for evaluation.
+- **`trainer.py`** (`Trainer`) — Charbonnier loss training loop with wandb step logging and console progress; `evaluate` computes per-video MSE/PSNR/SSIM/LPIPS with optional video saving.
+- **`train.py`** — main training script; saves `best.pth` (best val PSNR) and `latest.pth`.
+- **`eval.py`** — test-split evaluation; prints per-object metrics and saves `metrics.pkl`.
+
+Data split (objects sorted numerically, 1–1000):
+- Train: 1–930 · Val: 931–950 · Test: 951–1000
+
+**Training:**
+```bash
+python rebot-net/train.py \
+    --transfer_dir log/transfer \
+    --save_dir log/rebot_checkpoints \
+    --model_size rebot_S \
+    --epochs 100 --batch_size 4 --lr 2e-4 \
+    --wandb_project tactile_enhance \
+    --video_save
+```
+
+**Evaluation:**
+```bash
+python rebot-net/eval.py \
+    --transfer_dir log/transfer \
+    --checkpoint log/rebot_checkpoints/best.pth \
+    --model_size rebot_S \
+    --save_dir log/rebot_eval \
+    --video_save
+```

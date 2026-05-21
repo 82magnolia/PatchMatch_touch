@@ -43,7 +43,7 @@ pip install wandb lpips scikit-image
 ## Training
 
 ```bash
-python rebot-net/train.py \
+python rebot_net/train.py \
     --transfer_dir log/transfer \
     --save_dir     log/rebot_checkpoints \
     --model_size   rebot_S \
@@ -82,7 +82,7 @@ Checkpoints saved:
 ## Evaluation
 
 ```bash
-python rebot-net/eval.py \
+python rebot_net/eval.py \
     --transfer_dir log/transfer \
     --checkpoint   log/rebot_checkpoints/best.pth \
     --model_size   rebot_S \

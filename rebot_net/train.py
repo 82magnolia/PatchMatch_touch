@@ -71,6 +71,8 @@ def parse_args():
     p.add_argument('--epochs', type=int, default=100)
     p.add_argument('--batch_size', type=int, default=4)
     p.add_argument('--lr', type=float, default=2e-4)
+    p.add_argument('--log_interval', type=int, default=10,
+                   help="Log training loss every log_interval steps")
     p.add_argument('--weight_decay', type=float, default=1e-4)
     p.add_argument('--num_workers', type=int, default=4)
     p.add_argument('--resume', default=None, help="Path to checkpoint to resume from")
