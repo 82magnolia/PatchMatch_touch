@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Worker: runs main_retrieval_transfer_accel.py for 1/6 of all objects.
-# Usage: bash _run.sh <GPU_ID (2-7)>
+# Worker: runs main_retrieval_transfer_accel.py for 1/8 of all objects.
+# Usage: bash _run.sh <GPU_ID (0-7)>
 
 set -euo pipefail
 
-GPU_ID="${1:?Usage: $0 <GPU_ID (2-7)>}"
-NUM_GPUS=6
-WORKER_ID=$((GPU_ID - 2))   # map physical GPU index (2-7) to worker slot (0-5)
+GPU_ID="${1:?Usage: $0 <GPU_ID (0-7)>}"
+NUM_GPUS=8
+WORKER_ID=$GPU_ID   # GPU index directly maps to worker slot (0-7)
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_VISIBLE_DEVICES=$GPU_ID
