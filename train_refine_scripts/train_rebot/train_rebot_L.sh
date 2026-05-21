@@ -16,8 +16,8 @@ CUDA_VISIBLE_DEVICES=$GPU python "$PROJECT_ROOT/rebot_net/train.py" \
     --save_dir      "$PROJECT_ROOT/log/rebot_checkpoints_L" \
     --model_size    $MODEL_SIZE \
     --epochs        100 \
-    --batch_size    8 \
+    --batch_size    4 \
     --lr            2e-4 \
     --num_workers   4 \
     --wandb_project tactile_enhance \
-    --wandb_run_name "${MODEL_SIZE}_bs8_lr2e-4"
+    --wandb_run_name "${MODEL_SIZE}_bs4_lr2e-4"
