@@ -13,7 +13,7 @@ MODEL_SIZE=rebot_L
 
 CUDA_VISIBLE_DEVICES=$GPU python "$PROJECT_ROOT/rebot_net/train.py" \
     --transfer_dir  "$PROJECT_ROOT/log/transfer" \
-    --save_dir      "$PROJECT_ROOT/log/rebot_checkpoints/$MODEL_SIZE" \
+    --save_dir      "$PROJECT_ROOT/log/rebot_checkpoints_L" \
     --model_size    $MODEL_SIZE \
     --epochs        100 \
     --batch_size    8 \
