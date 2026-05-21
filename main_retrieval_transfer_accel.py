@@ -476,8 +476,9 @@ def evaluate_video_metrics(frames_gt, frames_pred, lpips_model, device):
             pred = cv2.resize(pred, (gt.shape[1], gt.shape[0]))
 
         # 1. MSE, PSNR
-        mse_sum += compute_mse(gt, pred)
-        psnr_sum += compute_psnr(gt, pred, data_range=1.0)
+        mse = compute_mse(gt, pred)
+        mse_sum += mse
+        psnr_sum += compute_psnr(gt, pred, data_range=1.0) if mse > 0 else 100.0
         
         # 2. SSIM (Set channel_axis=-1 for multi-channel images)
         ssim_sum += compute_ssim(gt, pred, data_range=1.0, channel_axis=-1)
