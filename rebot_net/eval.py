@@ -16,7 +16,6 @@ Usage:
 import argparse
 import os
 import pickle
-import shutil
 import sys
 
 import lpips
@@ -84,7 +83,7 @@ def main():
     from skimage.metrics import mean_squared_error as compute_mse
     from skimage.metrics import peak_signal_noise_ratio as compute_psnr
     from skimage.metrics import structural_similarity as compute_ssim
-    from trainer import _write_video
+    from trainer import _write_video, _read_video_frames, _make_grid_video
 
     per_object = {}
     all_mse, all_psnr, all_ssim, all_lpips_vals = [], [], [], []
@@ -107,14 +106,16 @@ def main():
 
                 print(f"  Object {obj_id}  contact {pair_idx}", flush=True)
 
-                pred_frames, gt_frames = [], []
+                pred_frames, gt_frames, transferred_frames = [], [], []
                 for lq_pair, gt_frame in test_dataset.iter_video_pairs(obj_id, pair_idx):
                     lq_in = lq_pair.unsqueeze(0).to(device)
                     pred = model(lq_in).squeeze(0)
                     pred_np = pred.cpu().clamp(0, 1).permute(1, 2, 0).numpy()
                     gt_np = gt_frame.permute(1, 2, 0).numpy()
+                    transferred_np = lq_pair[1].permute(1, 2, 0).numpy()
                     pred_frames.append(pred_np)
                     gt_frames.append(gt_np)
+                    transferred_frames.append(transferred_np)
 
                 if not pred_frames:
                     continue
@@ -136,13 +137,19 @@ def main():
                     out_path = os.path.join(video_save_dir,
                                             f"{obj_id}_{pair_idx}_enhanced.mp4")
                     _write_video(out_path, pred_frames)
+
                     if args.save_gt:
-                        for suffix in ('query_shadow', 'ref_shadow'):
-                            src = os.path.join(args.transfer_dir, str(obj_id),
-                                               f"{pair_idx}_{suffix}.mp4")
-                            if os.path.exists(src):
-                                shutil.copy2(src, os.path.join(
-                                    video_save_dir, f"{obj_id}_{pair_idx}_{suffix}.mp4"))
+                        _write_video(
+                            os.path.join(video_save_dir, f"{obj_id}_{pair_idx}_transferred.mp4"),
+                            transferred_frames)
+                        ref_path = os.path.join(args.transfer_dir, str(obj_id),
+                                                f"{pair_idx}_ref_shadow.mp4")
+                        ref_frames = _read_video_frames(ref_path) if os.path.exists(ref_path) else []
+                        if ref_frames:
+                            _make_grid_video(
+                                os.path.join(video_save_dir, f"{obj_id}_{pair_idx}_grid.mp4"),
+                                tl=ref_frames, tr=gt_frames,
+                                bl=transferred_frames, br=pred_frames)
 
             if not obj_mse:
                 continue

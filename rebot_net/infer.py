@@ -34,7 +34,6 @@ Usage:
 
 import argparse
 import os
-import shutil
 import sys
 
 import cv2
@@ -43,7 +42,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(__file__))
 from train import MODEL_CONFIGS, build_model
-from trainer import _write_video
+from trainer import _write_video, _read_video_frames, _make_grid_video
 
 
 def _read_video(path):
@@ -80,16 +79,17 @@ def enhance_video(model, frames_rgb, device):
 
 
 def process_single_video(model, input_path, save_dir, device, save_gt=False):
-    frames, fps = _read_video(input_path)
-    if not frames:
+    frames_uint8, fps = _read_video(input_path)
+    if not frames_uint8:
         print(f"  Warning: no frames read from {input_path}, skipping.")
         return
 
-    print(f"  Enhancing {input_path}  ({len(frames)} frames @ {fps:.1f} fps) ...", flush=True)
-    enhanced = enhance_video(model, frames, device)
+    print(f"  Enhancing {input_path}  ({len(frames_uint8)} frames @ {fps:.1f} fps) ...", flush=True)
+    enhanced = enhance_video(model, frames_uint8, device)
 
     os.makedirs(save_dir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(input_path))[0]
+
     out_path = os.path.join(save_dir, f"{stem}_enhanced.mp4")
     _write_video(out_path, enhanced, fps=fps)
     print(f"  Saved: {out_path}")
@@ -97,10 +97,22 @@ def process_single_video(model, input_path, save_dir, device, save_gt=False):
     if save_gt:
         src_dir = os.path.dirname(input_path)
         base = stem.replace('_transferred_em', '')
-        for suffix in ('query_shadow', 'ref_shadow'):
-            src = os.path.join(src_dir, f"{base}_{suffix}.mp4")
-            if os.path.exists(src):
-                shutil.copy2(src, os.path.join(save_dir, f"{base}_{suffix}.mp4"))
+
+        # Save the transferred (input) video
+        transferred = [f.astype(np.float32) / 255.0 for f in frames_uint8]
+        _write_video(os.path.join(save_dir, f"{stem}.mp4"), transferred, fps=fps)
+
+        # Load reference and query videos
+        ref_path = os.path.join(src_dir, f"{base}_ref_shadow.mp4")
+        query_path = os.path.join(src_dir, f"{base}_query_shadow.mp4")
+        ref_frames = _read_video_frames(ref_path) if os.path.exists(ref_path) else []
+        query_frames = _read_video_frames(query_path) if os.path.exists(query_path) else []
+
+        if ref_frames and query_frames:
+            _make_grid_video(
+                os.path.join(save_dir, f"{base}_grid.mp4"),
+                tl=ref_frames, tr=query_frames,
+                bl=transferred, br=enhanced, fps=fps)
 
 
 def parse_args():

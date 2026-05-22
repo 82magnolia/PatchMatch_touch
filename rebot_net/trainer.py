@@ -1,5 +1,4 @@
 import os
-import pickle
 
 import cv2
 import numpy as np
@@ -22,6 +21,53 @@ def _write_video(path, frames_rgb_float, fps=5.0):
     for f in frames_rgb_float:
         f_uint8 = (np.clip(f, 0, 1) * 255).astype(np.uint8)
         out.write(cv2.cvtColor(f_uint8, cv2.COLOR_RGB2BGR))
+    out.release()
+
+
+def _read_video_frames(path):
+    """Read an MP4 into a list of float32 [0,1] RGB (H,W,3) arrays."""
+    cap = cv2.VideoCapture(path)
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0)
+    cap.release()
+    return frames
+
+
+def _make_grid_video(path, tl, tr, bl, br, labels=("Reference", "Query", "Transferred", "Refined"), fps=5.0):
+    """Write a 2×2 grid MP4 from four float32 [0,1] RGB frame lists.
+
+    Layout:
+        | tl (top-left)  | tr (top-right)  |
+        | bl (bottom-left)| br (bottom-right)|
+    """
+    n = min(len(tl), len(tr), len(bl), len(br))
+    if n == 0:
+        return
+
+    h, w = tl[0].shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale, thickness = 0.7, 2
+    pad = 4
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(path, fourcc, fps, (w * 2, h * 2))
+
+    for i in range(n):
+        cells = []
+        for frame, label in zip([tl[i], tr[i], bl[i], br[i]], labels):
+            cell = (np.clip(frame, 0, 1) * 255).astype(np.uint8)
+            cell = cv2.cvtColor(cell, cv2.COLOR_RGB2BGR)
+            (tw, th), _ = cv2.getTextSize(label, font, font_scale, thickness)
+            cv2.rectangle(cell, (pad, pad), (pad + tw + pad, pad + th + pad), (0, 0, 0), -1)
+            cv2.putText(cell, label, (pad * 2, pad + th), font, font_scale, (255, 255, 255), thickness)
+            cells.append(cell)
+        grid = np.vstack([np.hstack(cells[:2]), np.hstack(cells[2:])])
+        out.write(grid)
+
     out.release()
 
 
@@ -103,14 +149,16 @@ class Trainer:
                 print(f"  [{split}] obj {obj_id} pair {pair_idx}  "
                       f"[{video_count}/{total_videos}]", end='', flush=True)
 
-                pred_frames, gt_frames = [], []
+                pred_frames, gt_frames, transferred_frames = [], [], []
                 for lq_pair, gt_frame in dataset.iter_video_pairs(obj_id, pair_idx):
                     lq_in = lq_pair.unsqueeze(0).to(self.device)  # (1,2,3,H,W)
                     pred = self.model(lq_in).squeeze(0)            # (3,H,W)
                     pred_np = pred.cpu().clamp(0, 1).permute(1, 2, 0).numpy()
                     gt_np = gt_frame.permute(1, 2, 0).numpy()
+                    transferred_np = lq_pair[1].permute(1, 2, 0).numpy()
                     pred_frames.append(pred_np)
                     gt_frames.append(gt_np)
+                    transferred_frames.append(transferred_np)
 
                 if not pred_frames:
                     print()
@@ -125,8 +173,8 @@ class Trainer:
                                   if mse > 0 else 100.0)
                     v_ssim.append(compute_ssim(gt_np, pred_np, data_range=1.0,
                                                channel_axis=-1))
-                    gt_t = torch.from_numpy(gt_np).permute(2,0,1).unsqueeze(0).to(self.device)*2-1
-                    pr_t = torch.from_numpy(pred_np).permute(2,0,1).unsqueeze(0).to(self.device)*2-1
+                    gt_t = torch.from_numpy(gt_np).permute(2, 0, 1).unsqueeze(0).to(self.device) * 2 - 1
+                    pr_t = torch.from_numpy(pred_np).permute(2, 0, 1).unsqueeze(0).to(self.device) * 2 - 1
                     v_lpips.append(self.lpips_model(gt_t, pr_t).item())
 
                 vm, vp, vs, vl = (float(np.mean(v_mse)), float(np.mean(v_psnr)),
@@ -143,10 +191,23 @@ class Trainer:
                                             f"{obj_id}_{pair_idx}_enhanced.mp4")
                     _write_video(out_path, pred_frames)
 
+                    save_gt = getattr(self.args, 'save_gt', False)
+                    if save_gt:
+                        _write_video(
+                            os.path.join(video_save_dir, f"{obj_id}_{pair_idx}_transferred.mp4"),
+                            transferred_frames)
+                        ref_path = os.path.join(dataset.transfer_dir, str(obj_id),
+                                                f"{pair_idx}_ref_shadow.mp4")
+                        ref_frames = _read_video_frames(ref_path)
+                        _make_grid_video(
+                            os.path.join(video_save_dir, f"{obj_id}_{pair_idx}_grid.mp4"),
+                            tl=ref_frames, tr=gt_frames,
+                            bl=transferred_frames, br=pred_frames)
+
         metrics = {
-            'MSE':   float(np.mean(all_mse))   if all_mse   else 0.0,
-            'PSNR':  float(np.mean(all_psnr))  if all_psnr  else 0.0,
-            'SSIM':  float(np.mean(all_ssim))  if all_ssim  else 0.0,
+            'MSE': float(np.mean(all_mse)) if all_mse else 0.0,
+            'PSNR': float(np.mean(all_psnr)) if all_psnr else 0.0,
+            'SSIM': float(np.mean(all_ssim)) if all_ssim else 0.0,
             'LPIPS': float(np.mean(all_lpips)) if all_lpips else 0.0,
         }
         return metrics
