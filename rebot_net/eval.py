@@ -16,6 +16,7 @@ Usage:
 import argparse
 import os
 import pickle
+import shutil
 import sys
 
 import lpips
@@ -40,6 +41,8 @@ def parse_args():
                    help="Directory to save metrics.pkl and optional videos")
     p.add_argument('--video_save', action='store_true',
                    help="Save enhanced test videos to --save_dir/videos/")
+    p.add_argument('--save_gt', action='store_true',
+                   help="Also copy the ground-truth query and reference videos alongside enhanced output")
     return p.parse_args()
 
 
@@ -102,6 +105,8 @@ def main():
                 if not os.path.exists(lq_path):
                     continue
 
+                print(f"  Object {obj_id}  contact {pair_idx}", flush=True)
+
                 pred_frames, gt_frames = [], []
                 for lq_pair, gt_frame in test_dataset.iter_video_pairs(obj_id, pair_idx):
                     lq_in = lq_pair.unsqueeze(0).to(device)
@@ -131,6 +136,13 @@ def main():
                     out_path = os.path.join(video_save_dir,
                                             f"{obj_id}_{pair_idx}_enhanced.mp4")
                     _write_video(out_path, pred_frames)
+                    if args.save_gt:
+                        for suffix in ('query_shadow', 'ref_shadow'):
+                            src = os.path.join(args.transfer_dir, str(obj_id),
+                                               f"{pair_idx}_{suffix}.mp4")
+                            if os.path.exists(src):
+                                shutil.copy2(src, os.path.join(
+                                    video_save_dir, f"{obj_id}_{pair_idx}_{suffix}.mp4"))
 
             if not obj_mse:
                 continue

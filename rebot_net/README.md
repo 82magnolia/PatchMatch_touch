@@ -87,7 +87,8 @@ python rebot_net/eval.py \
     --checkpoint   log/rebot_checkpoints/best.pth \
     --model_size   rebot_S \
     --save_dir     log/rebot_eval \
-    --video_save
+    --video_save \
+    --save_gt
 ```
 
 ### Key flags
@@ -99,6 +100,7 @@ python rebot_net/eval.py \
 | `--model_size` | `rebot_S` | Must match the checkpoint's model size |
 | `--save_dir` | `log/rebot_eval` | Directory for `metrics.pkl` and optional videos |
 | `--video_save` | off | Save all enhanced test videos to `save_dir/videos/` |
+| `--save_gt` | off | Also copy ground-truth query and reference videos alongside enhanced output (requires `--video_save`) |
 
 Outputs:
 - Per-object metrics printed to stdout
@@ -116,14 +118,16 @@ CUDA_VISIBLE_DEVICES=0 python rebot_net/infer.py \
     --input_video log/transfer/52/0_transferred_em.mp4 \
     --checkpoint  log/rebot_checkpoints/best.pth \
     --model_size  rebot_S \
-    --save_dir    log/rebot_infer
+    --save_dir    log/rebot_infer \
+    --save_gt
 
 # All objects in transfer_dir
 CUDA_VISIBLE_DEVICES=0 python rebot_net/infer.py \
     --transfer_dir log/transfer \
     --checkpoint   log/rebot_checkpoints/best.pth \
     --model_size   rebot_S \
-    --save_dir     log/rebot_infer
+    --save_dir     log/rebot_infer \
+    --save_gt
 
 # Specific objects only
 CUDA_VISIBLE_DEVICES=0 python rebot_net/infer.py \
@@ -131,7 +135,8 @@ CUDA_VISIBLE_DEVICES=0 python rebot_net/infer.py \
     --object_ids   52 597 381 \
     --checkpoint   log/rebot_checkpoints/best.pth \
     --model_size   rebot_S \
-    --save_dir     log/rebot_infer
+    --save_dir     log/rebot_infer \
+    --save_gt
 ```
 
 ### Key flags
@@ -144,6 +149,7 @@ CUDA_VISIBLE_DEVICES=0 python rebot_net/infer.py \
 | `--checkpoint` | *(required)* | Path to a `.pth` checkpoint file |
 | `--model_size` | `rebot_S` | Must match the checkpoint's model size |
 | `--save_dir` | `log/rebot_infer` | Directory to write enhanced videos |
+| `--save_gt` | off | Also copy ground-truth query and reference videos alongside enhanced output |
 
 Outputs are named `{original_stem}_enhanced.mp4`. When using `--transfer_dir`, videos are written under `save_dir/{obj_id}/`.
 

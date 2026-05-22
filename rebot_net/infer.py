@@ -34,6 +34,7 @@ Usage:
 
 import argparse
 import os
+import shutil
 import sys
 
 import cv2
@@ -78,7 +79,7 @@ def enhance_video(model, frames_rgb, device):
     return enhanced
 
 
-def process_single_video(model, input_path, save_dir, device):
+def process_single_video(model, input_path, save_dir, device, save_gt=False):
     frames, fps = _read_video(input_path)
     if not frames:
         print(f"  Warning: no frames read from {input_path}, skipping.")
@@ -92,6 +93,14 @@ def process_single_video(model, input_path, save_dir, device):
     out_path = os.path.join(save_dir, f"{stem}_enhanced.mp4")
     _write_video(out_path, enhanced, fps=fps)
     print(f"  Saved: {out_path}")
+
+    if save_gt:
+        src_dir = os.path.dirname(input_path)
+        base = stem.replace('_transferred_em', '')
+        for suffix in ('query_shadow', 'ref_shadow'):
+            src = os.path.join(src_dir, f"{base}_{suffix}.mp4")
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(save_dir, f"{base}_{suffix}.mp4"))
 
 
 def parse_args():
@@ -108,6 +117,8 @@ def parse_args():
                    help="Model variant (must match checkpoint)")
     p.add_argument('--save_dir', default='log/rebot_infer',
                    help="Directory to write enhanced videos")
+    p.add_argument('--save_gt', action='store_true',
+                   help="Also copy the ground-truth query and reference videos alongside enhanced output")
     return p.parse_args()
 
 
@@ -126,7 +137,8 @@ def main():
           f"  (best val PSNR: {ckpt.get('best_psnr', 0):.2f})")
 
     if args.input_video:
-        process_single_video(model, args.input_video, args.save_dir, device)
+        process_single_video(model, args.input_video, args.save_dir, device,
+                             save_gt=args.save_gt)
 
     else:
         # Collect object IDs
@@ -157,7 +169,8 @@ def main():
                     continue
                 done += 1
                 print(f"[{done}/{total}] obj {obj_id} pair {pair_idx}", end='  ', flush=True)
-                process_single_video(model, vid_path, out_dir, device)
+                process_single_video(model, vid_path, out_dir, device,
+                                     save_gt=args.save_gt)
 
     print("\nDone.")
 
