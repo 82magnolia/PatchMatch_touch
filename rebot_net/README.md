@@ -106,6 +106,49 @@ Outputs:
 
 ---
 
+## Inference
+
+Runs enhancement on transferred videos without requiring ground truth. Use `CUDA_VISIBLE_DEVICES` to select a GPU.
+
+```bash
+# Single video
+CUDA_VISIBLE_DEVICES=0 python rebot_net/infer.py \
+    --input_video log/transfer/52/0_transferred_em.mp4 \
+    --checkpoint  log/rebot_checkpoints/best.pth \
+    --model_size  rebot_S \
+    --save_dir    log/rebot_infer
+
+# All objects in transfer_dir
+CUDA_VISIBLE_DEVICES=0 python rebot_net/infer.py \
+    --transfer_dir log/transfer \
+    --checkpoint   log/rebot_checkpoints/best.pth \
+    --model_size   rebot_S \
+    --save_dir     log/rebot_infer
+
+# Specific objects only
+CUDA_VISIBLE_DEVICES=0 python rebot_net/infer.py \
+    --transfer_dir log/transfer \
+    --object_ids   52 597 381 \
+    --checkpoint   log/rebot_checkpoints/best.pth \
+    --model_size   rebot_S \
+    --save_dir     log/rebot_infer
+```
+
+### Key flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--input_video` | — | Path to a single transferred video (mutually exclusive with `--transfer_dir`) |
+| `--transfer_dir` | — | Root of `log/transfer/` to process in bulk (mutually exclusive with `--input_video`) |
+| `--object_ids` | all | Subset of object IDs to process (only with `--transfer_dir`) |
+| `--checkpoint` | *(required)* | Path to a `.pth` checkpoint file |
+| `--model_size` | `rebot_S` | Must match the checkpoint's model size |
+| `--save_dir` | `log/rebot_infer` | Directory to write enhanced videos |
+
+Outputs are named `{original_stem}_enhanced.mp4`. When using `--transfer_dir`, videos are written under `save_dir/{obj_id}/`.
+
+---
+
 ## Metrics
 
 All metrics match those used in `main_retrieval_transfer_accel.py`:
