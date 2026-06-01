@@ -304,7 +304,7 @@ def em_transfer_frame_fullres(query_static, ref_static, ref_frame, init_estimate
         # valid is in reference coordinates; warp to query coordinates via NNF
         valid_q = (np.atleast_3d(pm.reconstruct_avg(valid, patch_size=1))[..., :1] > 0.5).astype(np.float32)
         estimate = valid_q * estimate + (1.0 - valid_q) * init_orig
-    return estimate, pm, valid_q
+    return estimate, pm, valid_q, pm  # NOTE: here we don't use downsampling during PatchMatch, so pm_low == pm_high == pm
 
 
 def em_transfer_frame_downsample(query_static, ref_static, ref_frame, init_estimate,
@@ -370,7 +370,7 @@ def em_transfer_frame_downsample(query_static, ref_static, ref_frame, init_estim
         valid_q_high = (np.atleast_3d(pm_high.reconstruct_avg(val_high, patch_size=1))[..., :1] > 0.5).astype(np.float32)
         estimate_high = valid_q_high * estimate_high + (1.0 - valid_q_high) * init_orig
         
-        return estimate_high, pm_low, valid_q_high
+        return estimate_high, pm_low, valid_q_high, pm_high
 
     else:
         estimate = init_estimate.copy()
@@ -402,7 +402,7 @@ def em_transfer_frame_downsample(query_static, ref_static, ref_frame, init_estim
             valid_q = (np.atleast_3d(pm.reconstruct_avg(valid, patch_size=1))[..., :1] > 0.5).astype(np.float32)
             estimate = valid_q * estimate + (1.0 - valid_q) * init_orig
             
-        return estimate, pm, valid_q
+        return estimate, pm, valid_q, pm  # NOTE: here we don't use downsampling during PatchMatch, so pm_low == pm_high == pm
 
 def static_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
                           em_iters, patch_size, pm_iters,
@@ -697,7 +697,7 @@ def main():
             # Helper function to process a single frame inside the loop
             em_fn = em_transfer_frame_downsample if args.use_downsample_em else em_transfer_frame_fullres
             def process_frame(i, current_em_iters, pass_nnf, init_frame):
-                output, last_pm, valid_q = em_fn(
+                output, last_pm, valid_q, _ = em_fn(
                     query_static, ref_static, ref_frames[i], init_frame,
                     current_em_iters, args.patch_size, args.iters,
                     ref_contact_mask=ref_contact_masks[i],
@@ -790,7 +790,7 @@ def main():
                             use_accel=args.use_accel)
                     else:
                         em_fn = em_transfer_frame_downsample if args.use_downsample_em else em_transfer_frame_fullres
-                        _, pm, _ = em_fn(
+                        _, pm_low, _, pm = em_fn(
                             query_static, ref_static, current_ref_frame, init,
                             current_em_iters, args.patch_size, args.iters,
                             ref_contact_mask=ref_contact_mask,
@@ -871,7 +871,7 @@ def main():
                     if args.use_accel is False:
                         prev_nnf = None
                     em_fn = em_transfer_frame_downsample if args.use_downsample_em else em_transfer_frame_fullres
-                    output, last_pm, valid_q = em_fn(
+                    output, last_pm, valid_q, _ = em_fn(
                         query_static, ref_static, ref_frame, init,
                         current_em_iters, args.patch_size, args.iters,
                         ref_contact_mask=ref_contact_mask,
