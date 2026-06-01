@@ -86,6 +86,11 @@ class TactileTransferDataset(data.Dataset):
 
         return {'lq': lq, 'gt': gt, 'meta': (obj_id, pair_idx, t)}
 
+    def lq_video_exists(self, obj_id, pair_idx):
+        path = os.path.join(self.transfer_dir, str(obj_id),
+                            f"{pair_idx}_transferred_em.mp4")
+        return os.path.exists(path)
+
     def iter_video_pairs(self, obj_id, pair_idx):
         """Yield (lq_pair, gt_frame) tensors for every frame of one video pair in order."""
         obj_dir = os.path.join(self.transfer_dir, str(obj_id))

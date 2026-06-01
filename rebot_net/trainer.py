@@ -133,16 +133,13 @@ class Trainer:
         total_videos = sum(
             1 for obj_id in object_ids
             for pair_idx in range(dataset.NUM_PAIRS)
-            if os.path.exists(os.path.join(dataset.transfer_dir, str(obj_id),
-                                           f"{pair_idx}_transferred_em.mp4"))
+            if dataset.lq_video_exists(obj_id, pair_idx)
         )
         video_count = 0
 
         for obj_id in object_ids:
             for pair_idx in range(dataset.NUM_PAIRS):
-                lq_path = os.path.join(dataset.transfer_dir, str(obj_id),
-                                       f"{pair_idx}_transferred_em.mp4")
-                if not os.path.exists(lq_path):
+                if not dataset.lq_video_exists(obj_id, pair_idx):
                     continue
 
                 video_count += 1

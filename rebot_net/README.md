@@ -155,6 +155,72 @@ Outputs are named `{original_stem}_enhanced.mp4`. When using `--transfer_dir`, v
 
 ---
 
+## Normal-Image Baseline
+
+A baseline variant that skips PatchMatch entirely: the model receives a static surface normal image at the query touch location (tiled into a video) as input and predicts the same ground-truth tactile video. This establishes a lower bound to quantify the benefit of PatchMatch transfer.
+
+Normal images are read from `{query_normal_dir}/{obj_id}/{pair_idx}_scale100_normal.jpg` (640×480 RGB). The model architecture is identical to the main pipeline; the residual output is computed on top of the tiled normal image.
+
+### Training
+
+```bash
+python rebot_net/train_normal.py \
+    --transfer_dir log/transfer \
+    --query_normal_dir Taxim/results/gen_contact_full_query \
+    --save_dir log/rebot_checkpoints_normal \
+    --model_size rebot_S \
+    --epochs 100 \
+    --batch_size 4 \
+    --lr 2e-4 \
+    --num_workers 4 \
+    --wandb_project tactile_enhance \
+    --wandb_run_name normal_baseline_S
+```
+
+### Key flags (normal baseline training)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--transfer_dir` | *(required)* | Root of `log/transfer` (GT query videos) |
+| `--query_normal_dir` | *(required)* | Root of `gen_contact_full_query` (normal images) |
+| `--save_dir` | `log/rebot_checkpoints_normal` | Where to write `best.pth` and `latest.pth` |
+| `--model_size` | `rebot_S` | Model variant: `rebot_XS`, `rebot_S`, `rebot_M`, `rebot_L` |
+| `--epochs` | `100` | Number of training epochs |
+| `--batch_size` | `4` | Frames per batch |
+| `--lr` | `2e-4` | AdamW learning rate |
+| `--num_workers` | `4` | DataLoader worker processes |
+| `--resume` | `None` | Path to checkpoint to resume from |
+| `--video_save` | off | Save enhanced validation videos each epoch |
+| `--wandb_project` | `tactile_enhance` | W&B project name |
+| `--wandb_run_name` | auto | W&B run name |
+
+### Evaluation
+
+```bash
+python rebot_net/eval_normal.py \
+    --transfer_dir log/transfer \
+    --query_normal_dir Taxim/results/gen_contact_full_query \
+    --checkpoint log/rebot_checkpoints_normal/best.pth \
+    --model_size rebot_S \
+    --save_dir log/rebot_eval_normal \
+    --video_save \
+    --save_gt
+```
+
+### Key flags (normal baseline evaluation)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--transfer_dir` | *(required)* | Root of `log/transfer` (GT query videos) |
+| `--query_normal_dir` | *(required)* | Root of `gen_contact_full_query` (normal images) |
+| `--checkpoint` | *(required)* | Path to a `.pth` checkpoint file |
+| `--model_size` | `rebot_S` | Must match the checkpoint's model size |
+| `--save_dir` | `log/rebot_eval_normal` | Directory for `metrics.pkl` and optional videos |
+| `--video_save` | off | Save all enhanced test videos to `save_dir/videos/` |
+| `--save_gt` | off | Also save the normal-image video and a 2×2 grid (Normal \| GT / Normal \| Predicted) |
+
+---
+
 ## Metrics
 
 All metrics match those used in `main_retrieval_transfer_accel.py`:
