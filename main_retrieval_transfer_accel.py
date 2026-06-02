@@ -965,7 +965,7 @@ def main():
                         [np.repeat(m, 3, axis=-1) for m in valid_q_frames], fps)
 
         # Reference contact mask video
-        if ref_contact_masks:
+        if ref_contact_masks and ref_contact_masks[0] is not None:
             mask_vid = [np.repeat(m, 3, axis=-1) for m in ref_contact_masks]
             write_video(osp.join(args.save_dir, f"{query_idx}_ref_contact_mask.mp4"),
                         mask_vid, fps)
