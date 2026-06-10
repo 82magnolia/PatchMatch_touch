@@ -75,7 +75,6 @@ for ref_dir in "$REF_BASE"/*/; do
         --video_type     shadow \
         --save_dir       "$save_dir" \
         --em \
-        --use_ref_contact_mask \
         --use_ref_static_mask \
         --em_iters       10 \
         --use_mask \
