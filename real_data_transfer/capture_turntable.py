@@ -1,10 +1,12 @@
 """
 Turntable capture script: RGB-D streaming + ARuCO pose tracking + SAM segmentation.
 
-Pose estimation: each frame independently estimates T_marker_in_cam by averaging
-the per-marker PnP results (SVD-re-orthogonalised rotation, mean translation).
-T_relative for each capture is inv(T_ref) @ T_marker_in_cam, where T_ref is the
-transform saved at pick 0.
+Pose estimation: every detected ARuCO marker is tracked independently.  For each
+capture a per-marker pose dictionary is stored.  The relative transform T_relative
+between a capture and pick 0 is computed by averaging the per-marker relative
+transforms over all markers that are co-visible in both frames (SVD-re-orthogonalised
+mean R, mean t).  This makes the estimate more robust than tracking a single marker
+and degrades gracefully when some markers leave the frame.
 
 Controls (main window):
   c  — freeze frame and enter capture mode
@@ -110,17 +112,52 @@ def draw_aruco_overlay(frame_bgr, corners, ids, rvecs, tvecs,
     return out
 
 
-def best_marker_T(rvecs, tvecs) -> np.ndarray:
-    """Average transform across all detected markers (SVD-re-orthogonalised R, mean t)."""
-    Rs = [cv2.Rodrigues(r.flatten())[0] for r in rvecs]
+# ── pose math ─────────────────────────────────────────────────────────────────
+
+def rvec_tvec_to_T(rvec, tvec) -> np.ndarray:
+    R, _ = cv2.Rodrigues(rvec.flatten())
+    T = np.eye(4)
+    T[:3, :3] = R
+    T[:3, 3] = tvec.flatten()
+    return T
+
+
+def average_transforms(T_list: list) -> np.ndarray:
+    """Average SE(3) matrices: SVD-re-orthogonalised mean R, mean t."""
+    Rs = [T[:3, :3] for T in T_list]
+    ts = [T[:3, 3] for T in T_list]
     R_mean = np.mean(Rs, axis=0)
     U, _, Vt = np.linalg.svd(R_mean)
     R_mean = U @ Vt
-    t_mean = np.mean([t.flatten() for t in tvecs], axis=0)
+    if np.linalg.det(R_mean) < 0:
+        R_mean = U @ np.diag([1, 1, -1]) @ Vt
     T = np.eye(4)
     T[:3, :3] = R_mean
-    T[:3, 3] = t_mean
+    T[:3, 3] = np.mean(ts, axis=0)
     return T
+
+
+def build_marker_poses(corners, ids, rvecs, tvecs) -> dict:
+    """Return {marker_id: T_marker_in_cam (4×4)} for all detected markers."""
+    if ids is None:
+        return {}
+    return {
+        int(ids[i].flat[0]): rvec_tvec_to_T(rvecs[i], tvecs[i])
+        for i in range(len(ids))
+    }
+
+
+def compute_relative_transform(ref_poses: dict, cur_poses: dict):
+    """Average per-marker relative transforms over co-visible markers.
+
+    Returns (T_relative, co_visible_ids) or (None, []) if no overlap.
+    T_relative = mean over k of inv(ref_poses[k]) @ cur_poses[k].
+    """
+    co_visible = [mid for mid in cur_poses if mid in ref_poses]
+    if not co_visible:
+        return None, []
+    T_rels = [np.linalg.inv(ref_poses[mid]) @ cur_poses[mid] for mid in co_visible]
+    return average_transforms(T_rels), co_visible
 
 
 # ── accumulated 3-D view ──────────────────────────────────────────────────────
@@ -128,10 +165,10 @@ def best_marker_T(rvecs, tvecs) -> np.ndarray:
 class AccumulatedView:
     """Open3D window: masked point clouds + camera frustums for all captures.
 
-    Coordinate frame: pick-0 camera frame (world origin).
-    T_world_from_cam = T_ref @ inv(T_marker_in_cam), where T_ref is pick-0's
-    T_marker_in_cam — so the pick-0 object position is the fixed world origin
-    and subsequent frustums orbit around it.
+    Coordinate frame: pick-0 camera frame.
+    T_world_from_cam = inv(T_relative), where T_relative = mean over co-visible
+    markers of inv(T_ref_k) @ T_current_k.  At pick 0 T_relative = I so the
+    pick-0 camera sits at the world origin.
     """
 
     _COLORS = [
@@ -173,10 +210,8 @@ class AccumulatedView:
         return ls
 
     def add_capture(self, color_bgr: np.ndarray, depth_img: np.ndarray,
-                    mask: np.ndarray, T_marker_in_cam, T_ref, capture_idx: int):
-        if T_marker_in_cam is not None and T_ref is not None:
-            T_world_from_cam = T_ref @ np.linalg.inv(T_marker_in_cam)
-        else:
+                    mask: np.ndarray, T_world_from_cam, capture_idx: int):
+        if T_world_from_cam is None:
             T_world_from_cam = np.eye(4)
 
         vs, us = np.where(mask > 0)
@@ -253,12 +288,40 @@ class CaptureState:
     def __init__(self, save_dir: str):
         self.save_dir = save_dir
         self.records: list[dict] = []
-        self.T_ref: np.ndarray | None = None
+        # Per-marker poses at pick 0, used as reference for all subsequent T_relative
+        self.T_ref_per_marker: dict[int, np.ndarray] = {}
 
     def next_idx(self) -> int:
         return len(glob.glob(os.path.join(self.save_dir, "*_rgb.png")))
 
-    def save(self, idx: int, color_bgr, depth_img, mask, T_marker_in_cam):
+    def save(self, idx: int, color_bgr, depth_img, mask,
+             corners, ids, rvecs, tvecs) -> "np.ndarray | None":
+        """Save capture files and update poses.json.
+
+        Returns T_world_from_cam (4×4) = inv(T_relative), or None when no
+        co-visible markers are available.
+        """
+        cur_poses = build_marker_poses(corners, ids, rvecs, tvecs)
+
+        # At pick 0 establish the reference
+        if not self.T_ref_per_marker:
+            if not cur_poses:
+                print("  WARNING: no ARuCO markers detected at pick 0 — "
+                      "relative poses will be unavailable.")
+            self.T_ref_per_marker = dict(cur_poses)
+
+        T_relative, co_visible = compute_relative_transform(
+            self.T_ref_per_marker, cur_poses
+        )
+
+        if not co_visible and idx > 0:
+            print(f"  WARNING: no co-visible markers with pick 0 — "
+                  f"T_relative recorded as null.")
+
+        T_world_from_cam = (np.linalg.inv(T_relative)
+                            if T_relative is not None else None)
+
+        # ── write files ────────────────────────────────────────────────────────
         prefix = os.path.join(self.save_dir, f"{idx:03d}")
 
         cv2.imwrite(f"{prefix}_rgb.png", color_bgr)
@@ -274,23 +337,21 @@ class CaptureState:
         masked_depth[mask == 0] = 0
         np.save(f"{prefix}_depth_masked.npy", masked_depth)
 
-        T_list = T_marker_in_cam.tolist() if T_marker_in_cam is not None else None
-        if self.T_ref is None and T_marker_in_cam is not None:
-            self.T_ref = T_marker_in_cam
-
-        T_rel = None
-        if self.T_ref is not None and T_marker_in_cam is not None:
-            T_rel = (np.linalg.inv(self.T_ref) @ T_marker_in_cam).tolist()
-
         self.records.append({
             "pick_idx": idx,
-            "T_marker_in_cam": T_list,
-            "T_relative": T_rel,
+            "marker_poses": {
+                str(mid): T.tolist() for mid, T in cur_poses.items()
+            },
+            "co_visible_marker_ids": co_visible if co_visible else None,
+            "T_relative": T_relative.tolist() if T_relative is not None else None,
         })
         with open(os.path.join(self.save_dir, "poses.json"), "w") as f:
             json.dump(self.records, f, indent=2)
 
-        print(f"Saved capture {idx:03d} → {self.save_dir}/")
+        n_co = len(co_visible)
+        print(f"Saved capture {idx:03d} — "
+              f"{len(cur_poses)} markers detected, {n_co} co-visible with pick 0.")
+        return T_world_from_cam
 
 
 # ── capture flow ──────────────────────────────────────────────────────────────
@@ -299,16 +360,15 @@ def run_capture_flow(
     color_bgr: np.ndarray,
     depth_img: np.ndarray,
     aruco_overlay: np.ndarray,
-    T_marker_in_cam,
+    corners, ids, rvecs, tvecs,
     predictor: "SamPredictor",
     state: CaptureState,
     accumulated_view: AccumulatedView,
 ):
     WIN = "Capture (drag left panel for box, Enter to run SAM, r to redraw, Esc to cancel)"
 
-    # box_pts: [x1_full, y1_full, x2_full, y2_full] in full-res coords, or None
     box_pts = [None]
-    drag_start = [None]   # display-space start of current drag
+    drag_start = [None]
 
     def to_full(xd, yd):
         return (int(xd * CAPTURE_W / DISPLAY_W),
@@ -338,7 +398,6 @@ def run_capture_flow(
     mask = None
 
     def box_display(b):
-        """Convert full-res box to display-space ints."""
         return (int(b[0] * DISPLAY_W / CAPTURE_W),
                 int(b[1] * DISPLAY_H / CAPTURE_H),
                 int(b[2] * DISPLAY_W / CAPTURE_W),
@@ -352,7 +411,7 @@ def run_capture_flow(
         if box_pts[0] is not None and mask is None:
             dx1, dy1, dx2, dy2 = box_display(box_pts[0])
             cv2.rectangle(display, (dx1, dy1), (dx2, dy2), (0, 255, 0), 2)
-            if drag_start[0] is None:  # drag finished
+            if drag_start[0] is None:
                 cv2.putText(display, "Press Enter to run SAM, r to redraw",
                             (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 1)
 
@@ -389,9 +448,12 @@ def run_capture_flow(
 
         elif key == ord('s') and mask is not None:
             idx = state.next_idx()
-            state.save(idx, color_bgr, depth_img, mask, T_marker_in_cam)
+            T_world_from_cam = state.save(
+                idx, color_bgr, depth_img, mask,
+                corners, ids, rvecs, tvecs,
+            )
             accumulated_view.add_capture(
-                color_bgr, depth_img, mask, T_marker_in_cam, state.T_ref, idx
+                color_bgr, depth_img, mask, T_world_from_cam, idx
             )
             break
 
@@ -471,16 +533,17 @@ def main():
                     color_bgr, corners, ids, rvecs, tvecs,
                     camera_matrix, dist_coeffs, args.marker_size,
                 )
-                T_marker_in_cam = best_marker_T(rvecs, tvecs)
             else:
                 display_frame = color_bgr
-                T_marker_in_cam = None
 
             grid = make_grid(display_frame, depth_img)
             n_markers = 0 if ids is None else len(ids)
+            ref_str = (f"ref={sorted(state.T_ref_per_marker.keys())}"
+                       if state.T_ref_per_marker else "ref=?")
             cv2.putText(
                 grid,
-                f"ARuCO: {n_markers}  |  captures: {state.next_idx()}"
+                f"ARuCO: {n_markers}  {ref_str}"
+                f"  |  captures: {state.next_idx()}"
                 "  |  c=capture  q=quit",
                 (10, DISPLAY_H - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1,
@@ -495,7 +558,8 @@ def main():
             elif key == ord('c'):
                 run_capture_flow(
                     color_bgr, depth_img, display_frame,
-                    T_marker_in_cam, predictor, state, accumulated_view,
+                    corners, ids, rvecs, tvecs,
+                    predictor, state, accumulated_view,
                 )
 
     finally:

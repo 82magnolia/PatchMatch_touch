@@ -105,9 +105,9 @@ python real_data_transfer/capture_turntable.py \
 |-------|--------|
 | `c` (main window) | Freeze frame and enter capture mode |
 | `q` (main window) | Quit |
-| Click left panel (capture mode) | Set SAM point prompt |
+| Drag left panel (capture mode) | Draw bounding box for SAM prompt |
 | `Enter` (capture mode) | Run SAM inference |
-| `r` (capture mode) | Re-select point |
+| `r` (capture mode) | Redraw bounding box |
 | `s` (capture mode) | Save capture |
 | `Esc` (capture mode) | Cancel, return to live stream |
 
@@ -123,6 +123,9 @@ python real_data_transfer/capture_turntable.py \
 | `NNN_depth_masked.npy` | Depth with mask applied |
 | `poses.json` | ARuCO-derived poses for all captures |
 
-**`poses.json` structure:**
-- `T_marker_in_cam` — 4×4 marker-to-camera transform for this capture
-- `T_relative` — 4×4 transform relative to the first capture (pick 0); `null` for pick 0 itself
+**`poses.json` structure (per entry):**
+- `marker_poses` — dict mapping each detected marker ID → 4×4 `T_marker_in_cam`
+- `co_visible_marker_ids` — list of marker IDs visible in both this capture and pick 0; these are the markers used to compute `T_relative`
+- `T_relative` — 4×4 transform relative to pick 0, averaged over all co-visible markers (SVD-re-orthogonalised mean R, mean t); `null` at pick 0 or when no co-visible markers exist
+
+> **Note:** the more ARuCO markers remain co-visible across captures, the more robust the relative pose estimate. If no co-visible markers are found, a warning is printed and `T_relative` is `null`.
