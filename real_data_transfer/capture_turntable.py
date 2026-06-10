@@ -1,13 +1,18 @@
 """
 Turntable capture script: RGB-D streaming + ARuCO pose tracking + SAM segmentation.
 
+Pose estimation: each frame independently estimates T_marker_in_cam by averaging
+the per-marker PnP results (SVD-re-orthogonalised rotation, mean translation).
+T_relative for each capture is inv(T_ref) @ T_marker_in_cam, where T_ref is the
+transform saved at pick 0.
+
 Controls (main window):
   c  — freeze frame and enter capture mode
   q  — quit
 
 Capture mode (frozen frame window):
-  click (left panel)  — select SAM point prompt
-  r                   — re-select point
+  drag (left panel)   — draw bounding box for SAM prompt
+  r                   — redraw box
   Enter               — run SAM inference
   s                   — save current capture
   Esc                 — cancel and return to live stream
@@ -35,8 +40,8 @@ except ImportError:
     sys.exit("segment-anything not found. Install with: pip install segment-anything")
 
 # ── constants ────────────────────────────────────────────────────────────────
-DISPLAY_W, DISPLAY_H = 640, 360   # per-panel display size
-CAPTURE_W, CAPTURE_H = 1280, 720  # capture resolution
+DISPLAY_W, DISPLAY_H = 640, 360
+CAPTURE_W, CAPTURE_H = 1280, 720
 
 DEPTH_MIN_MM = 100
 DEPTH_MAX_MM = 3000
@@ -83,14 +88,6 @@ def build_aruco_detector():
     return cv2.aruco.ArucoDetector(dictionary, params)
 
 
-def rvec_tvec_to_T(rvec: np.ndarray, tvec: np.ndarray) -> np.ndarray:
-    R, _ = cv2.Rodrigues(rvec.flatten())
-    T = np.eye(4)
-    T[:3, :3] = R
-    T[:3, 3] = tvec.flatten()
-    return T
-
-
 def detect_aruco_pose(frame_bgr, detector, camera_matrix, dist_coeffs, marker_size):
     """Returns (corners, ids, rvecs, tvecs) or (None, None, None, None)."""
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
@@ -103,38 +100,38 @@ def detect_aruco_pose(frame_bgr, detector, camera_matrix, dist_coeffs, marker_si
     return corners, ids, rvecs, tvecs
 
 
-def draw_aruco_overlay(frame_bgr, corners, ids, rvecs, tvecs, camera_matrix, dist_coeffs, marker_size):
+def draw_aruco_overlay(frame_bgr, corners, ids, rvecs, tvecs,
+                       camera_matrix, dist_coeffs, marker_size):
     out = frame_bgr.copy()
     cv2.aruco.drawDetectedMarkers(out, corners, ids)
     for i in range(len(ids)):
-        cv2.drawFrameAxes(out, camera_matrix, dist_coeffs, rvecs[i], tvecs[i], marker_size * 0.5)
+        cv2.drawFrameAxes(out, camera_matrix, dist_coeffs,
+                          rvecs[i], tvecs[i], marker_size * 0.5)
     return out
 
 
 def best_marker_T(rvecs, tvecs) -> np.ndarray:
-    """Average transform across all detected markers (simple mean in R/t space)."""
+    """Average transform across all detected markers (SVD-re-orthogonalised R, mean t)."""
     Rs = [cv2.Rodrigues(r.flatten())[0] for r in rvecs]
-    ts = [t.flatten() for t in tvecs]
     R_mean = np.mean(Rs, axis=0)
-    # Re-orthogonalise via SVD
     U, _, Vt = np.linalg.svd(R_mean)
     R_mean = U @ Vt
-    t_mean = np.mean(ts, axis=0)
+    t_mean = np.mean([t.flatten() for t in tvecs], axis=0)
     T = np.eye(4)
     T[:3, :3] = R_mean
     T[:3, 3] = t_mean
     return T
 
 
-# ── accumulated 3-D view ─────────────────────────────────────────────────────
+# ── accumulated 3-D view ──────────────────────────────────────────────────────
 
 class AccumulatedView:
-    """Open3D window showing all captured masked point clouds + camera frustums.
+    """Open3D window: masked point clouds + camera frustums for all captures.
 
     Coordinate frame: pick-0 camera frame (world origin).
-    Each subsequent capture's cloud and frustum are transformed via
-        T_world_from_camN = T_ref @ inv(T_marker_in_cam[N])
-    so the object stays fixed and the camera appears to orbit it.
+    T_world_from_cam = T_ref @ inv(T_marker_in_cam), where T_ref is pick-0's
+    T_marker_in_cam — so the pick-0 object position is the fixed world origin
+    and subsequent frustums orbit around it.
     """
 
     _COLORS = [
@@ -167,7 +164,7 @@ class AccumulatedView:
         ])
         pts_h = np.hstack([local_pts, np.ones((5, 1))])
         world_pts = (T_cam_in_world @ pts_h.T).T[:, :3]
-        lines = [[0,1],[0,2],[0,3],[0,4],[1,2],[2,3],[3,4],[4,1]]
+        lines = [[0, 1], [0, 2], [0, 3], [0, 4], [1, 2], [2, 3], [3, 4], [4, 1]]
         ls = o3d.geometry.LineSet(
             points=o3d.utility.Vector3dVector(world_pts),
             lines=o3d.utility.Vector2iVector(lines),
@@ -182,19 +179,17 @@ class AccumulatedView:
         else:
             T_world_from_cam = np.eye(4)
 
-        # Unproject masked depth → point cloud in camera frame
         vs, us = np.where(mask > 0)
-        z = depth_img[vs, us].astype(np.float32) / 1000.0  # mm → m
+        z = depth_img[vs, us].astype(np.float32) / 1000.0
         valid = z > 0
         us, vs, z = us[valid], vs[valid], z[valid]
         xyz_cam = np.stack(
             [(us - self.cx) / self.fx * z,
              (vs - self.cy) / self.fy * z,
-             z], axis=1
+             z], axis=1,
         )
         rgb = color_bgr[vs, us][:, ::-1].astype(np.float64) / 255.0
 
-        # Subsample and transform to world frame
         xyz_cam, rgb = xyz_cam[::4], rgb[::4]
         xyz_world = (T_world_from_cam @ np.hstack(
             [xyz_cam, np.ones((len(xyz_cam), 1))]).T).T[:, :3]
@@ -211,7 +206,6 @@ class AccumulatedView:
         self.vis.reset_view_point(True)
 
     def update(self) -> bool:
-        """Call every frame. Returns False once the window has been closed."""
         if not self._alive:
             return False
         if not self.vis.poll_events():
@@ -240,11 +234,13 @@ def overlay_banner(img: np.ndarray, text: str, alpha: float = 0.55) -> np.ndarra
     overlay = out.copy()
     cv2.rectangle(overlay, (0, h // 2 - 30), (w, h // 2 + 30), (0, 0, 0), -1)
     cv2.addWeighted(overlay, alpha, out, 1 - alpha, 0, out)
-    cv2.putText(out, text, (20, h // 2 + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(out, text, (20, h // 2 + 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     return out
 
 
-def overlay_mask(color_bgr: np.ndarray, mask: np.ndarray, color=(0, 255, 0), alpha=0.4) -> np.ndarray:
+def overlay_mask(color_bgr: np.ndarray, mask: np.ndarray,
+                 color=(0, 255, 0), alpha=0.4) -> np.ndarray:
     out = color_bgr.copy()
     overlay = out.copy()
     overlay[mask > 0] = color
@@ -259,20 +255,8 @@ class CaptureState:
         self.records: list[dict] = []
         self.T_ref: np.ndarray | None = None
 
-        poses_path = os.path.join(save_dir, "poses.json")
-        if os.path.exists(poses_path):
-            with open(poses_path) as f:
-                self.records = json.load(f)
-            # Restore reference transform from pick 0
-            for r in self.records:
-                if r["pick_idx"] == 0 and r["T_marker_in_cam"] is not None:
-                    self.T_ref = np.array(r["T_marker_in_cam"])
-                    break
-            print(f"Resumed: {len(self.records)} existing captures found.")
-
     def next_idx(self) -> int:
-        existing = glob.glob(os.path.join(self.save_dir, "*_rgb.png"))
-        return len(existing)
+        return len(glob.glob(os.path.join(self.save_dir, "*_rgb.png")))
 
     def save(self, idx: int, color_bgr, depth_img, mask, T_marker_in_cam):
         prefix = os.path.join(self.save_dir, f"{idx:03d}")
@@ -290,7 +274,6 @@ class CaptureState:
         masked_depth[mask == 0] = 0
         np.save(f"{prefix}_depth_masked.npy", masked_depth)
 
-        # Pose bookkeeping
         T_list = T_marker_in_cam.tolist() if T_marker_in_cam is not None else None
         if self.T_ref is None and T_marker_in_cam is not None:
             self.T_ref = T_marker_in_cam
@@ -304,7 +287,6 @@ class CaptureState:
             "T_marker_in_cam": T_list,
             "T_relative": T_rel,
         })
-
         with open(os.path.join(self.save_dir, "poses.json"), "w") as f:
             json.dump(self.records, f, indent=2)
 
@@ -322,62 +304,85 @@ def run_capture_flow(
     state: CaptureState,
     accumulated_view: AccumulatedView,
 ):
-    WIN = "Capture (click left panel, Enter to confirm, r to retry, Esc to cancel)"
+    WIN = "Capture (drag left panel for box, Enter to run SAM, r to redraw, Esc to cancel)"
 
-    clicked = [None]  # [x_full, y_full] or None
+    # box_pts: [x1_full, y1_full, x2_full, y2_full] in full-res coords, or None
+    box_pts = [None]
+    drag_start = [None]   # display-space start of current drag
+
+    def to_full(xd, yd):
+        return (int(xd * CAPTURE_W / DISPLAY_W),
+                int(yd * CAPTURE_H / DISPLAY_H))
 
     def on_mouse(event, x, y, flags, param):
+        x = min(max(x, 0), DISPLAY_W - 1)
+        y = min(max(y, 0), DISPLAY_H - 1)
         if event == cv2.EVENT_LBUTTONDOWN and x < DISPLAY_W:
-            x_full = int(x * CAPTURE_W / DISPLAY_W)
-            y_full = int(y * CAPTURE_H / DISPLAY_H)
-            clicked[0] = (x_full, y_full)
+            drag_start[0] = (x, y)
+            box_pts[0] = None
+        elif event == cv2.EVENT_MOUSEMOVE and drag_start[0] is not None:
+            x1f, y1f = to_full(*drag_start[0])
+            x2f, y2f = to_full(x, y)
+            box_pts[0] = [min(x1f, x2f), min(y1f, y2f),
+                          max(x1f, x2f), max(y1f, y2f)]
+        elif event == cv2.EVENT_LBUTTONUP and drag_start[0] is not None:
+            x1f, y1f = to_full(*drag_start[0])
+            x2f, y2f = to_full(x, y)
+            box_pts[0] = [min(x1f, x2f), min(y1f, y2f),
+                          max(x1f, x2f), max(y1f, y2f)]
+            drag_start[0] = None
 
     cv2.namedWindow(WIN)
     cv2.setMouseCallback(WIN, on_mouse)
 
     mask = None
 
+    def box_display(b):
+        """Convert full-res box to display-space ints."""
+        return (int(b[0] * DISPLAY_W / CAPTURE_W),
+                int(b[1] * DISPLAY_H / CAPTURE_H),
+                int(b[2] * DISPLAY_W / CAPTURE_W),
+                int(b[3] * DISPLAY_H / CAPTURE_H))
+
     while True:
         color_small = cv2.resize(aruco_overlay, (DISPLAY_W, DISPLAY_H))
         depth_small = cv2.resize(depth_to_colormap(depth_img), (DISPLAY_W, DISPLAY_H))
         display = np.hstack([color_small, depth_small])
 
-        if clicked[0] is not None and mask is None:
-            px = int(clicked[0][0] * DISPLAY_W / CAPTURE_W)
-            py = int(clicked[0][1] * DISPLAY_H / CAPTURE_H)
-            cv2.circle(display, (px, py), 6, (0, 0, 255), -1)
-            cv2.putText(display, "Press Enter to run SAM, r to re-select",
-                        (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 1)
+        if box_pts[0] is not None and mask is None:
+            dx1, dy1, dx2, dy2 = box_display(box_pts[0])
+            cv2.rectangle(display, (dx1, dy1), (dx2, dy2), (0, 255, 0), 2)
+            if drag_start[0] is None:  # drag finished
+                cv2.putText(display, "Press Enter to run SAM, r to redraw",
+                            (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 1)
 
         if mask is not None:
-            mask_small = cv2.resize(mask, (DISPLAY_W, DISPLAY_H), interpolation=cv2.INTER_NEAREST)
+            mask_small = cv2.resize(mask, (DISPLAY_W, DISPLAY_H),
+                                    interpolation=cv2.INTER_NEAREST)
             color_small = overlay_mask(color_small, mask_small)
             display = np.hstack([color_small, depth_small])
-            cv2.putText(display, "Press s to save, r to re-select, Esc to cancel",
+            cv2.putText(display, "Press s to save, r to redraw, Esc to cancel",
                         (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 1)
 
         cv2.imshow(WIN, display)
         key = cv2.waitKey(20) & 0xFF
 
-        if key == 27:  # Esc — cancel
+        if key == 27:
             break
-
         elif key == ord('r'):
-            clicked[0] = None
+            box_pts[0] = None
+            drag_start[0] = None
             mask = None
-
-        elif key == 13 and clicked[0] is not None and mask is None:  # Enter — run SAM
+        elif key == 13 and box_pts[0] is not None and drag_start[0] is None and mask is None:
             banner = overlay_banner(display, "Running SAM... please wait")
             cv2.imshow(WIN, banner)
             cv2.waitKey(1)
 
             color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
-            x, y = clicked[0]
             with torch.inference_mode():
                 predictor.set_image(color_rgb)
-                masks, scores, _ = predictor.predict(
-                    point_coords=np.array([[x, y]]),
-                    point_labels=np.array([1]),
+                masks, _, _ = predictor.predict(
+                    box=np.array(box_pts[0], dtype=np.float32),
                     multimask_output=False,
                 )
             mask = masks[0].astype(np.uint8) * 255
@@ -397,10 +402,14 @@ def run_capture_flow(
 
 def parse_args():
     p = argparse.ArgumentParser(description="Turntable RGB-D capture with SAM + ARuCO")
-    p.add_argument("--log_dir", default="log/captures", help="Directory to save capture outputs")
-    p.add_argument("--marker_size", type=float, default=0.05, help="ARuCO marker side length in metres")
-    p.add_argument("--sam_checkpoint", default="log/sam_vit_b_01ec64.pth", help="Path to SAM checkpoint (.pth)")
-    p.add_argument("--sam_model_type", default="vit_b", choices=["vit_h", "vit_l", "vit_b"])
+    p.add_argument("--log_dir", default="log/captures",
+                   help="Directory to save capture outputs")
+    p.add_argument("--marker_size", type=float, default=0.05,
+                   help="ARuCO marker side length in metres")
+    p.add_argument("--sam_checkpoint", default="log/sam_vit_b_01ec64.pth",
+                   help="Path to SAM checkpoint (.pth)")
+    p.add_argument("--sam_model_type", default="vit_b",
+                   choices=["vit_h", "vit_l", "vit_b"])
     return p.parse_args()
 
 
@@ -422,17 +431,17 @@ def main():
     temporal.set_option(rs.option.filter_smooth_alpha, 0.1)
     temporal.set_option(rs.option.filter_smooth_delta, 40)
 
-    intr = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
+    intr = (profile.get_stream(rs.stream.color)
+            .as_video_stream_profile().get_intrinsics())
     camera_matrix = np.array(
         [[intr.fx, 0, intr.ppx],
          [0, intr.fy, intr.ppy],
-         [0, 0, 1]], dtype=np.float64
+         [0, 0, 1]], dtype=np.float64,
     )
     dist_coeffs = np.array(intr.coeffs, dtype=np.float64)
 
     detector = build_aruco_detector()
     state = CaptureState(args.log_dir)
-
     accumulated_view = AccumulatedView(
         intr.fx, intr.fy, intr.ppx, intr.ppy, CAPTURE_W, CAPTURE_H
     )
@@ -453,7 +462,6 @@ def main():
             color_bgr = np.asanyarray(color_frame.get_data())
             depth_img = np.asanyarray(depth_frame.get_data())
 
-            # ARuCO detection
             corners, ids, rvecs, tvecs = detect_aruco_pose(
                 color_bgr, detector, camera_matrix, dist_coeffs, args.marker_size
             )
@@ -461,7 +469,7 @@ def main():
             if ids is not None:
                 display_frame = draw_aruco_overlay(
                     color_bgr, corners, ids, rvecs, tvecs,
-                    camera_matrix, dist_coeffs, args.marker_size
+                    camera_matrix, dist_coeffs, args.marker_size,
                 )
                 T_marker_in_cam = best_marker_T(rvecs, tvecs)
             else:
@@ -470,8 +478,13 @@ def main():
 
             grid = make_grid(display_frame, depth_img)
             n_markers = 0 if ids is None else len(ids)
-            cv2.putText(grid, f"ARuCO markers: {n_markers}  |  captures: {state.next_idx()}  |  c=capture  q=quit",
-                        (10, DISPLAY_H - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            cv2.putText(
+                grid,
+                f"ARuCO: {n_markers}  |  captures: {state.next_idx()}"
+                "  |  c=capture  q=quit",
+                (10, DISPLAY_H - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1,
+            )
             cv2.imshow("RGB (left)  |  Depth (right)", grid)
 
             accumulated_view.update()
