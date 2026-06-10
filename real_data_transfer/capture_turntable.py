@@ -21,6 +21,7 @@ import glob
 
 import cv2
 import numpy as np
+import open3d as o3d
 import torch
 
 try:
@@ -125,6 +126,106 @@ def best_marker_T(rvecs, tvecs) -> np.ndarray:
     return T
 
 
+# ── accumulated 3-D view ─────────────────────────────────────────────────────
+
+class AccumulatedView:
+    """Open3D window showing all captured masked point clouds + camera frustums.
+
+    Coordinate frame: pick-0 camera frame (world origin).
+    Each subsequent capture's cloud and frustum are transformed via
+        T_world_from_camN = T_ref @ inv(T_marker_in_cam[N])
+    so the object stays fixed and the camera appears to orbit it.
+    """
+
+    _COLORS = [
+        [1.00, 0.25, 0.25], [0.25, 1.00, 0.25], [0.25, 0.45, 1.00],
+        [1.00, 1.00, 0.20], [0.20, 1.00, 1.00], [1.00, 0.20, 1.00],
+        [1.00, 0.60, 0.00], [0.60, 0.00, 1.00],
+    ]
+
+    def __init__(self, fx: float, fy: float, cx: float, cy: float,
+                 img_w: int, img_h: int):
+        self.fx, self.fy, self.cx, self.cy = fx, fy, cx, cy
+        self.img_w, self.img_h = img_w, img_h
+        self._alive = True
+
+        self.vis = o3d.visualization.Visualizer()
+        self.vis.create_window("Accumulated Captures", width=960, height=540)
+        axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.03)
+        self.vis.add_geometry(axes)
+
+    def _frustum(self, T_cam_in_world: np.ndarray, color: list,
+                 depth: float = 0.08) -> o3d.geometry.LineSet:
+        fx, fy, cx, cy = self.fx, self.fy, self.cx, self.cy
+        w, h = self.img_w, self.img_h
+        local_pts = np.array([
+            [0, 0, 0],
+            [(0 - cx) / fx * depth, (0 - cy) / fy * depth, depth],
+            [(w - cx) / fx * depth, (0 - cy) / fy * depth, depth],
+            [(w - cx) / fx * depth, (h - cy) / fy * depth, depth],
+            [(0 - cx) / fx * depth, (h - cy) / fy * depth, depth],
+        ])
+        pts_h = np.hstack([local_pts, np.ones((5, 1))])
+        world_pts = (T_cam_in_world @ pts_h.T).T[:, :3]
+        lines = [[0,1],[0,2],[0,3],[0,4],[1,2],[2,3],[3,4],[4,1]]
+        ls = o3d.geometry.LineSet(
+            points=o3d.utility.Vector3dVector(world_pts),
+            lines=o3d.utility.Vector2iVector(lines),
+        )
+        ls.colors = o3d.utility.Vector3dVector([color] * len(lines))
+        return ls
+
+    def add_capture(self, color_bgr: np.ndarray, depth_img: np.ndarray,
+                    mask: np.ndarray, T_marker_in_cam, T_ref, capture_idx: int):
+        if T_marker_in_cam is not None and T_ref is not None:
+            T_world_from_cam = T_ref @ np.linalg.inv(T_marker_in_cam)
+        else:
+            T_world_from_cam = np.eye(4)
+
+        # Unproject masked depth → point cloud in camera frame
+        vs, us = np.where(mask > 0)
+        z = depth_img[vs, us].astype(np.float32) / 1000.0  # mm → m
+        valid = z > 0
+        us, vs, z = us[valid], vs[valid], z[valid]
+        xyz_cam = np.stack(
+            [(us - self.cx) / self.fx * z,
+             (vs - self.cy) / self.fy * z,
+             z], axis=1
+        )
+        rgb = color_bgr[vs, us][:, ::-1].astype(np.float64) / 255.0
+
+        # Subsample and transform to world frame
+        xyz_cam, rgb = xyz_cam[::4], rgb[::4]
+        xyz_world = (T_world_from_cam @ np.hstack(
+            [xyz_cam, np.ones((len(xyz_cam), 1))]).T).T[:, :3]
+
+        pcd = o3d.geometry.PointCloud(
+            points=o3d.utility.Vector3dVector(xyz_world))
+        pcd.colors = o3d.utility.Vector3dVector(rgb)
+
+        color = self._COLORS[capture_idx % len(self._COLORS)]
+        frustum = self._frustum(T_world_from_cam, color)
+
+        self.vis.add_geometry(pcd)
+        self.vis.add_geometry(frustum)
+        self.vis.reset_view_point(True)
+
+    def update(self) -> bool:
+        """Call every frame. Returns False once the window has been closed."""
+        if not self._alive:
+            return False
+        if not self.vis.poll_events():
+            self._alive = False
+            return False
+        self.vis.update_renderer()
+        return True
+
+    def close(self):
+        if self._alive:
+            self.vis.destroy_window()
+            self._alive = False
+
+
 # ── display helpers ───────────────────────────────────────────────────────────
 
 def make_grid(color_bgr: np.ndarray, depth_img: np.ndarray) -> np.ndarray:
@@ -219,6 +320,7 @@ def run_capture_flow(
     T_marker_in_cam,
     predictor: "SamPredictor",
     state: CaptureState,
+    accumulated_view: AccumulatedView,
 ):
     WIN = "Capture (click left panel, Enter to confirm, r to retry, Esc to cancel)"
 
@@ -283,6 +385,9 @@ def run_capture_flow(
         elif key == ord('s') and mask is not None:
             idx = state.next_idx()
             state.save(idx, color_bgr, depth_img, mask, T_marker_in_cam)
+            accumulated_view.add_capture(
+                color_bgr, depth_img, mask, T_marker_in_cam, state.T_ref, idx
+            )
             break
 
     cv2.destroyWindow(WIN)
@@ -328,6 +433,10 @@ def main():
     detector = build_aruco_detector()
     state = CaptureState(args.log_dir)
 
+    accumulated_view = AccumulatedView(
+        intr.fx, intr.fy, intr.ppx, intr.ppy, CAPTURE_W, CAPTURE_H
+    )
+
     print("Streaming — press 'c' to capture, 'q' to quit.")
 
     try:
@@ -365,17 +474,20 @@ def main():
                         (10, DISPLAY_H - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
             cv2.imshow("RGB (left)  |  Depth (right)", grid)
 
+            accumulated_view.update()
+
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
             elif key == ord('c'):
                 run_capture_flow(
                     color_bgr, depth_img, display_frame,
-                    T_marker_in_cam, predictor, state,
+                    T_marker_in_cam, predictor, state, accumulated_view,
                 )
 
     finally:
         pipeline.stop()
+        accumulated_view.close()
         cv2.destroyAllWindows()
 
 
