@@ -290,6 +290,9 @@ class CaptureState:
         self.records: list[dict] = []
         # Per-marker poses at pick 0, used as reference for all subsequent T_relative
         self.T_ref_per_marker: dict[int, np.ndarray] = {}
+        # Camera pose in the object frame at pick 0: inv(avg T_marker_in_cam at pick 0).
+        # Combined with inv(T_relative) this gives the correct orbiting camera position.
+        self.T_cam_in_obj0: "np.ndarray | None" = None
 
     def next_idx(self) -> int:
         return len(glob.glob(os.path.join(self.save_dir, "*_rgb.png")))
@@ -309,6 +312,12 @@ class CaptureState:
                 print("  WARNING: no ARuCO markers detected at pick 0 — "
                       "relative poses will be unavailable.")
             self.T_ref_per_marker = dict(cur_poses)
+            if cur_poses:
+                # Camera position in object frame: inv of averaged marker poses.
+                # Used so virtual cameras orbit at the correct distance from object.
+                self.T_cam_in_obj0 = np.linalg.inv(
+                    average_transforms(list(cur_poses.values()))
+                )
 
         T_relative, co_visible = compute_relative_transform(
             self.T_ref_per_marker, cur_poses
@@ -318,8 +327,14 @@ class CaptureState:
             print(f"  WARNING: no co-visible markers with pick 0 — "
                   f"T_relative recorded as null.")
 
-        T_world_from_cam = (np.linalg.inv(T_relative)
-                            if T_relative is not None else None)
+        # inv(T_relative) gives the virtual camera rotation; premultiplying by
+        # T_cam_in_obj0 places it at the correct distance/angle from the object.
+        if T_relative is not None and self.T_cam_in_obj0 is not None:
+            T_world_from_cam = np.linalg.inv(T_relative) @ self.T_cam_in_obj0
+        elif self.T_cam_in_obj0 is not None:
+            T_world_from_cam = self.T_cam_in_obj0
+        else:
+            T_world_from_cam = None
 
         # ── write files ────────────────────────────────────────────────────────
         prefix = os.path.join(self.save_dir, f"{idx:03d}")
