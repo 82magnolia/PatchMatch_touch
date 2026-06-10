@@ -481,7 +481,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Turntable RGB-D capture with SAM + ARuCO")
     p.add_argument("--log_dir", default="log/captures",
                    help="Directory to save capture outputs")
-    p.add_argument("--marker_size", type=float, default=0.05,
+    p.add_argument("--marker_size", type=float, default=0.035,
                    help="ARuCO marker side length in metres")
     p.add_argument("--sam_checkpoint", default="log/sam_vit_b_01ec64.pth",
                    help="Path to SAM checkpoint (.pth)")

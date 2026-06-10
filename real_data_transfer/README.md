@@ -94,7 +94,7 @@ wget -P log/ https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pt
 
 ```bash
 python real_data_transfer/capture_turntable.py \
-    --marker_size 0.05
+    --marker_size 0.035
 # Saves to log/captures/ by default. Override with --log_dir log/my_session
 # SAM defaults to log/sam_vit_b_01ec64.pth (vit_b). Override with --sam_checkpoint / --sam_model_type
 ```
