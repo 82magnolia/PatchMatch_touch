@@ -20,8 +20,8 @@ conda activate pm_real
 ```bash
 pip install pyrealsense2
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-pip install git+https://github.com/facebookresearch/segment-anything-2.git  # SAM 2
-pip install opencv-contrib-python   # includes ARuCO support
+pip install segment-anything         # SAM (Meta)
+pip install opencv-contrib-python    # includes ARuCO support
 pip install numpy open3d
 ```
 
@@ -71,16 +71,32 @@ python real_data_transfer/visualize_realsense.py
 
 ---
 
-### `capture_turntable.py` — Turntable capture with SAM 2 + ARuCO pose tracking
+### `capture_turntable.py` — Turntable capture with SAM + ARuCO pose tracking
 
-Streams RGB-D with ARuCO marker axes overlaid. On each capture, the user clicks a point to prompt SAM 2 segmentation, then saves full and masked RGB/depth along with pose information.
+Streams RGB-D with ARuCO marker axes overlaid. On each capture, the user clicks a point on the frozen frame to prompt SAM segmentation, then saves full and masked RGB/depth along with pose information.
+
+#### SAM checkpoint
+
+Download the ViT-B checkpoint (default) before first use:
+
+```bash
+# ViT-B (~375 MB, default)
+wget -P log/ https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
+
+# ViT-L (~1.2 GB)
+wget -P log/ https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth
+
+# ViT-H (~2.4 GB, best quality)
+wget -P log/ https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
+```
 
 **Run:**
 
 ```bash
 python real_data_transfer/capture_turntable.py \
-    --save_dir real_data_transfer/captures \
-    --marker_size 0.05        # ARuCO marker side length in metres
+    --marker_size 0.05
+# Saves to log/captures/ by default. Override with --log_dir log/my_session
+# SAM defaults to log/sam_vit_b_01ec64.pth (vit_b). Override with --sam_checkpoint / --sam_model_type
 ```
 
 **Controls:**
@@ -89,8 +105,8 @@ python real_data_transfer/capture_turntable.py \
 |-------|--------|
 | `c` (main window) | Freeze frame and enter capture mode |
 | `q` (main window) | Quit |
-| Click left panel (capture mode) | Set SAM 2 point prompt |
-| `Enter` (capture mode) | Run SAM 2 inference |
+| Click left panel (capture mode) | Set SAM point prompt |
+| `Enter` (capture mode) | Run SAM inference |
 | `r` (capture mode) | Re-select point |
 | `s` (capture mode) | Save capture |
 | `Esc` (capture mode) | Cancel, return to live stream |
@@ -102,7 +118,7 @@ python real_data_transfer/capture_turntable.py \
 | `NNN_rgb.png` | Full color frame |
 | `NNN_depth.npy` | Raw depth (uint16, mm) |
 | `NNN_depth_vis.png` | JET-colorized depth |
-| `NNN_mask.png` | Binary SAM 2 mask |
+| `NNN_mask.png` | Binary SAM mask |
 | `NNN_rgb_masked.png` | Color frame with mask applied |
 | `NNN_depth_masked.npy` | Depth with mask applied |
 | `poses.json` | ARuCO-derived poses for all captures |

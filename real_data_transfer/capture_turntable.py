@@ -1,5 +1,5 @@
 """
-Turntable capture script: RGB-D streaming + ARuCO pose tracking + SAM 2 segmentation.
+Turntable capture script: RGB-D streaming + ARuCO pose tracking + SAM segmentation.
 
 Controls (main window):
   c  — freeze frame and enter capture mode
@@ -8,7 +8,7 @@ Controls (main window):
 Capture mode (frozen frame window):
   click (left panel)  — select SAM point prompt
   r                   — re-select point
-  Enter               — run SAM 2 inference
+  Enter               — run SAM inference
   s                   — save current capture
   Esc                 — cancel and return to live stream
 """
@@ -29,9 +29,9 @@ except ImportError:
     sys.exit("pyrealsense2 not found. Install with: pip install pyrealsense2")
 
 try:
-    from sam2.sam2_image_predictor import SAM2ImagePredictor
+    from segment_anything import sam_model_registry, SamPredictor
 except ImportError:
-    sys.exit("sam2 not found. Install with: pip install git+https://github.com/facebookresearch/segment-anything-2.git")
+    sys.exit("segment-anything not found. Install with: pip install segment-anything")
 
 # ── constants ────────────────────────────────────────────────────────────────
 DISPLAY_W, DISPLAY_H = 640, 360   # per-panel display size
@@ -217,7 +217,7 @@ def run_capture_flow(
     depth_img: np.ndarray,
     aruco_overlay: np.ndarray,
     T_marker_in_cam,
-    predictor: "SAM2ImagePredictor",
+    predictor: "SamPredictor",
     state: CaptureState,
 ):
     WIN = "Capture (click left panel, Enter to confirm, r to retry, Esc to cancel)"
@@ -236,7 +236,6 @@ def run_capture_flow(
     mask = None
 
     while True:
-        # Build display from aruco_overlay (already DISPLAY_W×DISPLAY_H on left side)
         color_small = cv2.resize(aruco_overlay, (DISPLAY_W, DISPLAY_H))
         depth_small = cv2.resize(depth_to_colormap(depth_img), (DISPLAY_W, DISPLAY_H))
         display = np.hstack([color_small, depth_small])
@@ -245,7 +244,7 @@ def run_capture_flow(
             px = int(clicked[0][0] * DISPLAY_W / CAPTURE_W)
             py = int(clicked[0][1] * DISPLAY_H / CAPTURE_H)
             cv2.circle(display, (px, py), 6, (0, 0, 255), -1)
-            cv2.putText(display, "Press Enter to run SAM 2, r to re-select",
+            cv2.putText(display, "Press Enter to run SAM, r to re-select",
                         (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 1)
 
         if mask is not None:
@@ -266,20 +265,20 @@ def run_capture_flow(
             mask = None
 
         elif key == 13 and clicked[0] is not None and mask is None:  # Enter — run SAM
-            banner = overlay_banner(display, "Running SAM 2... please wait")
+            banner = overlay_banner(display, "Running SAM... please wait")
             cv2.imshow(WIN, banner)
             cv2.waitKey(1)
 
             color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
             x, y = clicked[0]
-            with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+            with torch.inference_mode():
                 predictor.set_image(color_rgb)
                 masks, scores, _ = predictor.predict(
                     point_coords=np.array([[x, y]]),
                     point_labels=np.array([1]),
                     multimask_output=False,
                 )
-            mask = (masks[0].astype(np.uint8) * 255)
+            mask = masks[0].astype(np.uint8) * 255
 
         elif key == ord('s') and mask is not None:
             idx = state.next_idx()
@@ -292,20 +291,23 @@ def run_capture_flow(
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Turntable RGB-D capture with SAM 2 + ARuCO")
-    p.add_argument("--save_dir", default="real_data_transfer/captures")
+    p = argparse.ArgumentParser(description="Turntable RGB-D capture with SAM + ARuCO")
+    p.add_argument("--log_dir", default="log/captures", help="Directory to save capture outputs")
     p.add_argument("--marker_size", type=float, default=0.05, help="ARuCO marker side length in metres")
-    p.add_argument("--sam_model", default="facebook/sam2-hiera-large")
+    p.add_argument("--sam_checkpoint", default="log/sam_vit_b_01ec64.pth", help="Path to SAM checkpoint (.pth)")
+    p.add_argument("--sam_model_type", default="vit_b", choices=["vit_h", "vit_l", "vit_b"])
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    os.makedirs(args.save_dir, exist_ok=True)
+    os.makedirs(args.log_dir, exist_ok=True)
 
-    print(f"Loading SAM 2 ({args.sam_model})...")
-    predictor = SAM2ImagePredictor.from_pretrained(args.sam_model)
-    print("SAM 2 ready.")
+    print(f"Loading SAM ({args.sam_model_type}, {args.sam_checkpoint})...")
+    sam = sam_model_registry[args.sam_model_type](checkpoint=args.sam_checkpoint)
+    sam.to(device="cuda" if torch.cuda.is_available() else "cpu")
+    predictor = SamPredictor(sam)
+    print("SAM ready.")
 
     serial = detect_device()
     pipeline, profile = build_pipeline(serial)
@@ -324,7 +326,7 @@ def main():
     dist_coeffs = np.array(intr.coeffs, dtype=np.float64)
 
     detector = build_aruco_detector()
-    state = CaptureState(args.save_dir)
+    state = CaptureState(args.log_dir)
 
     print("Streaming — press 'c' to capture, 'q' to quit.")
 
@@ -369,7 +371,7 @@ def main():
             elif key == ord('c'):
                 run_capture_flow(
                     color_bgr, depth_img, display_frame,
-                    T_marker_in_cam, predictor, state
+                    T_marker_in_cam, predictor, state,
                 )
 
     finally:

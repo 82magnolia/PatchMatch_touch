@@ -109,8 +109,7 @@ Uses a **separate** `pm_real` conda env (not `pm_touch`) to avoid dependency con
 conda create -n pm_real python=3.10
 conda activate pm_real
 pip install pyrealsense2 torch torchvision --index-url https://download.pytorch.org/whl/cu118
-pip install git+https://github.com/facebookresearch/segment-anything-2.git
-pip install opencv-contrib-python numpy open3d
+pip install segment-anything opencv-contrib-python numpy open3d
 ```
 
 - **`visualize_realsense.py`** — Live RGB-D viewer with interactive Open3D point cloud. Temporal filter and fixed depth range (`100–3000 mm`) prevent depth map flickering. Point cloud is subsampled `[::4]` for performance.
@@ -118,9 +117,9 @@ pip install opencv-contrib-python numpy open3d
   python real_data_transfer/visualize_realsense.py
   ```
 
-- **`capture_turntable.py`** — Turntable capture pipeline. Streams RGB-D with ARuCO (DICT_4X4_50) marker axes overlaid. Press `c` to freeze a frame, click a point, press `Enter` to run SAM 2 segmentation, `s` to save. Each save writes full and masked RGB/depth plus updates `poses.json` with the marker-derived 4×4 transform relative to pick 0.
+- **`capture_turntable.py`** — Turntable capture pipeline. Streams RGB-D with ARuCO (DICT_4X4_50) marker axes overlaid. Press `c` to freeze a frame, click a point, press `Enter` to run SAM segmentation, `s` to save. Each save writes full and masked RGB/depth plus updates `poses.json` with the marker-derived 4×4 transform relative to pick 0. Requires a SAM checkpoint (download separately — see `real_data_transfer/README.md`).
   ```bash
-  python real_data_transfer/capture_turntable.py --marker_size 0.05
+  python real_data_transfer/capture_turntable.py --marker_size 0.05  # saves to log/captures/, SAM weights at log/sam_vit_b_01ec64.pth
   ```
   Output per capture (`NNN_` prefix): `_rgb.png`, `_depth.npy`, `_depth_vis.png`, `_mask.png`, `_rgb_masked.png`, `_depth_masked.npy`. Pose data in `poses.json` (`T_marker_in_cam`, `T_relative`).
 
