@@ -41,9 +41,14 @@ def build_pipeline(serial: str) -> rs.pipeline:
     return pipeline
 
 
+DEPTH_MIN_MM = 100   # 0.1 m
+DEPTH_MAX_MM = 3000  # 3.0 m
+
+
 def depth_to_colormap(depth_frame) -> np.ndarray:
-    depth_img = np.asanyarray(depth_frame.get_data())
-    depth_norm = cv2.normalize(depth_img, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+    depth_img = np.asanyarray(depth_frame.get_data()).astype(np.float32)
+    depth_img = np.clip(depth_img, DEPTH_MIN_MM, DEPTH_MAX_MM)
+    depth_norm = ((depth_img - DEPTH_MIN_MM) / (DEPTH_MAX_MM - DEPTH_MIN_MM) * 255).astype(np.uint8)
     return cv2.applyColorMap(depth_norm, cv2.COLORMAP_JET)
 
 
@@ -76,6 +81,10 @@ def main():
 
     pc = rs.pointcloud()
 
+    temporal = rs.temporal_filter()
+    temporal.set_option(rs.option.filter_smooth_alpha, 0.1)  # lower = stronger smoothing
+    temporal.set_option(rs.option.filter_smooth_delta, 40)
+
     vis = o3d.visualization.Visualizer()
     vis.create_window("Point Cloud", width=960, height=540)
     pcd = o3d.geometry.PointCloud()
@@ -95,6 +104,7 @@ def main():
             depth_frame = aligned.get_depth_frame()
             if not color_frame or not depth_frame:
                 continue
+            depth_frame = temporal.process(depth_frame)
 
             # --- cv2 grid ---
             color_img = cv2.resize(np.asanyarray(color_frame.get_data()), (display_w, display_h))
