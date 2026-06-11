@@ -394,37 +394,51 @@ class CaptureState:
         self.records: list[dict] = []
         self.T_ref_per_marker: dict[int, np.ndarray] = {}
         self.T_cam_in_obj0: "np.ndarray | None" = None
+        self.T_board_ref: "np.ndarray | None" = None
 
     def next_idx(self) -> int:
         return len(glob.glob(os.path.join(self.save_dir, "*_rgb.png")))
 
     def save(self, idx: int, color_bgr, depth_img, mask,
-             cur_poses: dict) -> "np.ndarray | None":
+             cur_poses: dict,
+             T_board_in_cam: "np.ndarray | None" = None) -> "np.ndarray | None":
         """Save capture files and update poses.json.
 
-        cur_poses: {marker_id: T_marker_in_cam} — pre-computed by the caller,
-        so this method is agnostic to whether a board or per-marker mode is used.
+        cur_poses: {marker_id: T_marker_in_cam} — pre-computed by the caller.
+        T_board_in_cam: if provided (board mode), T_relative is derived directly
+        from the board pose instead of averaging per-marker relative transforms.
 
-        Returns T_world_from_cam (4×4) or None when no co-visible markers exist.
+        Returns T_world_from_cam (4×4) or None when pose is unavailable.
         """
-        # Establish reference at pick 0
-        if not self.T_ref_per_marker:
-            if not cur_poses:
-                print("  WARNING: no ARuCO markers detected at pick 0 — "
-                      "relative poses will be unavailable.")
-            self.T_ref_per_marker = dict(cur_poses)
-            if cur_poses:
-                self.T_cam_in_obj0 = np.linalg.inv(
-                    average_transforms(list(cur_poses.values()))
-                )
+        if T_board_in_cam is not None:
+            # Board mode: use the joint board pose directly.
+            if self.T_board_ref is None:
+                self.T_board_ref = T_board_in_cam
+                self.T_cam_in_obj0 = np.linalg.inv(T_board_in_cam)
+                T_relative = None
+                co_visible = []
+            else:
+                T_relative = np.linalg.inv(self.T_board_ref) @ T_board_in_cam
+                co_visible = list(cur_poses.keys())
+        else:
+            # Independent mode: average per-marker relative transforms.
+            if not self.T_ref_per_marker:
+                if not cur_poses:
+                    print("  WARNING: no ARuCO markers detected at pick 0 — "
+                          "relative poses will be unavailable.")
+                self.T_ref_per_marker = dict(cur_poses)
+                if cur_poses:
+                    self.T_cam_in_obj0 = np.linalg.inv(
+                        average_transforms(list(cur_poses.values()))
+                    )
 
-        T_relative, co_visible = compute_relative_transform(
-            self.T_ref_per_marker, cur_poses
-        )
+            T_relative, co_visible = compute_relative_transform(
+                self.T_ref_per_marker, cur_poses
+            )
 
-        if not co_visible and idx > 0:
-            print(f"  WARNING: no co-visible markers with pick 0 — "
-                  f"T_relative recorded as null.")
+            if not co_visible and idx > 0:
+                print(f"  WARNING: no co-visible markers with pick 0 — "
+                      f"T_relative recorded as null.")
 
         if T_relative is not None and self.T_cam_in_obj0 is not None:
             T_world_from_cam = np.linalg.inv(T_relative) @ self.T_cam_in_obj0
@@ -478,6 +492,7 @@ def run_capture_flow(
     predictor: "SamPredictor",
     state: CaptureState,
     accumulated_view: AccumulatedView,
+    T_board_in_cam: "np.ndarray | None" = None,
 ):
     WIN = "Capture (drag left panel for box, Enter to run SAM, r to redraw, Esc to cancel)"
 
@@ -562,7 +577,9 @@ def run_capture_flow(
 
         elif key == ord('s') and mask is not None:
             idx = state.next_idx()
-            T_world_from_cam = state.save(idx, color_bgr, depth_img, mask, cur_poses)
+            T_world_from_cam = state.save(
+                idx, color_bgr, depth_img, mask, cur_poses, T_board_in_cam
+            )
             accumulated_view.add_capture(
                 color_frame, depth_frame, color_bgr, mask, T_world_from_cam, cur_poses, idx
             )
@@ -638,6 +655,9 @@ def main():
 
     print("Streaming — press 'c' to capture, 'q' to quit.")
 
+    board_rvec = None   # initialise so burst loop can safely check before first detection
+    T_board = None
+
     try:
         while True:
             frameset = pipeline.wait_for_frames()
@@ -705,40 +725,58 @@ def main():
             elif key == ord('c'):
                 # Burst: average BURST_FRAMES consecutive pose detections to
                 # reduce single-frame noise before entering the capture flow.
-                burst: dict[int, list] = {mid: [T] for mid, T in cur_poses.items()}
-                for _ in range(BURST_FRAMES - 1):
-                    fs = pipeline.wait_for_frames()
-                    al = align.process(fs)
-                    cf = al.get_color_frame()
-                    if not cf:
-                        continue
-                    cb = np.asanyarray(cf.get_data())
-                    if board is not None:
+                if board is not None:
+                    # Board mode: average board poses directly (not per-marker).
+                    board_T_list = [T_board] if board_rvec is not None else []
+                    for _ in range(BURST_FRAMES - 1):
+                        fs = pipeline.wait_for_frames()
+                        al = align.process(fs)
+                        cf = al.get_color_frame()
+                        if not cf:
+                            continue
+                        cb = np.asanyarray(cf.get_data())
                         _, _, br, bt = detect_board_pose(
                             cb, detector, board, camera_matrix, dist_coeffs
                         )
                         if br is not None:
-                            p2 = build_marker_poses_from_board(
-                                rvec_tvec_to_T(br, bt), corners_in_board
-                            )
-                        else:
-                            p2 = {}
+                            board_T_list.append(rvec_tvec_to_T(br, bt))
+                    if board_T_list:
+                        averaged_T_board = average_transforms(board_T_list)
                     else:
+                        averaged_T_board = T_board if board_rvec is not None else None
+                    averaged_poses = (
+                        build_marker_poses_from_board(averaged_T_board, corners_in_board)
+                        if averaged_T_board is not None else {}
+                    )
+                    run_capture_flow(
+                        color_bgr, depth_img, display_frame,
+                        color_frame, depth_frame,
+                        averaged_poses, predictor, state, accumulated_view,
+                        T_board_in_cam=averaged_T_board,
+                    )
+                else:
+                    burst: dict[int, list] = {mid: [T] for mid, T in cur_poses.items()}
+                    for _ in range(BURST_FRAMES - 1):
+                        fs = pipeline.wait_for_frames()
+                        al = align.process(fs)
+                        cf = al.get_color_frame()
+                        if not cf:
+                            continue
+                        cb = np.asanyarray(cf.get_data())
                         c2, i2, r2, t2 = detect_aruco_pose(
                             cb, detector, camera_matrix, dist_coeffs, args.marker_size
                         )
-                        p2 = build_marker_poses(c2, i2, r2, t2)
-                    for mid, T in p2.items():
-                        burst.setdefault(mid, []).append(T)
-                averaged_poses = {
-                    mid: average_transforms(Ts) if len(Ts) > 1 else Ts[0]
-                    for mid, Ts in burst.items()
-                }
-                run_capture_flow(
-                    color_bgr, depth_img, display_frame,
-                    color_frame, depth_frame,
-                    averaged_poses, predictor, state, accumulated_view,
-                )
+                        for mid, T in build_marker_poses(c2, i2, r2, t2).items():
+                            burst.setdefault(mid, []).append(T)
+                    averaged_poses = {
+                        mid: average_transforms(Ts) if len(Ts) > 1 else Ts[0]
+                        for mid, Ts in burst.items()
+                    }
+                    run_capture_flow(
+                        color_bgr, depth_img, display_frame,
+                        color_frame, depth_frame,
+                        averaged_poses, predictor, state, accumulated_view,
+                    )
 
     finally:
         pipeline.stop()
