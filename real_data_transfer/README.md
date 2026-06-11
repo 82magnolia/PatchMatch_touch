@@ -22,7 +22,7 @@ pip install pyrealsense2
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 pip install segment-anything         # SAM (Meta)
 pip install opencv-contrib-python    # includes ARuCO support
-pip install numpy open3d
+pip install numpy open3d matplotlib
 ```
 
 > If you see a pyrealsense2 driver version mismatch at runtime, install the matching wheel explicitly:
@@ -68,6 +68,39 @@ python real_data_transfer/visualize_realsense.py
 | Right-drag | Pan |
 | `q` (RGB-D window) | Quit |
 | Close point cloud window | Quit |
+
+---
+
+### `gen_aruco_pdf.py` — Print ARuCO marker sheet
+
+Generates a PDF of N ARuCO markers (DICT_4X4_50) at a specified physical size, laid out in a grid on A4 pages.  Print and cut out the markers to attach to the turntable.
+
+**Run:**
+
+```bash
+# 5 markers at 5 cm (defaults)
+python real_data_transfer/gen_aruco_pdf.py
+
+# Custom: 4 markers at 3.5 cm, IDs 0–3, saved to log/captures/
+python real_data_transfer/gen_aruco_pdf.py \
+    --n 4 --marker_size 0.035 --log_dir log/captures
+```
+
+Output filename encodes the ID range, e.g. `log/aruco_00_to_04.pdf`.
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--n` | `5` | Number of markers |
+| `--marker_size` | `0.05` | Printed side length in metres |
+| `--quiet_zone` | `0.25` | Quiet-zone width as fraction of marker size |
+| `--start_id` | `0` | First marker ID (max ID is 49 for DICT_4X4_50) |
+| `--margin_mm` | `15` | Page margin in mm |
+| `--gap_mm` | `6` | Gap between marker cells in mm |
+| `--log_dir` | `log/` | Output directory |
+
+> After printing, measure the black square with a ruler and pass the measured value as `--marker_size` to `calibrate_board.py` and `capture_turntable.py`.
 
 ---
 
