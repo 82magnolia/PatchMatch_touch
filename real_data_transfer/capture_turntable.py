@@ -250,12 +250,11 @@ class AccumulatedView:
         [1.00, 0.60, 0.00], [0.60, 0.00, 1.00],
     ]
 
-    def __init__(self, fx: float, fy: float, cx: float, cy: float,
-                 img_w: int, img_h: int, marker_size: float = 0.035):
-        self.fx, self.fy, self.cx, self.cy = fx, fy, cx, cy
+    def __init__(self, img_w: int, img_h: int, marker_size: float = 0.035):
         self.img_w, self.img_h = img_w, img_h
         self.marker_size = marker_size
         self._alive = True
+        self._pc = rs.pointcloud()
 
         self.vis = o3d.visualization.Visualizer()
         self.vis.create_window("Accumulated Captures", width=960, height=540)
@@ -263,15 +262,16 @@ class AccumulatedView:
         self.vis.add_geometry(axes)
 
     def _frustum(self, T_cam_in_world: np.ndarray, color: list,
-                 depth: float = 0.08) -> o3d.geometry.LineSet:
-        fx, fy, cx, cy = self.fx, self.fy, self.cx, self.cy
-        w, h = self.img_w, self.img_h
+                 intr: "rs.intrinsics", depth: float = 0.08) -> o3d.geometry.LineSet:
+        w, h = intr.width, intr.height
+        def deproject(px, py):
+            return rs.rs2_deproject_pixel_to_point(intr, [px, py], depth)
         local_pts = np.array([
             [0, 0, 0],
-            [(0 - cx) / fx * depth, (0 - cy) / fy * depth, depth],
-            [(w - cx) / fx * depth, (0 - cy) / fy * depth, depth],
-            [(w - cx) / fx * depth, (h - cy) / fy * depth, depth],
-            [(0 - cx) / fx * depth, (h - cy) / fy * depth, depth],
+            deproject(0, 0),
+            deproject(w, 0),
+            deproject(w, h),
+            deproject(0, h),
         ])
         pts_h = np.hstack([local_pts, np.ones((5, 1))])
         world_pts = (T_cam_in_world @ pts_h.T).T[:, :3]
@@ -301,36 +301,41 @@ class AccumulatedView:
         ls.colors = o3d.utility.Vector3dVector([color] * len(lines))
         return ls
 
-    def add_capture(self, color_bgr: np.ndarray, depth_img: np.ndarray,
-                    mask: np.ndarray, T_world_from_cam,
-                    cur_poses: dict, capture_idx: int):
+    def add_capture(self, color_frame: "rs.frame", depth_frame: "rs.frame",
+                    color_bgr: np.ndarray, mask: np.ndarray,
+                    T_world_from_cam, cur_poses: dict, capture_idx: int):
         if T_world_from_cam is None:
             T_world_from_cam = np.eye(4)
 
-        vs, us = np.where(mask > 0)
-        z = depth_img[vs, us].astype(np.float32) / 1000.0
-        valid = z > 0
-        us, vs, z = us[valid], vs[valid], z[valid]
-        xyz_cam = np.stack(
-            [(us - self.cx) / self.fx * z,
-             (vs - self.cy) / self.fy * z,
-             z], axis=1,
-        )
-        rgb = color_bgr[vs, us][:, ::-1].astype(np.float64) / 255.0
+        # Use the RealSense SDK point cloud calculator (mirrors pcd_vis.py).
+        # map_to associates texture (UV) coordinates with the color frame so
+        # get_texture_coordinates() returns the colour sample location for each vertex.
+        self._pc.map_to(color_frame)
+        points = self._pc.calculate(depth_frame)
 
-        xyz_cam, rgb = xyz_cam[::4], rgb[::4]
+        verts = np.asanyarray(points.get_vertices()).view(np.float32).reshape(-1, 3)
+        texcoords = (np.asanyarray(points.get_texture_coordinates())
+                     .view(np.float32).reshape(-1, 2))
+
+        W, H = self.img_w, self.img_h
+        u_px = np.clip((texcoords[:, 0] * W).astype(np.int32), 0, W - 1)
+        v_px = np.clip((texcoords[:, 1] * H).astype(np.int32), 0, H - 1)
+
+        # Keep points that have valid depth, fall inside the SAM mask, and are finite.
+        valid = (verts[:, 2] > 0) & (mask[v_px, u_px] > 0) & np.isfinite(verts).all(axis=1)
+        xyz_cam = verts[valid].astype(np.float64)[::4]
+        rgb = color_bgr[v_px[valid], u_px[valid]][:, ::-1].astype(np.float64)[::4] / 255.0
+
         xyz_world = (T_world_from_cam @ np.hstack(
             [xyz_cam, np.ones((len(xyz_cam), 1))]).T).T[:, :3]
 
-        pcd = o3d.geometry.PointCloud(
-            points=o3d.utility.Vector3dVector(xyz_world))
+        pcd = o3d.geometry.PointCloud(points=o3d.utility.Vector3dVector(xyz_world))
         pcd.colors = o3d.utility.Vector3dVector(rgb)
 
+        intr = (depth_frame.profile.as_video_stream_profile().get_intrinsics())
         color = self._COLORS[capture_idx % len(self._COLORS)]
-        frustum = self._frustum(T_world_from_cam, color)
-
         self.vis.add_geometry(pcd)
-        self.vis.add_geometry(frustum)
+        self.vis.add_geometry(self._frustum(T_world_from_cam, color, intr))
 
         for mid, T_marker_in_cam in cur_poses.items():
             T_marker_in_world = T_world_from_cam @ T_marker_in_cam
@@ -467,6 +472,8 @@ def run_capture_flow(
     color_bgr: np.ndarray,
     depth_img: np.ndarray,
     aruco_overlay: np.ndarray,
+    color_frame: "rs.frame",
+    depth_frame: "rs.frame",
     cur_poses: dict,
     predictor: "SamPredictor",
     state: CaptureState,
@@ -557,7 +564,7 @@ def run_capture_flow(
             idx = state.next_idx()
             T_world_from_cam = state.save(idx, color_bgr, depth_img, mask, cur_poses)
             accumulated_view.add_capture(
-                color_bgr, depth_img, mask, T_world_from_cam, cur_poses, idx
+                color_frame, depth_frame, color_bgr, mask, T_world_from_cam, cur_poses, idx
             )
             break
 
@@ -626,8 +633,7 @@ def main():
 
     state = CaptureState(args.log_dir)
     accumulated_view = AccumulatedView(
-        intr.fx, intr.fy, intr.ppx, intr.ppy, CAPTURE_W, CAPTURE_H,
-        marker_size=args.marker_size,
+        CAPTURE_W, CAPTURE_H, marker_size=args.marker_size,
     )
 
     print("Streaming — press 'c' to capture, 'q' to quit.")
@@ -730,6 +736,7 @@ def main():
                 }
                 run_capture_flow(
                     color_bgr, depth_img, display_frame,
+                    color_frame, depth_frame,
                     averaged_poses, predictor, state, accumulated_view,
                 )
 
