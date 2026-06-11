@@ -52,6 +52,7 @@ DEPTH_MIN_MM = 100
 DEPTH_MAX_MM = 3000
 
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
+BURST_FRAMES = 5   # frames averaged per capture to reduce random pose noise
 
 
 # ── realsense helpers ─────────────────────────────────────────────────────────
@@ -90,12 +91,16 @@ def depth_to_colormap(depth_img: np.ndarray) -> np.ndarray:
 def build_aruco_detector():
     dictionary = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
     params = cv2.aruco.DetectorParameters()
+    params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_APRILTAG
     return cv2.aruco.ArucoDetector(dictionary, params)
+
+
+_clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
 
 def detect_aruco_pose(frame_bgr, detector, camera_matrix, dist_coeffs, marker_size):
     """Returns (corners, ids, rvecs, tvecs) or (None, None, None, None)."""
-    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    gray = _clahe.apply(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY))
     corners, ids, _ = detector.detectMarkers(gray)
     if ids is None or len(ids) == 0:
         return None, None, None, None
@@ -148,7 +153,7 @@ def detect_board_pose(frame_bgr, detector, board, camera_matrix, dist_coeffs):
 
     Returns (corners, ids, rvec, tvec); rvec/tvec are None if no board pose found.
     """
-    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    gray = _clahe.apply(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY))
     corners, ids, _ = detector.detectMarkers(gray)
     if ids is None or len(ids) == 0:
         return None, None, None, None
@@ -692,9 +697,40 @@ def main():
             if key == ord('q'):
                 break
             elif key == ord('c'):
+                # Burst: average BURST_FRAMES consecutive pose detections to
+                # reduce single-frame noise before entering the capture flow.
+                burst: dict[int, list] = {mid: [T] for mid, T in cur_poses.items()}
+                for _ in range(BURST_FRAMES - 1):
+                    fs = pipeline.wait_for_frames()
+                    al = align.process(fs)
+                    cf = al.get_color_frame()
+                    if not cf:
+                        continue
+                    cb = np.asanyarray(cf.get_data())
+                    if board is not None:
+                        _, _, br, bt = detect_board_pose(
+                            cb, detector, board, camera_matrix, dist_coeffs
+                        )
+                        if br is not None:
+                            p2 = build_marker_poses_from_board(
+                                rvec_tvec_to_T(br, bt), corners_in_board
+                            )
+                        else:
+                            p2 = {}
+                    else:
+                        c2, i2, r2, t2 = detect_aruco_pose(
+                            cb, detector, camera_matrix, dist_coeffs, args.marker_size
+                        )
+                        p2 = build_marker_poses(c2, i2, r2, t2)
+                    for mid, T in p2.items():
+                        burst.setdefault(mid, []).append(T)
+                averaged_poses = {
+                    mid: average_transforms(Ts) if len(Ts) > 1 else Ts[0]
+                    for mid, Ts in burst.items()
+                }
                 run_capture_flow(
                     color_bgr, depth_img, display_frame,
-                    cur_poses, predictor, state, accumulated_view,
+                    averaged_poses, predictor, state, accumulated_view,
                 )
 
     finally:
