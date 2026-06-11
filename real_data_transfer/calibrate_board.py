@@ -158,9 +158,19 @@ def compute_board_layout(frames: list, marker_size: float):
         print(f"  Marker {mid}: {len(samples)} co-visible frames, "
               f"mean z offset = {corners_in_board[:, 2].mean() * 1000:.2f} mm")
 
+    # Fit a plane to all corners and project onto it.
+    # This removes the depth-noise z-offset that persists after averaging SE(3).
     all_corners = np.vstack(list(layout.values()))
-    z_spread = float(all_corners[:, 2].max() - all_corners[:, 2].min())
-    print(f"\nPlanarity check: Z-spread = {z_spread * 1000:.2f} mm "
+    centroid = all_corners.mean(axis=0)
+    _, _, Vt = np.linalg.svd(all_corners - centroid)
+    normal = Vt[-1]                          # plane normal (least-variance direction)
+    for mid in layout:
+        c = layout[mid]
+        layout[mid] = c - np.outer(np.dot(c - centroid, normal), normal)
+
+    all_corners_proj = np.vstack(list(layout.values()))
+    z_spread = float(all_corners_proj[:, 2].max() - all_corners_proj[:, 2].min())
+    print(f"\nPlanarity check (after projection): Z-spread = {z_spread * 1000:.2f} mm "
           f"({'good' if z_spread < 0.005 else 'poor — try more varied viewpoints'})")
 
     return layout, origin_id
