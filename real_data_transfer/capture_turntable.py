@@ -1,12 +1,15 @@
 """
 Turntable capture script: RGB-D streaming + ARuCO pose tracking + SAM segmentation.
 
-Pose estimation: every detected ARuCO marker is tracked independently.  For each
-capture a per-marker pose dictionary is stored.  The relative transform T_relative
-between a capture and pick 0 is computed by averaging the per-marker relative
-transforms over all markers that are co-visible in both frames (SVD-re-orthogonalised
-mean R, mean t).  This makes the estimate more robust than tracking a single marker
-and degrades gracefully when some markers leave the frame.
+Pose estimation — two modes:
+
+  Default: every detected ARuCO marker is tracked independently.  T_relative is
+  averaged over all co-visible markers (SVD-re-orthogonalised mean R, mean t).
+
+  Board mode (--board_config <path>): loads the board layout from calibrate_board.py
+  and uses cv2.aruco.estimatePoseBoard to fit a single jointly-constrained pose to
+  all detected markers simultaneously.  This enforces the known coplanarity of the
+  markers and gives significantly more accurate and stable poses.
 
 Controls (main window):
   c  — freeze frame and enter capture mode
@@ -112,6 +115,78 @@ def draw_aruco_overlay(frame_bgr, corners, ids, rvecs, tvecs,
     return out
 
 
+# ── board helpers ─────────────────────────────────────────────────────────────
+
+def load_board(board_config_path: str, dictionary):
+    """Load board_config.json, build cv2.aruco.Board, return (board, corners_in_board).
+
+    corners_in_board: {marker_id: (4,3) float32 array of corner positions in board frame}
+    """
+    with open(board_config_path) as f:
+        cfg = json.load(f)
+
+    obj_points = []
+    ids = []
+    corners_in_board = {}
+
+    for mid_str, corners in cfg["markers"].items():
+        mid = int(mid_str)
+        pts = np.array(corners, dtype=np.float32)
+        obj_points.append(pts)
+        ids.append(mid)
+        corners_in_board[mid] = pts
+
+    board = cv2.aruco.Board(obj_points, dictionary, np.array(ids))
+    marker_size = float(cfg.get("marker_size", 0.035))
+    print(f"Board loaded: {len(ids)} markers {sorted(ids)}, "
+          f"origin={cfg['origin_marker_id']}, marker_size={marker_size}")
+    return board, corners_in_board, marker_size
+
+
+def detect_board_pose(frame_bgr, detector, board, camera_matrix, dist_coeffs):
+    """Estimate a single joint board pose using all detected markers.
+
+    Returns (corners, ids, rvec, tvec); rvec/tvec are None if no board pose found.
+    """
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    corners, ids, _ = detector.detectMarkers(gray)
+    if ids is None or len(ids) == 0:
+        return None, None, None, None
+    n, rvec, tvec = cv2.aruco.estimatePoseBoard(
+        corners, ids, board, camera_matrix, dist_coeffs, None, None
+    )
+    if n == 0:
+        return corners, ids, None, None
+    return corners, ids, rvec, tvec
+
+
+def corners_to_T(corners: np.ndarray) -> np.ndarray:
+    """Recover a 4×4 pose from (4,3) marker corners (ARuCO corner order)."""
+    center = corners.mean(axis=0)
+    x = ((corners[1] - corners[0]) + (corners[2] - corners[3])) / 2
+    x /= np.linalg.norm(x)
+    y = ((corners[0] - corners[3]) + (corners[1] - corners[2])) / 2
+    y /= np.linalg.norm(y)
+    z = np.cross(x, y)
+    z /= np.linalg.norm(z)
+    T = np.eye(4)
+    T[:3, 0] = x.astype(np.float64)
+    T[:3, 1] = y.astype(np.float64)
+    T[:3, 2] = z.astype(np.float64)
+    T[:3, 3] = center.astype(np.float64)
+    return T
+
+
+def build_marker_poses_from_board(T_board_in_cam: np.ndarray,
+                                  corners_in_board: dict) -> dict:
+    """Compute per-marker T_marker_in_cam from a single board pose + board layout."""
+    poses = {}
+    for mid, corners in corners_in_board.items():
+        T_marker_in_board = corners_to_T(corners.astype(np.float64))
+        poses[mid] = T_board_in_cam @ T_marker_in_board
+    return poses
+
+
 # ── pose math ─────────────────────────────────────────────────────────────────
 
 def rvec_tvec_to_T(rvec, tvec) -> np.ndarray:
@@ -151,7 +226,6 @@ def compute_relative_transform(ref_poses: dict, cur_poses: dict):
     """Average per-marker relative transforms over co-visible markers.
 
     Returns (T_relative, co_visible_ids) or (None, []) if no overlap.
-    T_relative = mean over k of inv(ref_poses[k]) @ cur_poses[k].
     """
     co_visible = [mid for mid in cur_poses if mid in ref_poses]
     if not co_visible:
@@ -163,13 +237,7 @@ def compute_relative_transform(ref_poses: dict, cur_poses: dict):
 # ── accumulated 3-D view ──────────────────────────────────────────────────────
 
 class AccumulatedView:
-    """Open3D window: masked point clouds + camera frustums for all captures.
-
-    Coordinate frame: pick-0 camera frame.
-    T_world_from_cam = inv(T_relative), where T_relative = mean over co-visible
-    markers of inv(T_ref_k) @ T_current_k.  At pick 0 T_relative = I so the
-    pick-0 camera sits at the world origin.
-    """
+    """Open3D window: masked point clouds + camera frustums + marker squares."""
 
     _COLORS = [
         [1.00, 0.25, 0.25], [0.25, 1.00, 0.25], [0.25, 0.45, 1.00],
@@ -212,16 +280,15 @@ class AccumulatedView:
 
     def _marker_lineset(self, T_marker_in_world: np.ndarray,
                         color: list) -> o3d.geometry.LineSet:
-        """Square outline + centre-to-normal stub for one ARuCO marker."""
+        """Square outline + normal stub for one ARuCO marker."""
         h = self.marker_size / 2.0
         local = np.array([
-            [-h,  h, 0], [ h,  h, 0], [ h, -h, 0], [-h, -h, 0],  # 4 corners
-            [ 0,  0, 0], [ 0,  0, h * 0.8],                       # centre + normal tip
+            [-h,  h, 0], [ h,  h, 0], [ h, -h, 0], [-h, -h, 0],
+            [ 0,  0, 0], [ 0,  0, h * 0.8],
         ], dtype=np.float64)
         pts_h = np.hstack([local, np.ones((len(local), 1))])
         world = (T_marker_in_world @ pts_h.T).T[:, :3]
-        lines = [[0, 1], [1, 2], [2, 3], [3, 0],   # square edges
-                 [4, 5]]                             # normal stub
+        lines = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5]]
         ls = o3d.geometry.LineSet(
             points=o3d.utility.Vector3dVector(world),
             lines=o3d.utility.Vector2iVector(lines),
@@ -260,7 +327,6 @@ class AccumulatedView:
         self.vis.add_geometry(pcd)
         self.vis.add_geometry(frustum)
 
-        # Draw each detected marker as a labelled square in world space
         for mid, T_marker_in_cam in cur_poses.items():
             T_marker_in_world = T_world_from_cam @ T_marker_in_cam
             marker_color = self._COLORS[mid % len(self._COLORS)]
@@ -316,33 +382,28 @@ class CaptureState:
     def __init__(self, save_dir: str):
         self.save_dir = save_dir
         self.records: list[dict] = []
-        # Per-marker poses at pick 0, used as reference for all subsequent T_relative
         self.T_ref_per_marker: dict[int, np.ndarray] = {}
-        # Camera pose in the object frame at pick 0: inv(avg T_marker_in_cam at pick 0).
-        # Combined with inv(T_relative) this gives the correct orbiting camera position.
         self.T_cam_in_obj0: "np.ndarray | None" = None
 
     def next_idx(self) -> int:
         return len(glob.glob(os.path.join(self.save_dir, "*_rgb.png")))
 
     def save(self, idx: int, color_bgr, depth_img, mask,
-             corners, ids, rvecs, tvecs) -> "np.ndarray | None":
+             cur_poses: dict) -> "np.ndarray | None":
         """Save capture files and update poses.json.
 
-        Returns T_world_from_cam (4×4) = inv(T_relative), or None when no
-        co-visible markers are available.
-        """
-        cur_poses = build_marker_poses(corners, ids, rvecs, tvecs)
+        cur_poses: {marker_id: T_marker_in_cam} — pre-computed by the caller,
+        so this method is agnostic to whether a board or per-marker mode is used.
 
-        # At pick 0 establish the reference
+        Returns T_world_from_cam (4×4) or None when no co-visible markers exist.
+        """
+        # Establish reference at pick 0
         if not self.T_ref_per_marker:
             if not cur_poses:
                 print("  WARNING: no ARuCO markers detected at pick 0 — "
                       "relative poses will be unavailable.")
             self.T_ref_per_marker = dict(cur_poses)
             if cur_poses:
-                # Camera position in object frame: inv of averaged marker poses.
-                # Used so virtual cameras orbit at the correct distance from object.
                 self.T_cam_in_obj0 = np.linalg.inv(
                     average_transforms(list(cur_poses.values()))
                 )
@@ -355,8 +416,6 @@ class CaptureState:
             print(f"  WARNING: no co-visible markers with pick 0 — "
                   f"T_relative recorded as null.")
 
-        # inv(T_relative) gives the virtual camera rotation; premultiplying by
-        # T_cam_in_obj0 places it at the correct distance/angle from the object.
         if T_relative is not None and self.T_cam_in_obj0 is not None:
             T_world_from_cam = np.linalg.inv(T_relative) @ self.T_cam_in_obj0
         elif self.T_cam_in_obj0 is not None:
@@ -403,7 +462,7 @@ def run_capture_flow(
     color_bgr: np.ndarray,
     depth_img: np.ndarray,
     aruco_overlay: np.ndarray,
-    corners, ids, rvecs, tvecs,
+    cur_poses: dict,
     predictor: "SamPredictor",
     state: CaptureState,
     accumulated_view: AccumulatedView,
@@ -491,11 +550,7 @@ def run_capture_flow(
 
         elif key == ord('s') and mask is not None:
             idx = state.next_idx()
-            T_world_from_cam = state.save(
-                idx, color_bgr, depth_img, mask,
-                corners, ids, rvecs, tvecs,
-            )
-            cur_poses = build_marker_poses(corners, ids, rvecs, tvecs)
+            T_world_from_cam = state.save(idx, color_bgr, depth_img, mask, cur_poses)
             accumulated_view.add_capture(
                 color_bgr, depth_img, mask, T_world_from_cam, cur_poses, idx
             )
@@ -511,7 +566,10 @@ def parse_args():
     p.add_argument("--log_dir", default="log/captures",
                    help="Directory to save capture outputs")
     p.add_argument("--marker_size", type=float, default=0.035,
-                   help="ARuCO marker side length in metres")
+                   help="ARuCO marker side length in metres (overridden by board_config)")
+    p.add_argument("--board_config",
+                   help="Path to board_config.json from calibrate_board.py "
+                        "(enables joint board pose estimation)")
     p.add_argument("--sam_checkpoint", default="log/sam_vit_b_01ec64.pth",
                    help="Path to SAM checkpoint (.pth)")
     p.add_argument("--sam_model_type", default="vit_b",
@@ -546,7 +604,21 @@ def main():
     )
     dist_coeffs = np.array(intr.coeffs, dtype=np.float64)
 
+    dictionary = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
     detector = build_aruco_detector()
+
+    # Board mode setup
+    board = None
+    corners_in_board = {}
+    if args.board_config:
+        board, corners_in_board, board_marker_size = load_board(
+            args.board_config, dictionary
+        )
+        args.marker_size = board_marker_size
+        print("Board mode enabled — using estimatePoseBoard.")
+    else:
+        print("Default mode — using per-marker independent poses.")
+
     state = CaptureState(args.log_dir)
     accumulated_view = AccumulatedView(
         intr.fx, intr.fy, intr.ppx, intr.ppy, CAPTURE_W, CAPTURE_H,
@@ -569,25 +641,44 @@ def main():
             color_bgr = np.asanyarray(color_frame.get_data())
             depth_img = np.asanyarray(depth_frame.get_data())
 
-            corners, ids, rvecs, tvecs = detect_aruco_pose(
-                color_bgr, detector, camera_matrix, dist_coeffs, args.marker_size
-            )
-
-            if ids is not None:
-                display_frame = draw_aruco_overlay(
-                    color_bgr, corners, ids, rvecs, tvecs,
-                    camera_matrix, dist_coeffs, args.marker_size,
+            if board is not None:
+                # Board mode: single joint pose
+                corners, ids, board_rvec, board_tvec = detect_board_pose(
+                    color_bgr, detector, board, camera_matrix, dist_coeffs
                 )
+                if board_rvec is not None:
+                    T_board = rvec_tvec_to_T(board_rvec, board_tvec)
+                    cur_poses = build_marker_poses_from_board(T_board, corners_in_board)
+                    display_frame = color_bgr.copy()
+                    if ids is not None:
+                        cv2.aruco.drawDetectedMarkers(display_frame, corners, ids)
+                    cv2.drawFrameAxes(display_frame, camera_matrix, dist_coeffs,
+                                      board_rvec, board_tvec, args.marker_size)
+                else:
+                    cur_poses = {}
+                    display_frame = color_bgr
             else:
-                display_frame = color_bgr
+                # Default mode: per-marker independent poses
+                corners, ids, rvecs, tvecs = detect_aruco_pose(
+                    color_bgr, detector, camera_matrix, dist_coeffs, args.marker_size
+                )
+                cur_poses = build_marker_poses(corners, ids, rvecs, tvecs)
+                if ids is not None:
+                    display_frame = draw_aruco_overlay(
+                        color_bgr, corners, ids, rvecs, tvecs,
+                        camera_matrix, dist_coeffs, args.marker_size,
+                    )
+                else:
+                    display_frame = color_bgr
 
             grid = make_grid(display_frame, depth_img)
-            n_markers = 0 if ids is None else len(ids)
+            n_markers = len(cur_poses)
+            mode_str = "board" if board is not None else "indep"
             ref_str = (f"ref={sorted(state.T_ref_per_marker.keys())}"
                        if state.T_ref_per_marker else "ref=?")
             cv2.putText(
                 grid,
-                f"ARuCO: {n_markers}  {ref_str}"
+                f"[{mode_str}] ARuCO: {n_markers}  {ref_str}"
                 f"  |  captures: {state.next_idx()}"
                 "  |  c=capture  q=quit",
                 (10, DISPLAY_H - 10),
@@ -603,8 +694,7 @@ def main():
             elif key == ord('c'):
                 run_capture_flow(
                     color_bgr, depth_img, display_frame,
-                    corners, ids, rvecs, tvecs,
-                    predictor, state, accumulated_view,
+                    cur_poses, predictor, state, accumulated_view,
                 )
 
     finally:

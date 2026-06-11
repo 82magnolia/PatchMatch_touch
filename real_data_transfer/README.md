@@ -71,6 +71,34 @@ python real_data_transfer/visualize_realsense.py
 
 ---
 
+### `calibrate_board.py` — One-time ARuCO board calibration
+
+Establishes the 3D layout of all ARuCO markers on the turntable surface by observing them from multiple viewpoints and computing their positions relative to the lowest-ID (origin) marker.  Run this once per physical turntable setup; the result is used by `capture_turntable.py --board_config` for more accurate joint pose estimation.
+
+**Run:**
+
+```bash
+python real_data_transfer/calibrate_board.py \
+    --log_dir log/captures \
+    --marker_size 0.035
+# Saves log/captures/board_config.json
+```
+
+**Controls:**
+
+| Input | Action |
+|-------|--------|
+| `c` | Capture current frame (accumulate detections) |
+| `b` | Compute board layout from all accumulated frames and save |
+| `q` | Quit |
+
+**Tips:**
+- Aim for 20+ frames.
+- Vary the viewpoint by slightly tilting or shifting the camera (or rotating the turntable to different positions) so markers are seen from multiple angles.
+- A good calibration prints `Z-spread < 5 mm`. Larger values mean more viewpoint diversity is needed.
+
+---
+
 ### `capture_turntable.py` — Turntable capture with SAM + ARuCO pose tracking
 
 Streams RGB-D with ARuCO marker axes overlaid. On each capture, the user clicks a point on the frozen frame to prompt SAM segmentation, then saves full and masked RGB/depth along with pose information.
@@ -93,8 +121,15 @@ wget -P log/ https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pt
 **Run:**
 
 ```bash
+# Default mode (per-marker independent poses):
 python real_data_transfer/capture_turntable.py \
     --marker_size 0.035
+
+# Board mode (recommended — joint pose, enforces coplanarity):
+python real_data_transfer/capture_turntable.py \
+    --board_config log/captures/board_config.json \
+    --marker_size 0.035
+
 # Saves to log/captures/ by default. Override with --log_dir log/my_session
 # SAM defaults to log/sam_vit_b_01ec64.pth (vit_b). Override with --sam_checkpoint / --sam_model_type
 ```
