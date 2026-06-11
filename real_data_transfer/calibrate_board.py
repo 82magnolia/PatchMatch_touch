@@ -41,6 +41,7 @@ except ImportError:
 DISPLAY_W, DISPLAY_H = 640, 360
 CAPTURE_W, CAPTURE_H = 1280, 720
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
+BURST_FRAMES = 5   # frames averaged per 'c' press to reduce random pose noise
 
 _COLORS = [
     [1.00, 0.25, 0.25], [0.25, 1.00, 0.25], [0.25, 0.45, 1.00],
@@ -78,12 +79,20 @@ def build_pipeline(serial: str):
 def build_aruco_detector():
     dictionary = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
     params = cv2.aruco.DetectorParameters()
+    # AprilTag-style corner refinement: significantly better corner localisation
+    # than the default (integer-pixel) approach, reducing pose noise from PnP.
+    params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_APRILTAG
     return cv2.aruco.ArucoDetector(dictionary, params)
+
+
+_clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
 
 def detect_markers(frame_bgr, detector, camera_matrix, dist_coeffs, marker_size):
     """Returns ({marker_id: T_marker_in_cam}, corners, ids)."""
+    # CLAHE on the luminance channel improves detection under uneven lighting.
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    gray = _clahe.apply(gray)
     corners, ids, _ = detector.detectMarkers(gray)
     if ids is None or len(ids) == 0:
         return {}, None, None
@@ -441,11 +450,30 @@ def main():
                 if not poses:
                     print("No markers visible — skipped.")
                 else:
-                    view.add_frame(poses, len(frames))
-                    frames.append(poses)
-                    all_seen_ids.update(poses.keys())
-                    print(f"Captured frame {len(frames)} — "
-                          f"markers {sorted(poses.keys())}")
+                    # Burst: collect BURST_FRAMES consecutive detections and
+                    # average per-marker poses to reduce single-frame noise.
+                    burst: dict[int, list] = {mid: [T] for mid, T in poses.items()}
+                    for _ in range(BURST_FRAMES - 1):
+                        fs = pipeline.wait_for_frames()
+                        al = align.process(fs)
+                        cf = al.get_color_frame()
+                        if not cf:
+                            continue
+                        p2, _, _ = detect_markers(
+                            np.asanyarray(cf.get_data()),
+                            detector, camera_matrix, dist_coeffs, args.marker_size,
+                        )
+                        for mid, T in p2.items():
+                            burst.setdefault(mid, []).append(T)
+                    averaged = {
+                        mid: average_transforms(Ts) if len(Ts) > 1 else Ts[0]
+                        for mid, Ts in burst.items()
+                    }
+                    view.add_frame(averaged, len(frames))
+                    frames.append(averaged)
+                    all_seen_ids.update(averaged.keys())
+                    print(f"Captured frame {len(frames)} (burst {BURST_FRAMES}) — "
+                          f"markers {sorted(averaged.keys())}")
             elif key == ord('b'):
                 if len(frames) < 5:
                     print("Need at least 5 frames. Keep pressing 'c'.")
