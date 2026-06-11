@@ -178,9 +178,10 @@ class AccumulatedView:
     ]
 
     def __init__(self, fx: float, fy: float, cx: float, cy: float,
-                 img_w: int, img_h: int):
+                 img_w: int, img_h: int, marker_size: float = 0.035):
         self.fx, self.fy, self.cx, self.cy = fx, fy, cx, cy
         self.img_w, self.img_h = img_w, img_h
+        self.marker_size = marker_size
         self._alive = True
 
         self.vis = o3d.visualization.Visualizer()
@@ -209,8 +210,28 @@ class AccumulatedView:
         ls.colors = o3d.utility.Vector3dVector([color] * len(lines))
         return ls
 
+    def _marker_lineset(self, T_marker_in_world: np.ndarray,
+                        color: list) -> o3d.geometry.LineSet:
+        """Square outline + centre-to-normal stub for one ARuCO marker."""
+        h = self.marker_size / 2.0
+        local = np.array([
+            [-h,  h, 0], [ h,  h, 0], [ h, -h, 0], [-h, -h, 0],  # 4 corners
+            [ 0,  0, 0], [ 0,  0, h * 0.8],                       # centre + normal tip
+        ], dtype=np.float64)
+        pts_h = np.hstack([local, np.ones((len(local), 1))])
+        world = (T_marker_in_world @ pts_h.T).T[:, :3]
+        lines = [[0, 1], [1, 2], [2, 3], [3, 0],   # square edges
+                 [4, 5]]                             # normal stub
+        ls = o3d.geometry.LineSet(
+            points=o3d.utility.Vector3dVector(world),
+            lines=o3d.utility.Vector2iVector(lines),
+        )
+        ls.colors = o3d.utility.Vector3dVector([color] * len(lines))
+        return ls
+
     def add_capture(self, color_bgr: np.ndarray, depth_img: np.ndarray,
-                    mask: np.ndarray, T_world_from_cam, capture_idx: int):
+                    mask: np.ndarray, T_world_from_cam,
+                    cur_poses: dict, capture_idx: int):
         if T_world_from_cam is None:
             T_world_from_cam = np.eye(4)
 
@@ -238,6 +259,13 @@ class AccumulatedView:
 
         self.vis.add_geometry(pcd)
         self.vis.add_geometry(frustum)
+
+        # Draw each detected marker as a labelled square in world space
+        for mid, T_marker_in_cam in cur_poses.items():
+            T_marker_in_world = T_world_from_cam @ T_marker_in_cam
+            marker_color = self._COLORS[mid % len(self._COLORS)]
+            self.vis.add_geometry(self._marker_lineset(T_marker_in_world, marker_color))
+
         self.vis.reset_view_point(True)
 
     def update(self) -> bool:
@@ -467,8 +495,9 @@ def run_capture_flow(
                 idx, color_bgr, depth_img, mask,
                 corners, ids, rvecs, tvecs,
             )
+            cur_poses = build_marker_poses(corners, ids, rvecs, tvecs)
             accumulated_view.add_capture(
-                color_bgr, depth_img, mask, T_world_from_cam, idx
+                color_bgr, depth_img, mask, T_world_from_cam, cur_poses, idx
             )
             break
 
@@ -520,7 +549,8 @@ def main():
     detector = build_aruco_detector()
     state = CaptureState(args.log_dir)
     accumulated_view = AccumulatedView(
-        intr.fx, intr.fy, intr.ppx, intr.ppy, CAPTURE_W, CAPTURE_H
+        intr.fx, intr.fy, intr.ppx, intr.ppy, CAPTURE_W, CAPTURE_H,
+        marker_size=args.marker_size,
     )
 
     print("Streaming — press 'c' to capture, 'q' to quit.")
