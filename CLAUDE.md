@@ -109,19 +109,69 @@ Uses a **separate** `pm_real` conda env (not `pm_touch`) to avoid dependency con
 conda create -n pm_real python=3.10
 conda activate pm_real
 pip install pyrealsense2 torch torchvision --index-url https://download.pytorch.org/whl/cu118
-pip install segment-anything opencv-contrib-python numpy open3d
+pip install segment-anything opencv-contrib-python numpy open3d matplotlib
 ```
+
+- **`gen_aruco_pdf.py`** — Generates a printable PDF of ARuCO markers (DICT_4X4_50) at a specified physical size, laid out in a grid on A4 pages. Pass `--n`, `--marker_size` (metres), `--start_id` as needed.
+  ```bash
+  python real_data_transfer/gen_aruco_pdf.py --n 4 --marker_size 0.035
+  ```
+
+- **`calibrate_board.py`** — One-time interactive calibration that computes the 3D layout of all ARuCO markers on the turntable surface relative to the lowest-ID (origin) marker. Press `c` to accumulate frames, `b` to compute and save `board_config.json`. Aim for 20+ frames with varied viewpoints; a good calibration prints `Z-spread < 5 mm`.
+  ```bash
+  python real_data_transfer/calibrate_board.py --log_dir log/captures --marker_size 0.035
+  # Saves log/captures/board_config.json
+  ```
 
 - **`visualize_realsense.py`** — Live RGB-D viewer with interactive Open3D point cloud. Temporal filter and fixed depth range (`100–3000 mm`) prevent depth map flickering. Point cloud is subsampled `[::4]` for performance.
   ```bash
   python real_data_transfer/visualize_realsense.py
   ```
 
-- **`capture_turntable.py`** — Turntable capture pipeline. Streams RGB-D with ARuCO (DICT_4X4_50) marker axes overlaid. Press `c` to freeze a frame, click a point, press `Enter` to run SAM segmentation, `s` to save. Each save writes full and masked RGB/depth plus updates `poses.json` with the marker-derived 4×4 transform relative to pick 0. Requires a SAM checkpoint (download separately — see `real_data_transfer/README.md`).
+- **`capture_turntable.py`** — Turntable capture pipeline. Streams RGB-D with ARuCO (DICT_4X4_50) marker axes overlaid. Two pose estimation modes:
+  - *Default* — each detected marker tracked independently; `T_relative` averaged over co-visible markers.
+  - *Board mode* (recommended) — `--board_config` enables `estimatePoseBoard`, a single jointly-constrained pose enforcing marker coplanarity. More accurate and stable.
+
+  Press `c` to freeze a frame, drag a bounding box, press `Enter` to run SAM segmentation, `s` to save. Requires a SAM checkpoint.
   ```bash
-  python real_data_transfer/capture_turntable.py --marker_size 0.05  # saves to log/captures/, SAM weights at log/sam_vit_b_01ec64.pth
+  # Board mode (recommended):
+  python real_data_transfer/capture_turntable.py \
+      --board_config log/captures/board_config.json \
+      --marker_size 0.035
   ```
-  Output per capture (`NNN_` prefix): `_rgb.png`, `_depth.npy`, `_depth_vis.png`, `_mask.png`, `_rgb_masked.png`, `_depth_masked.npy`. Pose data in `poses.json` (`T_marker_in_cam`, `T_relative`).
+  Output per capture (`NNN_` prefix): `_rgb.png`, `_depth.npy`, `_depth_vis.png`, `_mask.png`, `_rgb_masked.png`, `_depth_masked.npy`.
+  Session-level files: `intrinsics.json` (color camera fx/fy/cx/cy/width/height, written once on first capture), `poses.json` (per capture: `marker_poses`, `T_relative`, `T_world_from_cam`).
+
+  Depth is stored as uint16 mm aligned to the color camera frame via `rs.align(rs.stream.color)`. `T_world_from_cam` and ARuCO poses are both in the color camera coordinate frame, so they are consistent for 3D reconstruction. Board frame at capture 0 is the world origin.
+
+- **`tsdf_fusion.py`** — Offline TSDF mesh reconstruction. Reads `intrinsics.json` and `poses.json` written by `capture_turntable.py`, fuses masked depth maps into a colored triangle mesh via Open3D `ScalableTSDFVolume`, and saves a `.ply` file. No camera connection needed.
+  ```bash
+  python real_data_transfer/tsdf_fusion.py \
+      --capture_dir log/captures \
+      --output log/captures/mesh.ply \
+      --voxel_size 0.002   # 2 mm; decrease to 0.001 for finer detail
+  ```
+  Key flags: `--max_depth` (clip distant depth, default 0.8 m), `--no_mask` (use unmasked depth/color), `--fx/fy/cx/cy/width/height` (manual intrinsic override when `intrinsics.json` is absent). After saving, opens an interactive Open3D preview window.
+
+- **`mapanything_reconstruct.py`** — Feed-forward 3D reconstruction via [MapAnything](https://map-anything.github.io/). Reads `intrinsics.json`, `poses.json`, and masked RGB images from `capture_turntable.py`; runs MapAnything inference with the known metric poses and intrinsics; saves per-frame depth maps, a combined colored point cloud, and refined poses. Does not use the RealSense depth stream — useful when sensor depth is noisy (specular/transparent surfaces).
+
+  **Setup (once, in `pm_real` env):**
+  ```bash
+  # Install without overwriting opencv-contrib-python
+  pip install -e real_data_transfer/map-anything --no-deps
+  pip install huggingface_hub hydra-core natsort orjson pillow-heif plyfile \
+      python-box safetensors tensorboard tqdm trimesh "uniception==0.1.7" \
+      "rerun-sdk~=0.24.1"
+  ```
+
+  **Run:**
+  ```bash
+  python real_data_transfer/mapanything_reconstruct.py \
+      --capture_dir log/captures
+  # Outputs: log/captures/mapanything_out/{NNN_depth_ma.npy, NNN_depth_ma_vis.png,
+  #           pointcloud.ply, poses_ma.json}
+  ```
+  Key flags: `--output_dir`, `--model` (HuggingFace ID or local path), `--apache` (Apache 2.0 model), `--no_mask` (use unmasked RGB), `--save_conf` (save confidence maps), `--max_pts` (point cloud cap, default 500 000).
 
 ### rebot-net (`rebot-net/`)
 Post-processing enhancement network (ReBotNet) that takes PatchMatch-transferred tactile videos as input and outputs cleaner videos closer to the ground-truth query. Separate from the PatchMatch pipeline.

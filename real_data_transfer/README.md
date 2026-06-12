@@ -241,3 +241,63 @@ After integration the mesh is shown in an interactive Open3D window; close it to
 - Start with the default `--voxel_size 0.002` (2 mm). For small objects or fine surface texture, try `0.001` (1 mm) — memory and compute scale roughly as voxel_size⁻³.
 - Turntable captures work best with ≥ 8 evenly-spaced angular positions (45° steps) to avoid holes on the back face.
 - If the mesh has floating fragments, open it in MeshLab and use *Filters → Cleaning → Remove Isolated Pieces* to discard small disconnected components.
+
+---
+
+### `mapanything_reconstruct.py` — MapAnything feed-forward 3D reconstruction
+
+Runs [MapAnything](https://map-anything.github.io/) (a feed-forward metric 3D reconstruction transformer from Meta / CMU) on the masked RGB images and ARuCO-based camera poses produced by `capture_turntable.py`.  Unlike TSDF fusion, MapAnything does **not** use the RealSense depth stream — it infers dense depth entirely from the RGB images, guided by the known metric poses and intrinsics.  This can produce cleaner geometry on textureless or specular surfaces where the structured-light depth sensor struggles.
+
+#### Additional setup (one-time, in `pm_real` env)
+
+MapAnything ships with a pinned `opencv-python-headless` that conflicts with the `opencv-contrib-python` already in `pm_real`.  Install it without its conflicting dep:
+
+```bash
+conda activate pm_real
+# Install the mapanything package without overwriting opencv-contrib-python
+pip install -e real_data_transfer/map-anything --no-deps
+# Install remaining mapanything dependencies
+pip install huggingface_hub hydra-core natsort orjson pillow-heif plyfile \
+    python-box safetensors tensorboard tqdm trimesh "uniception==0.1.7" \
+    "rerun-sdk~=0.24.1"
+```
+
+> **Expected warning:** pip's resolver will print `mapanything 1.1.2 requires opencv-python-headless==4.10.0.84, which is not installed`. This is harmless — `opencv-contrib-python` (already in `pm_real`) provides a superset of `opencv-python-headless` via the same `cv2` module, so all mapanything imports work correctly at runtime.
+
+The first run will download the model weights from HuggingFace (~1–2 GB) and cache them in `~/.cache/huggingface/`.
+
+#### Run
+
+```bash
+python real_data_transfer/mapanything_reconstruct.py \
+    --capture_dir log/captures
+```
+
+Outputs are written to `log/captures/mapanything_out/` by default.
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--capture_dir` | required | Directory written by `capture_turntable.py` |
+| `--output_dir` | `<capture_dir>/mapanything_out` | Where to save outputs |
+| `--model` | `facebook/map-anything` | HuggingFace model ID or local path |
+| `--apache` | off | Use `facebook/map-anything-apache` (Apache 2.0 license) |
+| `--no_mask` | off | Use unmasked `_rgb.png` instead of `_rgb_masked.png` |
+| `--save_conf` | off | Also save per-frame confidence maps as `{idx}_conf.npy` |
+| `--max_pts` | `500000` | Downsample combined point cloud to this many points (0 = no limit) |
+
+**Output files:**
+
+| File | Content |
+|------|---------|
+| `NNN_depth_ma.npy` | Per-frame float32 Z-depth in metres (original capture resolution) |
+| `NNN_depth_ma_vis.png` | JET-colorized depth visualization |
+| `NNN_conf.npy` | Per-frame confidence map (`--save_conf` only) |
+| `pointcloud.ply` | Combined colored point cloud from all frames (masked, world frame) |
+| `poses_ma.json` | Refined camera poses and intrinsics from MapAnything |
+
+**Tips:**
+- Capture at least 8 viewpoints spread around the object for good coverage.
+- The board-mode poses from `capture_turntable.py --board_config` give the most accurate metric scale; prefer them over independent-marker mode.
+- For objects where the RealSense depth is reliable (diffuse, non-transparent surfaces), `tsdf_fusion.py` can be faster and produce smoother meshes. Use MapAnything when depth is noisy or absent.
