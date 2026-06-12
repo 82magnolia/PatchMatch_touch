@@ -160,8 +160,9 @@ pip install segment-anything opencv-contrib-python numpy open3d matplotlib
   # Install without overwriting opencv-contrib-python
   pip install -e real_data_transfer/map-anything --no-deps
   pip install huggingface_hub hydra-core natsort orjson pillow-heif plyfile \
-      python-box safetensors tensorboard tqdm trimesh "uniception==0.1.7" \
-      "rerun-sdk~=0.24.1"
+      python-box safetensors tensorboard tqdm trimesh \
+      jaxtyping termcolor timm torchmetrics minio
+  pip install "uniception==0.1.7" --no-deps
   ```
 
   **Run:**

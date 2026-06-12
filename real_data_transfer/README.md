@@ -258,11 +258,12 @@ conda activate pm_real
 pip install -e real_data_transfer/map-anything --no-deps
 # Install remaining mapanything dependencies
 pip install huggingface_hub hydra-core natsort orjson pillow-heif plyfile \
-    python-box safetensors tensorboard tqdm trimesh "uniception==0.1.7" \
-    "rerun-sdk~=0.24.1"
+    python-box safetensors tensorboard tqdm trimesh \
+    jaxtyping termcolor timm torchmetrics minio
+pip install "uniception==0.1.7" --no-deps
 ```
 
-> **Expected warning:** pip's resolver will print `mapanything 1.1.2 requires opencv-python-headless==4.10.0.84, which is not installed`. This is harmless — `opencv-contrib-python` (already in `pm_real`) provides a superset of `opencv-python-headless` via the same `cv2` module, so all mapanything imports work correctly at runtime.
+> **Expected warnings:** pip's resolver will print warnings about `opencv-python-headless` (not installed) and `rerun-sdk`/`torchaudio` (not installed). All three are harmless: `opencv-contrib-python` already in `pm_real` provides a superset of `opencv-python-headless`, and `rerun-sdk`/`torchaudio` are only needed for visualization utilities that this script does not use.
 
 The first run will download the model weights from HuggingFace (~1–2 GB) and cache them in `~/.cache/huggingface/`.
 
