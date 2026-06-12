@@ -302,3 +302,28 @@ Outputs are written to `log/captures/mapanything_out/` by default.
 - Capture at least 8 viewpoints spread around the object for good coverage.
 - The board-mode poses from `capture_turntable.py --board_config` give the most accurate metric scale; prefer them over independent-marker mode.
 - For objects where the RealSense depth is reliable (diffuse, non-transparent surfaces), `tsdf_fusion.py` can be faster and produce smoother meshes. Use MapAnything when depth is noisy or absent.
+
+---
+
+### `mapanything_vis.py` — Visualize MapAnything reconstruction
+
+Interactive Open3D viewer showing the point cloud, input camera poses (blue frustums), and MapAnything-refined camera poses (red frustums) together.
+
+**Run:**
+
+```bash
+python real_data_transfer/mapanything_vis.py --capture_dir log/captures
+# recon_dir defaults to log/captures/mapanything_out
+```
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--capture_dir` | required | Capture directory containing `poses.json` and `intrinsics.json` |
+| `--recon_dir` | `<capture_dir>/mapanything_out` | MapAnything output directory |
+| `--frustum_depth` | `0.05` | Frustum display depth in metres |
+| `--frustum_axis_size` | `0.02` | Camera axis cross size in metres |
+| `--no_pointcloud` | off | Skip loading the point cloud (faster startup for pose inspection) |
+
+**Controls:** left-drag = rotate · scroll = zoom · right-drag = pan · `q` = quit
