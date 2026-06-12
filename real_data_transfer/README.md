@@ -191,9 +191,53 @@ python real_data_transfer/capture_turntable.py \
 | `NNN_depth_masked.npy` | Depth with mask applied |
 | `poses.json` | ARuCO-derived poses for all captures |
 
+**Session-level files** (written once per session):
+
+| File | Content |
+|------|---------|
+| `intrinsics.json` | Color camera intrinsics (fx, fy, cx, cy, width, height) |
+| `poses.json` | ARuCO-derived poses for all captures (see below) |
+
 **`poses.json` structure (per entry):**
 - `marker_poses` — dict mapping each detected marker ID → 4×4 `T_marker_in_cam`
 - `co_visible_marker_ids` — list of marker IDs visible in both this capture and pick 0; these are the markers used to compute `T_relative`
 - `T_relative` — 4×4 transform relative to pick 0, averaged over all co-visible markers (SVD-re-orthogonalised mean R, mean t); `null` at pick 0 or when no co-visible markers exist
+- `T_world_from_cam` — 4×4 camera-to-world transform in the board/marker coordinate frame; `null` when no pose is available
 
 > **Note:** the more ARuCO markers remain co-visible across captures, the more robust the relative pose estimate. If no co-visible markers are found, a warning is printed and `T_relative` is `null`.
+
+---
+
+### `tsdf_fusion.py` — TSDF mesh reconstruction from captures
+
+Fuses the masked depth maps from `capture_turntable.py` into a single colored
+triangle mesh using Open3D's Scalable TSDF Volume.  No camera connection needed —
+reads `intrinsics.json` and `poses.json` written by `capture_turntable.py`.
+
+**Run:**
+
+```bash
+python real_data_transfer/tsdf_fusion.py \
+    --capture_dir log/captures \
+    --output      log/captures/mesh.ply
+```
+
+After integration the mesh is shown in an interactive Open3D window; close it to exit.
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--capture_dir` | `log/captures` | Directory written by `capture_turntable.py` |
+| `--output` | `<capture_dir>/mesh.ply` | Output mesh path (`.ply` or `.obj`) |
+| `--voxel_size` | `0.002` | TSDF voxel size in metres (2 mm). Decrease for finer detail |
+| `--sdf_trunc` | `4 × voxel_size` | SDF truncation distance in metres |
+| `--max_depth` | `0.8` | Maximum depth to integrate in metres |
+| `--depth_scale` | `1000.0` | Raw depth unit → metres divisor (1000 for uint16 mm) |
+| `--no_mask` | off | Use full (unmasked) depth/color instead of SAM-masked files |
+| `--fx/fy/cx/cy/width/height` | — | Manual intrinsic override when `intrinsics.json` is absent |
+
+**Tips:**
+- Start with the default `--voxel_size 0.002` (2 mm). For small objects or fine surface texture, try `0.001` (1 mm) — memory and compute scale roughly as voxel_size⁻³.
+- Turntable captures work best with ≥ 8 evenly-spaced angular positions (45° steps) to avoid holes on the back face.
+- If the mesh has floating fragments, open it in MeshLab and use *Filters → Cleaning → Remove Isolated Pieces* to discard small disconnected components.

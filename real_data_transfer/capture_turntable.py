@@ -470,6 +470,7 @@ class CaptureState:
             },
             "co_visible_marker_ids": co_visible if co_visible else None,
             "T_relative": T_relative.tolist() if T_relative is not None else None,
+            "T_world_from_cam": T_world_from_cam.tolist() if T_world_from_cam is not None else None,
         })
         with open(os.path.join(self.save_dir, "poses.json"), "w") as f:
             json.dump(self.records, f, indent=2)
@@ -647,6 +648,18 @@ def main():
         print("Board mode enabled — using estimatePoseBoard.")
     else:
         print("Default mode — using per-marker independent poses.")
+
+    # Save camera intrinsics once so tsdf_fusion.py can read them offline.
+    intr_path = os.path.join(args.log_dir, "intrinsics.json")
+    if not os.path.exists(intr_path):
+        with open(intr_path, "w") as _f:
+            json.dump({
+                "fx": intr.fx, "fy": intr.fy,
+                "cx": intr.ppx, "cy": intr.ppy,
+                "width": intr.width, "height": intr.height,
+                "coeffs": list(intr.coeffs),
+            }, _f, indent=2)
+        print(f"Intrinsics saved → {intr_path}")
 
     state = CaptureState(args.log_dir)
     accumulated_view = AccumulatedView(
