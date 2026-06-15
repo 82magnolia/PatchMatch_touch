@@ -164,7 +164,10 @@ class ZEDCamera(CameraBase):
         init.coordinate_units = sl.UNIT.METER
         init.depth_minimum_distance = 0.3
         init.depth_maximum_distance = 3.0
-        init.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
+        # Use IMAGE coordinate system (X right, Y down, Z forward) to match
+        # OpenCV conventions used by ARuCO and our manual depth backprojection.
+        # RIGHT_HANDED_Y_UP flips Z so objects in front have negative depth,
+        # which our depth_m > 0 filter would discard entirely.
 
         status = cam.open(init)
         if status != sl.ERROR_CODE.SUCCESS:
@@ -180,7 +183,7 @@ class ZEDCamera(CameraBase):
         self._rt.enable_fill_mode = False
 
         self._image_sl = sl.Mat()
-        self._depth_sl = sl.Mat()
+        self._xyz_sl = sl.Mat()
 
         # ZED depth is already rectified; dist_coeffs are effectively zero
         lc = info.camera_configuration.calibration_parameters.left_cam
@@ -206,13 +209,17 @@ class ZEDCamera(CameraBase):
         if self._cam.grab(self._rt) != self._sl.ERROR_CODE.SUCCESS:
             return False
         self._cam.retrieve_image(self._image_sl, self._sl.VIEW.LEFT)
-        self._cam.retrieve_measure(self._depth_sl, self._sl.MEASURE.DEPTH)
+        # Retrieve full XYZ and take the Z channel so the depth map is the
+        # perpendicular Z component in IMAGE coordinates (X right, Y down,
+        # Z forward), consistent with ARuCO tvec and our backprojection math.
+        self._cam.retrieve_measure(self._xyz_sl, self._sl.MEASURE.XYZ)
 
         self._color_bgr = self._image_sl.get_data()[:, :, :3].copy()  # drop alpha
 
-        depth_m = self._depth_sl.get_data()   # float32, metres, NaN for invalid
-        depth_m = np.where(np.isfinite(depth_m) & (depth_m > 0), depth_m, 0.0)
-        self._depth_mm = (depth_m * 1000).clip(0, 65535).astype(np.uint16)
+        xyz = self._xyz_sl.get_data()   # (H, W, 4) float32, 4th channel is padding
+        z_m = xyz[:, :, 2]             # Z component in metres; NaN where invalid
+        z_m = np.where(np.isfinite(z_m) & (z_m > 0), z_m, 0.0)
+        self._depth_mm = (z_m * 1000).clip(0, 65535).astype(np.uint16)
         return True
 
     @property

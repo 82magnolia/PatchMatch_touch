@@ -17,6 +17,7 @@ Two checks side by side in one cv2 window:
 Press 'q' to quit.
 """
 
+import argparse
 import os
 import sys
 import numpy as np
@@ -25,13 +26,21 @@ import cv2
 sys.path.insert(0, os.path.dirname(__file__))
 from camera_utils import ZEDCamera
 
-MARKER_SIZE = 0.035   # metres — adjust to your printed marker size
-ARUCO_DICT  = cv2.aruco.DICT_4X4_50
+ARUCO_DICT = cv2.aruco.DICT_4X4_50
 DISPLAY_W, DISPLAY_H = 640, 360
 
 
 def main():
-    cam = ZEDCamera(depth_mode="neural_plus")
+    parser = argparse.ArgumentParser(description="ZED intrinsics verifier")
+    parser.add_argument("--marker_size", type=float, default=0.092,
+                        help="Printed ARuCO marker side length in metres (measure with a ruler)")
+    parser.add_argument("--depth_mode",
+                        choices=["performance", "quality", "ultra", "neural", "neural_plus"],
+                        default="neural_plus")
+    args = parser.parse_args()
+
+    MARKER_SIZE = args.marker_size
+    cam = ZEDCamera(depth_mode=args.depth_mode)
     intr = cam.intrinsics
     camera_matrix = intr["camera_matrix"]
     dist_coeffs   = intr["dist_coeffs"]   # zeros for ZED (pre-rectified)
@@ -99,20 +108,26 @@ def main():
                     cx_px = np.clip(cx_px, 0, depth_mm.shape[1] - 1)
                     cy_px = np.clip(cy_px, 0, depth_mm.shape[0] - 1)
 
-                    depth_z_mm  = int(depth_mm[cy_px, cx_px])
-                    aruco_z_mm  = int(tvec[2] * 1000)
+                    depth_z_mm = int(depth_mm[cy_px, cx_px])
+                    aruco_z_mm = int(tvec[2] * 1000)
+                    aruco_dist_mm = int(np.linalg.norm(tvec) * 1000)
 
-                    label = f"ID{mid}: depth={depth_z_mm}mm  ARuCO_Z={aruco_z_mm}mm"
                     color = (0, 255, 0) if abs(depth_z_mm - aruco_z_mm) < 20 else (0, 100, 255)
-                    cv2.putText(right, label,
-                                (cx_px - 80, cy_px - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+                    for j, line in enumerate([
+                        f"ID{mid}",
+                        f"depth   = {depth_z_mm} mm",
+                        f"ARuCO_Z = {aruco_z_mm} mm",
+                        f"ARuCO_d = {aruco_dist_mm} mm",
+                    ]):
+                        cv2.putText(right, line,
+                                    (cx_px - 80, cy_px - 10 + j * 28),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                     cv2.circle(right, (cx_px, cy_px), 6, color, -1)
 
             cv2.putText(left, "Green=detected  Red=reprojected",
-                        (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                        (8, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
             cv2.putText(right, "depth at centre vs ARuCO tvec Z",
-                        (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                        (8, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
 
             left_s  = cv2.resize(left,  (DISPLAY_W, DISPLAY_H))
             right_s = cv2.resize(right, (DISPLAY_W, DISPLAY_H))
