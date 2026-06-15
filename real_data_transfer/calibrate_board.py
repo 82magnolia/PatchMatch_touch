@@ -32,10 +32,8 @@ import cv2
 import numpy as np
 import open3d as o3d
 
-try:
-    import pyrealsense2 as rs
-except ImportError:
-    sys.exit("pyrealsense2 not found. Install with: pip install pyrealsense2")
+sys.path.insert(0, os.path.dirname(__file__))
+from camera_utils import build_camera
 
 # ── constants ─────────────────────────────────────────────────────────────────
 DISPLAY_W, DISPLAY_H = 640, 360
@@ -48,30 +46,6 @@ _COLORS = [
     [1.00, 1.00, 0.20], [0.20, 1.00, 1.00], [1.00, 0.20, 1.00],
     [1.00, 0.60, 0.00], [0.60, 0.00, 1.00],
 ]
-
-
-# ── realsense helpers ─────────────────────────────────────────────────────────
-
-def detect_device() -> str:
-    ctx = rs.context()
-    devices = ctx.query_devices()
-    if len(devices) == 0:
-        sys.exit("No RealSense device found.")
-    dev = devices[0]
-    serial = dev.get_info(rs.camera_info.serial_number)
-    name = dev.get_info(rs.camera_info.name)
-    print(f"Found device: {name}  (serial {serial})")
-    return serial
-
-
-def build_pipeline(serial: str):
-    pipeline = rs.pipeline()
-    cfg = rs.config()
-    cfg.enable_device(serial)
-    cfg.enable_stream(rs.stream.color, CAPTURE_W, CAPTURE_H, rs.format.bgr8, 30)
-    cfg.enable_stream(rs.stream.depth, CAPTURE_W, CAPTURE_H, rs.format.z16, 30)
-    profile = pipeline.start(cfg)
-    return pipeline, profile
 
 
 # ── aruco helpers ─────────────────────────────────────────────────────────────
@@ -362,6 +336,12 @@ def parse_args():
                    help="Directory to save board_config.json")
     p.add_argument("--marker_size", type=float, default=0.035,
                    help="ARuCO marker side length in metres")
+    p.add_argument("--camera", choices=["realsense", "zed"], default="zed",
+                   help="Camera to use (default: zed)")
+    p.add_argument("--depth_mode",
+                   choices=["performance", "quality", "ultra", "neural", "neural_plus"],
+                   default="neural_plus",
+                   help="ZED depth mode (default: neural_plus; ignored for realsense)")
     return p.parse_args()
 
 
@@ -370,27 +350,16 @@ def main():
     os.makedirs(args.log_dir, exist_ok=True)
     output_path = os.path.join(args.log_dir, "board_config.json")
 
-    serial = detect_device()
-    pipeline, profile = build_pipeline(serial)
-    align = rs.align(rs.stream.color)
-
-    temporal = rs.temporal_filter()
-    temporal.set_option(rs.option.filter_smooth_alpha, 0.1)
-    temporal.set_option(rs.option.filter_smooth_delta, 40)
-
-    intr = (profile.get_stream(rs.stream.color)
-            .as_video_stream_profile().get_intrinsics())
-    camera_matrix = np.array(
-        [[intr.fx, 0, intr.ppx],
-         [0, intr.fy, intr.ppy],
-         [0, 0, 1]], dtype=np.float64,
-    )
-    dist_coeffs = np.array(intr.coeffs, dtype=np.float64)
+    cam = build_camera(args)
+    intr = cam.intrinsics
+    camera_matrix = intr["camera_matrix"]
+    dist_coeffs = intr["dist_coeffs"]
 
     detector = build_aruco_detector()
 
     view = CalibrationView(
-        intr.fx, intr.fy, intr.ppx, intr.ppy, CAPTURE_W, CAPTURE_H,
+        intr["fx"], intr["fy"], intr["cx"], intr["cy"],
+        intr["width"], intr["height"],
         marker_size=args.marker_size,
     )
 
@@ -401,16 +370,10 @@ def main():
 
     try:
         while True:
-            frameset = pipeline.wait_for_frames()
-            aligned = align.process(frameset)
-
-            color_frame = aligned.get_color_frame()
-            depth_frame = aligned.get_depth_frame()
-            if not color_frame or not depth_frame:
+            if not cam.grab():
                 continue
-            depth_frame = temporal.process(depth_frame)
 
-            color_bgr = np.asanyarray(color_frame.get_data())
+            color_bgr = cam.color_bgr
 
             poses, corners, ids = detect_markers(
                 color_bgr, detector, camera_matrix, dist_coeffs, args.marker_size
@@ -419,7 +382,7 @@ def main():
             # cv2 display: downscaled color + ARuCO overlay
             display = cv2.resize(color_bgr, (DISPLAY_W, DISPLAY_H))
             if ids is not None:
-                scale = DISPLAY_W / CAPTURE_W
+                scale = DISPLAY_W / intr["width"]
                 corners_disp = [c * scale for c in corners]
                 cv2.aruco.drawDetectedMarkers(display, corners_disp, ids)
                 rvecs_tmp, tvecs_tmp, _ = cv2.aruco.estimatePoseSingleMarkers(
@@ -454,14 +417,11 @@ def main():
                     # average per-marker poses to reduce single-frame noise.
                     burst: dict[int, list] = {mid: [T] for mid, T in poses.items()}
                     for _ in range(BURST_FRAMES - 1):
-                        fs = pipeline.wait_for_frames()
-                        al = align.process(fs)
-                        cf = al.get_color_frame()
-                        if not cf:
+                        if not cam.grab():
                             continue
                         p2, _, _ = detect_markers(
-                            np.asanyarray(cf.get_data()),
-                            detector, camera_matrix, dist_coeffs, args.marker_size,
+                            cam.color_bgr, detector, camera_matrix, dist_coeffs,
+                            args.marker_size,
                         )
                         for mid, T in p2.items():
                             burst.setdefault(mid, []).append(T)
@@ -487,7 +447,7 @@ def main():
                 view.add_board_layout(layout)
 
     finally:
-        pipeline.stop()
+        cam.close()
         view.close()
         cv2.destroyAllWindows()
 

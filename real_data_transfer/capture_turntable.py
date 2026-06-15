@@ -34,10 +34,8 @@ import numpy as np
 import open3d as o3d
 import torch
 
-try:
-    import pyrealsense2 as rs
-except ImportError:
-    sys.exit("pyrealsense2 not found. Install with: pip install pyrealsense2")
+sys.path.insert(0, os.path.dirname(__file__))
+from camera_utils import build_camera
 
 try:
     from segment_anything import sam_model_registry, SamPredictor
@@ -53,30 +51,6 @@ DEPTH_MAX_MM = 3000
 
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
 BURST_FRAMES = 5   # frames averaged per capture to reduce random pose noise
-
-
-# ── realsense helpers ─────────────────────────────────────────────────────────
-
-def detect_device() -> str:
-    ctx = rs.context()
-    devices = ctx.query_devices()
-    if len(devices) == 0:
-        sys.exit("No RealSense device found. Check USB connection.")
-    dev = devices[0]
-    serial = dev.get_info(rs.camera_info.serial_number)
-    name = dev.get_info(rs.camera_info.name)
-    print(f"Found device: {name}  (serial {serial})")
-    return serial
-
-
-def build_pipeline(serial: str):
-    pipeline = rs.pipeline()
-    cfg = rs.config()
-    cfg.enable_device(serial)
-    cfg.enable_stream(rs.stream.color, CAPTURE_W, CAPTURE_H, rs.format.bgr8, 30)
-    cfg.enable_stream(rs.stream.depth, CAPTURE_W, CAPTURE_H, rs.format.z16, 30)
-    profile = pipeline.start(cfg)
-    return pipeline, profile
 
 
 def depth_to_colormap(depth_img: np.ndarray) -> np.ndarray:
@@ -254,7 +228,6 @@ class AccumulatedView:
         self.img_w, self.img_h = img_w, img_h
         self.marker_size = marker_size
         self._alive = True
-        self._pc = rs.pointcloud()
 
         self.vis = o3d.visualization.Visualizer()
         self.vis.create_window("Accumulated Captures", width=960, height=540)
@@ -262,16 +235,16 @@ class AccumulatedView:
         self.vis.add_geometry(axes)
 
     def _frustum(self, T_cam_in_world: np.ndarray, color: list,
-                 intr: "rs.intrinsics", depth: float = 0.08) -> o3d.geometry.LineSet:
-        w, h = intr.width, intr.height
-        def deproject(px, py):
-            return rs.rs2_deproject_pixel_to_point(intr, [px, py], depth)
+                 intr: dict, depth: float = 0.08) -> o3d.geometry.LineSet:
+        fx, fy = intr["fx"], intr["fy"]
+        cx, cy = intr["cx"], intr["cy"]
+        w, h = intr["width"], intr["height"]
         local_pts = np.array([
             [0, 0, 0],
-            deproject(0, 0),
-            deproject(w, 0),
-            deproject(w, h),
-            deproject(0, h),
+            [(0 - cx) / fx * depth, (0 - cy) / fy * depth, depth],
+            [(w - cx) / fx * depth, (0 - cy) / fy * depth, depth],
+            [(w - cx) / fx * depth, (h - cy) / fy * depth, depth],
+            [(0 - cx) / fx * depth, (h - cy) / fy * depth, depth],
         ])
         pts_h = np.hstack([local_pts, np.ones((5, 1))])
         world_pts = (T_cam_in_world @ pts_h.T).T[:, :3]
@@ -301,30 +274,19 @@ class AccumulatedView:
         ls.colors = o3d.utility.Vector3dVector([color] * len(lines))
         return ls
 
-    def add_capture(self, color_frame: "rs.frame", depth_frame: "rs.frame",
-                    color_bgr: np.ndarray, mask: np.ndarray,
+    def add_capture(self, color_bgr: np.ndarray, depth_mm: np.ndarray,
+                    mask: np.ndarray, intr: dict,
                     T_world_from_cam, cur_poses: dict, capture_idx: int):
         if T_world_from_cam is None:
             T_world_from_cam = np.eye(4)
 
-        # Use the RealSense SDK point cloud calculator (mirrors pcd_vis.py).
-        # map_to associates texture (UV) coordinates with the color frame so
-        # get_texture_coordinates() returns the colour sample location for each vertex.
-        self._pc.map_to(color_frame)
-        points = self._pc.calculate(depth_frame)
-
-        verts = np.asanyarray(points.get_vertices()).view(np.float32).reshape(-1, 3)
-        texcoords = (np.asanyarray(points.get_texture_coordinates())
-                     .view(np.float32).reshape(-1, 2))
-
-        W, H = self.img_w, self.img_h
-        u_px = np.clip((texcoords[:, 0] * W).astype(np.int32), 0, W - 1)
-        v_px = np.clip((texcoords[:, 1] * H).astype(np.int32), 0, H - 1)
-
-        # Keep points that have valid depth, fall inside the SAM mask, and are finite.
-        valid = (verts[:, 2] > 0) & (mask[v_px, u_px] > 0) & np.isfinite(verts).all(axis=1)
-        xyz_cam = verts[valid].astype(np.float64)[::4]
-        rgb = color_bgr[v_px[valid], u_px[valid]][:, ::-1].astype(np.float64)[::4] / 255.0
+        # Backproject depth pixels to 3D camera-frame points.
+        ys, xs = np.where((depth_mm > 0) & (mask > 0))
+        z = depth_mm[ys, xs].astype(np.float64) / 1000.0
+        x = (xs - intr["cx"]) * z / intr["fx"]
+        y = (ys - intr["cy"]) * z / intr["fy"]
+        xyz_cam = np.stack([x, y, z], axis=1)[::4]
+        rgb = color_bgr[ys, xs][:, ::-1].astype(np.float64)[::4] / 255.0
 
         xyz_world = (T_world_from_cam @ np.hstack(
             [xyz_cam, np.ones((len(xyz_cam), 1))]).T).T[:, :3]
@@ -332,7 +294,6 @@ class AccumulatedView:
         pcd = o3d.geometry.PointCloud(points=o3d.utility.Vector3dVector(xyz_world))
         pcd.colors = o3d.utility.Vector3dVector(rgb)
 
-        intr = (depth_frame.profile.as_video_stream_profile().get_intrinsics())
         color = self._COLORS[capture_idx % len(self._COLORS)]
         self.vis.add_geometry(pcd)
         self.vis.add_geometry(self._frustum(T_world_from_cam, color, intr))
@@ -487,12 +448,11 @@ def run_capture_flow(
     color_bgr: np.ndarray,
     depth_img: np.ndarray,
     aruco_overlay: np.ndarray,
-    color_frame: "rs.frame",
-    depth_frame: "rs.frame",
     cur_poses: dict,
     predictor: "SamPredictor",
     state: CaptureState,
     accumulated_view: AccumulatedView,
+    intr: dict,
     T_board_in_cam: "np.ndarray | None" = None,
 ):
     WIN = "Capture (drag left panel for box, Enter to run SAM, r to redraw, Esc to cancel)"
@@ -582,7 +542,7 @@ def run_capture_flow(
                 idx, color_bgr, depth_img, mask, cur_poses, T_board_in_cam
             )
             accumulated_view.add_capture(
-                color_frame, depth_frame, color_bgr, mask, T_world_from_cam, cur_poses, idx
+                color_bgr, depth_img, mask, intr, T_world_from_cam, cur_poses, idx
             )
             break
 
@@ -604,6 +564,12 @@ def parse_args():
                    help="Path to SAM checkpoint (.pth)")
     p.add_argument("--sam_model_type", default="vit_b",
                    choices=["vit_h", "vit_l", "vit_b"])
+    p.add_argument("--camera", choices=["realsense", "zed"], default="zed",
+                   help="Camera to use (default: zed)")
+    p.add_argument("--depth_mode",
+                   choices=["performance", "quality", "ultra", "neural", "neural_plus"],
+                   default="neural_plus",
+                   help="ZED depth mode (default: neural_plus; ignored for realsense)")
     return p.parse_args()
 
 
@@ -617,22 +583,10 @@ def main():
     predictor = SamPredictor(sam)
     print("SAM ready.")
 
-    serial = detect_device()
-    pipeline, profile = build_pipeline(serial)
-    align = rs.align(rs.stream.color)
-
-    temporal = rs.temporal_filter()
-    temporal.set_option(rs.option.filter_smooth_alpha, 0.1)
-    temporal.set_option(rs.option.filter_smooth_delta, 40)
-
-    intr = (profile.get_stream(rs.stream.color)
-            .as_video_stream_profile().get_intrinsics())
-    camera_matrix = np.array(
-        [[intr.fx, 0, intr.ppx],
-         [0, intr.fy, intr.ppy],
-         [0, 0, 1]], dtype=np.float64,
-    )
-    dist_coeffs = np.array(intr.coeffs, dtype=np.float64)
+    cam = build_camera(args)
+    intr = cam.intrinsics
+    camera_matrix = intr["camera_matrix"]
+    dist_coeffs = intr["dist_coeffs"]
 
     dictionary = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
     detector = build_aruco_detector()
@@ -654,16 +608,15 @@ def main():
     if not os.path.exists(intr_path):
         with open(intr_path, "w") as _f:
             json.dump({
-                "fx": intr.fx, "fy": intr.fy,
-                "cx": intr.ppx, "cy": intr.ppy,
-                "width": intr.width, "height": intr.height,
-                "coeffs": list(intr.coeffs),
+                "fx": intr["fx"], "fy": intr["fy"],
+                "cx": intr["cx"], "cy": intr["cy"],
+                "width": intr["width"], "height": intr["height"],
             }, _f, indent=2)
         print(f"Intrinsics saved → {intr_path}")
 
     state = CaptureState(args.log_dir)
     accumulated_view = AccumulatedView(
-        CAPTURE_W, CAPTURE_H, marker_size=args.marker_size,
+        intr["width"], intr["height"], marker_size=args.marker_size,
     )
 
     print("Streaming — press 'c' to capture, 'q' to quit.")
@@ -673,17 +626,11 @@ def main():
 
     try:
         while True:
-            frameset = pipeline.wait_for_frames()
-            aligned = align.process(frameset)
-
-            color_frame = aligned.get_color_frame()
-            depth_frame = aligned.get_depth_frame()
-            if not color_frame or not depth_frame:
+            if not cam.grab():
                 continue
-            depth_frame = temporal.process(depth_frame)
 
-            color_bgr = np.asanyarray(color_frame.get_data())
-            depth_img = np.asanyarray(depth_frame.get_data())
+            color_bgr = cam.color_bgr
+            depth_img = cam.depth_mm
 
             if board is not None:
                 # Board mode: single joint pose
@@ -742,14 +689,10 @@ def main():
                     # Board mode: average board poses directly (not per-marker).
                     board_T_list = [T_board] if board_rvec is not None else []
                     for _ in range(BURST_FRAMES - 1):
-                        fs = pipeline.wait_for_frames()
-                        al = align.process(fs)
-                        cf = al.get_color_frame()
-                        if not cf:
+                        if not cam.grab():
                             continue
-                        cb = np.asanyarray(cf.get_data())
                         _, _, br, bt = detect_board_pose(
-                            cb, detector, board, camera_matrix, dist_coeffs
+                            cam.color_bgr, detector, board, camera_matrix, dist_coeffs
                         )
                         if br is not None:
                             board_T_list.append(rvec_tvec_to_T(br, bt))
@@ -763,21 +706,17 @@ def main():
                     )
                     run_capture_flow(
                         color_bgr, depth_img, display_frame,
-                        color_frame, depth_frame,
-                        averaged_poses, predictor, state, accumulated_view,
+                        averaged_poses, predictor, state, accumulated_view, intr,
                         T_board_in_cam=averaged_T_board,
                     )
                 else:
                     burst: dict[int, list] = {mid: [T] for mid, T in cur_poses.items()}
                     for _ in range(BURST_FRAMES - 1):
-                        fs = pipeline.wait_for_frames()
-                        al = align.process(fs)
-                        cf = al.get_color_frame()
-                        if not cf:
+                        if not cam.grab():
                             continue
-                        cb = np.asanyarray(cf.get_data())
                         c2, i2, r2, t2 = detect_aruco_pose(
-                            cb, detector, camera_matrix, dist_coeffs, args.marker_size
+                            cam.color_bgr, detector, camera_matrix, dist_coeffs,
+                            args.marker_size
                         )
                         for mid, T in build_marker_poses(c2, i2, r2, t2).items():
                             burst.setdefault(mid, []).append(T)
@@ -787,12 +726,11 @@ def main():
                     }
                     run_capture_flow(
                         color_bgr, depth_img, display_frame,
-                        color_frame, depth_frame,
-                        averaged_poses, predictor, state, accumulated_view,
+                        averaged_poses, predictor, state, accumulated_view, intr,
                     )
 
     finally:
-        pipeline.stop()
+        cam.close()
         accumulated_view.close()
         cv2.destroyAllWindows()
 

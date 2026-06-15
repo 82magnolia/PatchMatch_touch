@@ -117,7 +117,7 @@ pip install segment-anything opencv-contrib-python numpy open3d matplotlib
   python real_data_transfer/gen_aruco_pdf.py --n 4 --marker_size 0.035
   ```
 
-- **`calibrate_board.py`** — One-time interactive calibration that computes the 3D layout of all ARuCO markers on the turntable surface relative to the lowest-ID (origin) marker. Press `c` to accumulate frames, `b` to compute and save `board_config.json`. Aim for 20+ frames with varied viewpoints; a good calibration prints `Z-spread < 5 mm`.
+- **`calibrate_board.py`** — One-time interactive calibration that computes the 3D layout of all ARuCO markers on the turntable surface relative to the lowest-ID (origin) marker. Press `c` to accumulate frames, `b` to compute and save `board_config.json`. Aim for 20+ frames with varied viewpoints; a good calibration prints `Z-spread < 5 mm`. Supports both cameras via `--camera {zed,realsense}` (default `zed`); use `--depth_mode` to override the ZED depth mode (default `neural_plus`).
   ```bash
   python real_data_transfer/calibrate_board.py --log_dir log/captures --marker_size 0.035
   # Saves log/captures/board_config.json
@@ -133,7 +133,7 @@ pip install segment-anything opencv-contrib-python numpy open3d matplotlib
   python real_data_transfer/visualize_zed.py
   ```
 
-- **`capture_turntable.py`** — Turntable capture pipeline. Streams RGB-D with ARuCO (DICT_4X4_50) marker axes overlaid. Two pose estimation modes:
+- **`capture_turntable.py`** — Turntable capture pipeline. Supports both cameras via `--camera {zed,realsense}` (default `zed`); `--depth_mode` overrides the ZED depth mode. Streams RGB-D with ARuCO (DICT_4X4_50) marker axes overlaid. Two pose estimation modes:
   - *Default* — each detected marker tracked independently; `T_relative` averaged over co-visible markers.
   - *Board mode* (recommended) — `--board_config` enables `estimatePoseBoard`, a single jointly-constrained pose enforcing marker coplanarity. More accurate and stable.
 

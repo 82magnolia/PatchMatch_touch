@@ -28,7 +28,7 @@ pip install numpy open3d matplotlib
 > If you see a pyrealsense2 driver version mismatch at runtime, install the matching wheel explicitly:
 > `pip install pyrealsense2==<version>` where `<version>` matches the output of `rs-enumerate-devices --version`.
 
-### 3. Connect the RealSense D435i
+### 3a. Connect the RealSense D435i
 
 Plug the camera into a **USB 3** port (blue tab). USB 2 ports will cause the depth stream to fail or produce degraded framerates.
 
@@ -39,6 +39,22 @@ rs-enumerate-devices
 ```
 
 You should see an entry like `Intel RealSense D435I` with a serial number.
+
+### 3b. (Optional) Connect the ZED 2i
+
+Install the ZED SDK (includes drivers) from [stereolabs.com/developers](https://www.stereolabs.com/developers/), then install the Python package:
+
+```bash
+pip install pyzed
+```
+
+Verify the camera is detected:
+
+```bash
+python -c "import pyzed.sl as sl; c = sl.Camera(); print(c.open(sl.InitParameters()))"
+```
+
+You should see `SUCCESS`.
 
 ---
 
@@ -156,11 +172,27 @@ Establishes the 3D layout of all ARuCO markers on the turntable surface by obser
 **Run:**
 
 ```bash
+# ZED 2i (default)
 python real_data_transfer/calibrate_board.py \
+    --log_dir log/captures \
+    --marker_size 0.035
+
+# RealSense D435i
+python real_data_transfer/calibrate_board.py \
+    --camera realsense \
     --log_dir log/captures \
     --marker_size 0.035
 # Saves log/captures/board_config.json
 ```
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--log_dir` | `log/captures` | Directory to save `board_config.json` |
+| `--marker_size` | `0.035` | ARuCO marker side length in metres |
+| `--camera` | `zed` | Camera to use: `zed` or `realsense` |
+| `--depth_mode` | `neural_plus` | ZED depth mode: `performance`, `quality`, `ultra`, `neural`, `neural_plus` (ignored for RealSense) |
 
 **Controls:**
 
@@ -199,18 +231,36 @@ wget -P log/ https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pt
 **Run:**
 
 ```bash
-# Default mode (per-marker independent poses):
-python real_data_transfer/capture_turntable.py \
-    --marker_size 0.035
-
-# Board mode (recommended — joint pose, enforces coplanarity):
+# ZED 2i, board mode (recommended):
 python real_data_transfer/capture_turntable.py \
     --board_config log/captures/board_config.json \
+    --marker_size 0.035
+
+# RealSense D435i, board mode:
+python real_data_transfer/capture_turntable.py \
+    --camera realsense \
+    --board_config log/captures/board_config.json \
+    --marker_size 0.035
+
+# Default mode (per-marker independent poses, ZED):
+python real_data_transfer/capture_turntable.py \
     --marker_size 0.035
 
 # Saves to log/captures/ by default. Override with --log_dir log/my_session
 # SAM defaults to log/sam_vit_b_01ec64.pth (vit_b). Override with --sam_checkpoint / --sam_model_type
 ```
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--log_dir` | `log/captures` | Directory to save capture outputs |
+| `--marker_size` | `0.035` | ARuCO marker side length in metres (overridden by `board_config`) |
+| `--board_config` | — | Path to `board_config.json` from `calibrate_board.py` (enables joint board pose) |
+| `--sam_checkpoint` | `log/sam_vit_b_01ec64.pth` | Path to SAM checkpoint |
+| `--sam_model_type` | `vit_b` | SAM model type: `vit_h`, `vit_l`, `vit_b` |
+| `--camera` | `zed` | Camera to use: `zed` or `realsense` |
+| `--depth_mode` | `neural_plus` | ZED depth mode: `performance`, `quality`, `ultra`, `neural`, `neural_plus` (ignored for RealSense) |
 
 **Controls:**
 
@@ -258,6 +308,7 @@ python real_data_transfer/capture_turntable.py \
 Fuses the masked depth maps from `capture_turntable.py` into a single colored
 triangle mesh using Open3D's Scalable TSDF Volume.  No camera connection needed —
 reads `intrinsics.json` and `poses.json` written by `capture_turntable.py`.
+Compatible with captures from both RealSense D435i and ZED 2i.
 
 **Run:**
 
