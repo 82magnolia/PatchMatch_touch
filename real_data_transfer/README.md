@@ -144,7 +144,7 @@ python real_data_transfer/gen_aruco_pdf.py
 
 # Custom: 4 markers at 3.5 cm, IDs 0–3, saved to log/captures/
 python real_data_transfer/gen_aruco_pdf.py \
-    --n 4 --marker_size 0.035 --log_dir log/captures
+    --n 4 --marker_size 0.092 --log_dir log/captures
 ```
 
 Output filename encodes the ID range, e.g. `log/aruco_00_to_04.pdf`.
@@ -175,13 +175,13 @@ Establishes the 3D layout of all ARuCO markers on the turntable surface by obser
 # ZED 2i (default)
 python real_data_transfer/calibrate_board.py \
     --log_dir log/captures \
-    --marker_size 0.035
+    --marker_size 0.092
 
 # RealSense D435i
 python real_data_transfer/calibrate_board.py \
     --camera realsense \
     --log_dir log/captures \
-    --marker_size 0.035
+    --marker_size 0.092
 # Saves log/captures/board_config.json
 ```
 
@@ -190,7 +190,7 @@ python real_data_transfer/calibrate_board.py \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--log_dir` | `log/captures` | Directory to save `board_config.json` |
-| `--marker_size` | `0.035` | ARuCO marker side length in metres |
+| `--marker_size` | `0.092` | ARuCO marker side length in metres |
 | `--camera` | `zed` | Camera to use: `zed` or `realsense` |
 | `--depth_mode` | `neural_plus` | ZED depth mode: `performance`, `quality`, `ultra`, `neural`, `neural_plus` (ignored for RealSense) |
 
@@ -234,17 +234,17 @@ wget -P log/ https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pt
 # ZED 2i, board mode (recommended):
 python real_data_transfer/capture_turntable.py \
     --board_config log/captures/board_config.json \
-    --marker_size 0.035
+    --marker_size 0.092
 
 # RealSense D435i, board mode:
 python real_data_transfer/capture_turntable.py \
     --camera realsense \
     --board_config log/captures/board_config.json \
-    --marker_size 0.035
+    --marker_size 0.092
 
 # Default mode (per-marker independent poses, ZED):
 python real_data_transfer/capture_turntable.py \
-    --marker_size 0.035
+    --marker_size 0.092
 
 # Saves to log/captures/ by default. Override with --log_dir log/my_session
 # SAM defaults to log/sam_vit_b_01ec64.pth (vit_b). Override with --sam_checkpoint / --sam_model_type
@@ -255,7 +255,7 @@ python real_data_transfer/capture_turntable.py \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--log_dir` | `log/captures` | Directory to save capture outputs |
-| `--marker_size` | `0.035` | ARuCO marker side length in metres (overridden by `board_config`) |
+| `--marker_size` | `0.092` | ARuCO marker side length in metres (overridden by `board_config`) |
 | `--board_config` | — | Path to `board_config.json` from `calibrate_board.py` (enables joint board pose) |
 | `--sam_checkpoint` | `log/sam_vit_b_01ec64.pth` | Path to SAM checkpoint |
 | `--sam_model_type` | `vit_b` | SAM model type: `vit_h`, `vit_l`, `vit_b` |
