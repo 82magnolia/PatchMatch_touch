@@ -9,6 +9,7 @@ Press 'q' in the cv2 window (or close the open3d window) to exit.
 """
 
 import sys
+import argparse
 import numpy as np
 import cv2
 import open3d as o3d
@@ -18,17 +19,25 @@ try:
 except ImportError:
     sys.exit("pyzed not found. Install with: pip install pyzed")
 
+DEPTH_MODES = {
+    "performance": sl.DEPTH_MODE.PERFORMANCE,
+    "quality":     sl.DEPTH_MODE.QUALITY,
+    "ultra":       sl.DEPTH_MODE.ULTRA,
+    "neural":      sl.DEPTH_MODE.NEURAL,
+    "neural_plus": sl.DEPTH_MODE.NEURAL_PLUS,
+}
+
 
 DEPTH_MIN_M = 0.3   # 0.3 m
 DEPTH_MAX_M = 3.0   # 3.0 m
 
 
-def build_camera() -> sl.Camera:
+def build_camera(depth_mode: sl.DEPTH_MODE) -> sl.Camera:
     cam = sl.Camera()
     init = sl.InitParameters()
     init.camera_resolution = sl.RESOLUTION.HD720   # 1280×720
     init.camera_fps = 30
-    init.depth_mode = sl.DEPTH_MODE.ULTRA
+    init.depth_mode = depth_mode
     init.coordinate_units = sl.UNIT.METER
     init.depth_minimum_distance = DEPTH_MIN_M
     init.depth_maximum_distance = DEPTH_MAX_M
@@ -76,7 +85,17 @@ def pointcloud_from_zed(xyzrgba: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def main():
-    cam = build_camera()
+    parser = argparse.ArgumentParser(description="Real-time ZED 2i RGB-D viewer")
+    parser.add_argument(
+        "--depth_mode",
+        choices=list(DEPTH_MODES.keys()),
+        default="neural_plus",
+        help="ZED depth estimation mode (default: neural_plus)",
+    )
+    args = parser.parse_args()
+
+    cam = build_camera(DEPTH_MODES[args.depth_mode])
+    print(f"Depth mode: {args.depth_mode}")
 
     rt = sl.RuntimeParameters()
     rt.enable_fill_mode = False  # keep holes; avoids edge bleeding

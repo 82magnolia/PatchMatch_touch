@@ -89,8 +89,18 @@ pip install pyzed   # or install via the ZED SDK installer
 **Run:**
 
 ```bash
+# Default (neural_plus — best quality)
 python real_data_transfer/visualize_zed.py
+
+# Override depth mode
+python real_data_transfer/visualize_zed.py --depth_mode ultra
 ```
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--depth_mode` | `neural_plus` | ZED depth estimation mode: `performance`, `quality`, `ultra`, `neural`, `neural_plus` |
 
 **Controls:**
 
@@ -102,7 +112,7 @@ python real_data_transfer/visualize_zed.py
 | `q` (RGB-D window) | Quit |
 | Close point cloud window | Quit |
 
-> The script uses ZED `ULTRA` depth mode which includes internal temporal smoothing, and clips depth to `0.3–3.0 m`. Point cloud is subsampled `[::4]` for real-time performance.
+> Depth is clipped to `0.3–3.0 m`. Point cloud is subsampled `[::4]` for real-time performance. `neural_plus` gives the best quality on textureless or specular surfaces; fall back to `ultra` if the neural module is not installed.
 
 ---
 
