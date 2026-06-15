@@ -71,6 +71,41 @@ python real_data_transfer/visualize_realsense.py
 
 ---
 
+### `visualize_zed.py` — Real-time RGB-D viewer (ZED 2i)
+
+Streams color and depth from the StereoLabs ZED 2i and displays them in two windows:
+
+| Window | Contents |
+|--------|----------|
+| **RGB (left) \| Depth (right)** | cv2 window with color frame and JET-colorized depth side by side |
+| **Point Cloud** | open3d window with interactive colored 3D point cloud |
+
+**Dependencies** (`pm_real` env):
+
+```bash
+pip install pyzed   # or install via the ZED SDK installer
+```
+
+**Run:**
+
+```bash
+python real_data_transfer/visualize_zed.py
+```
+
+**Controls:**
+
+| Input | Action |
+|-------|--------|
+| Left-drag (point cloud window) | Rotate |
+| Scroll wheel | Zoom in / out |
+| Right-drag | Pan |
+| `q` (RGB-D window) | Quit |
+| Close point cloud window | Quit |
+
+> The script uses ZED `ULTRA` depth mode which includes internal temporal smoothing, and clips depth to `0.3–3.0 m`. Point cloud is subsampled `[::4]` for real-time performance.
+
+---
+
 ### `gen_aruco_pdf.py` — Print ARuCO marker sheet
 
 Generates a PDF of N ARuCO markers (DICT_4X4_50) at a specified physical size, laid out in a grid on A4 pages.  Print and cut out the markers to attach to the turntable.

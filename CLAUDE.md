@@ -128,6 +128,11 @@ pip install segment-anything opencv-contrib-python numpy open3d matplotlib
   python real_data_transfer/visualize_realsense.py
   ```
 
+- **`visualize_zed.py`** — Live RGB-D viewer for the ZED 2i camera. Shows color + JET-colorized depth in a cv2 window and an interactive Open3D point cloud. Uses ZED's `ULTRA` depth mode (built-in temporal smoothing) and depth range `0.3–3.0 m`. Point cloud is subsampled `[::4]` for performance. Requires `pyzed` (installed via the ZED SDK installer or `pip install pyzed`).
+  ```bash
+  python real_data_transfer/visualize_zed.py
+  ```
+
 - **`capture_turntable.py`** — Turntable capture pipeline. Streams RGB-D with ARuCO (DICT_4X4_50) marker axes overlaid. Two pose estimation modes:
   - *Default* — each detected marker tracked independently; `T_relative` averaged over co-visible markers.
   - *Board mode* (recommended) — `--board_config` enables `estimatePoseBoard`, a single jointly-constrained pose enforcing marker coplanarity. More accurate and stable.
