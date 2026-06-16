@@ -188,6 +188,15 @@ pip install segment-anything opencv-contrib-python numpy open3d matplotlib
   ```
   Key flags: `--depth_mode` (ZED depth mode, default `neural_plus`), `--confidence` (0-100, default 95), `--sam_model_type` (`vit_b`/`vit_l`/`vit_h`), `--inpaint_method` (`telea`/`ns`/`nearest`), `--ortho_dpm` (output resolution in dots-per-mm, default 20 → 372×286 px).
 
+- **`capture_gelsight.py`** — Real-world GelSight tactile capture for the PatchMatch pipeline. Stage 1: SAM-segment object from ZED stream, cache color/normals/depth, capture GelSight blank frame. Stage 2: track GelSight via ARuCO marker ID=6 (DICT_4X4_50) on `gsmini_holder.stl` back face; press `r` to record, `s` to stop/trim/resample/save. Saves `{idx}_normal.jpg/.npz`, `{idx}_color.jpg`, `{idx}_shadow.mp4` — compatible with `main_retrieval_transfer_accel.py` when `--scale` is omitted. Holder height hardcoded to 30 mm (from STL); gel offset 4.25 mm (from GelSight specs). GelSight captured at 320×240.
+  ```bash
+  python real_data_transfer/capture_gelsight.py \
+      --sam_checkpoint log/sam_vit_b_01ec64.pth \
+      --marker_size 0.037 \
+      --save_dir log/gelsight_captures/session_01
+  ```
+  Key flags: `--gelsight_device` (default `0`), `--marker_size` (metres, default 0.037), `--num_frames` (resampled frames, default 50), `--contact_threshold` (0.05), `--inpaint_method`, `--border_fraction` (edge crop per side, default 0.15, matches gsrobotics SDK).
+
 ### rebot-net (`rebot-net/`)
 Post-processing enhancement network (ReBotNet) that takes PatchMatch-transferred tactile videos as input and outputs cleaner videos closer to the ground-truth query. Separate from the PatchMatch pipeline.
 

@@ -214,6 +214,91 @@ python real_data_transfer/visualize_zed_normal_sim.py \
 
 ---
 
+### `capture_gelsight.py` — Real GelSight tactile capture for PatchMatch pipeline
+
+Produces `{idx}_normal.jpg/.npz`, `{idx}_color.jpg`, `{idx}_shadow.mp4` per touch location — the same file layout read by `main_retrieval_transfer_accel.py` (with `--scale` omitted). Combines ZED 2i depth/normals with a GelSight Mini tactile sensor.
+
+Requires ARuCO marker ID=6 (DICT_4X4_50, 37 mm default) attached to the flat back face of `gsmini_holder.stl`. Holder geometry is hardcoded from the STL (30 mm height). GelSight camera is opened via OpenCV VideoCapture.
+
+**Two-stage workflow:**
+
+**Stage 1 — Object Selection** (run once per session):
+1. ZED live RGB + normals stream appears
+2. Press `c` → freeze frame → drag SAM bounding box → `Enter` → `y` to confirm
+3. Object mask + ZED data cached; GelSight blank (no-contact) frame saved automatically
+
+**Stage 2 — Touch Recording** (repeat for each contact point):
+1. ZED window shows live ARuCO tracking (red dot = computed contact location)
+2. Press `r` to start recording GelSight frames into buffer
+3. Press `s` to stop → frames trimmed (contact detection vs blank) → resampled to `--num_frames` → saved
+4. Press `a` to abort recording without saving
+5. Press `q` to quit
+
+**Run:**
+
+```bash
+# Default (neural_plus depth, SAM ViT-B, TELEA inpainting, 37mm marker, 50 frames)
+python real_data_transfer/capture_gelsight.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --save_dir log/gelsight_captures/session_01
+
+# Custom marker size
+python real_data_transfer/capture_gelsight.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --marker_size 0.035 \
+    --save_dir log/gelsight_captures/session_01
+
+# If GelSight is not device 0
+python real_data_transfer/capture_gelsight.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --gelsight_device 2 \
+    --save_dir log/gelsight_captures/session_01
+```
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--depth_mode` | `neural_plus` | ZED depth mode |
+| `--zed_confidence` | `95` | ZED depth confidence threshold 0–100 |
+| `--sam_checkpoint` | `log/sam_vit_b_01ec64.pth` | SAM checkpoint path |
+| `--sam_model_type` | `vit_b` | SAM model variant |
+| `--gelsight_device` | `0` | OpenCV VideoCapture device index or path |
+| `--marker_size` | `0.037` | ARuCO marker physical size in metres |
+| `--num_frames` | `50` | Resampled frame count (matches `gen_contact_query.sh`) |
+| `--contact_threshold` | `0.05` | Mean L2 diff vs blank for contact trimming |
+| `--inpaint_method` | `telea` | Normal-map hole inpainting: `telea`, `ns`, `nearest` |
+| `--ortho_dpm` | `20` | Output dots-per-mm for orthographic projections |
+| `--save_dir` | `log/gelsight_captures` | Output directory |
+
+**Output files per touch location** (in `--save_dir`):
+
+| File | Description |
+|------|-------------|
+| `blank_frame.jpg` | GelSight no-contact frame (saved once in Stage 1) |
+| `object_cache.npz` | Cached ZED color/normals/depth/xyz/mask (saved once) |
+| `{idx}_normal.jpg` | Orthographic normal colormap at GelSight FoV |
+| `{idx}_normal.npz` | Raw float32 normals (H×W×3), key `"normal"` |
+| `{idx}_color.jpg` | Orthographic RGB at GelSight FoV |
+| `{idx}_shadow.mp4` | Trimmed + resampled GelSight tactile video |
+| `{idx}_meta.json` | Contact pixel, ARuCO pose, frame counts |
+
+**Downstream usage with PatchMatch pipeline:**
+
+```bash
+# Run transfer (omit --scale to match scale-free filenames)
+python main_retrieval_transfer_accel.py \
+    --query_dir log/gelsight_captures/session_01 \
+    --ref_dir   Taxim/results/gen_contact_full \
+    --retrieval_pkl log/touch_retrieval/results.pkl \
+    --modality raw_normal \
+    --video_type shadow \
+    --save_dir log/transfer_real \
+    --em --em_iters 3
+```
+
+---
+
 ### `gen_aruco_pdf.py` — Print ARuCO marker sheet
 
 Generates a PDF of N ARuCO markers (DICT_4X4_50) at a specified physical size, laid out in a grid on A4 pages.  Print and cut out the markers to attach to the turntable.
