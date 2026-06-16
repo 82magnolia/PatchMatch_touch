@@ -179,6 +179,15 @@ pip install segment-anything opencv-contrib-python numpy open3d matplotlib
   ```
   Key flags: `--output_dir`, `--model` (HuggingFace ID or local path), `--apache` (Apache 2.0 model), `--no_mask` (use unmasked RGB), `--save_conf` (save confidence maps), `--max_pts` (point cloud cap, default 500 000).
 
+- **`visualize_zed_normal_sim.py`** — Interactive GelSight Mini normal-map simulator. Streams ZED 2i RGB + surface normals side-by-side. On `c`, freezes the frame; user SAM-segments an object, left-clicks a contact point, and the script renders an orthographic projection of the normal map cropped to the GelSight Mini FoV (18.6×14.3 mm) using inpainting to fill depth holes. Three inpainting methods: `telea` (default, fast), `ns` (Navier-Stokes), `nearest` (scipy EDT, fastest). Requires `pyzed`, SAM, and optionally `scipy`.
+  ```bash
+  python real_data_transfer/visualize_zed_normal_sim.py \
+      --sam_checkpoint log/sam_vit_b_01ec64.pth \
+      --inpaint_method telea \
+      --ortho_dpm 20
+  ```
+  Key flags: `--depth_mode` (ZED depth mode, default `neural_plus`), `--confidence` (0-100, default 95), `--sam_model_type` (`vit_b`/`vit_l`/`vit_h`), `--inpaint_method` (`telea`/`ns`/`nearest`), `--ortho_dpm` (output resolution in dots-per-mm, default 20 → 372×286 px).
+
 ### rebot-net (`rebot-net/`)
 Post-processing enhancement network (ReBotNet) that takes PatchMatch-transferred tactile videos as input and outputs cleaner videos closer to the ground-truth query. Separate from the PatchMatch pipeline.
 

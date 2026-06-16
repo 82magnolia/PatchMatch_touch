@@ -132,6 +132,88 @@ python real_data_transfer/visualize_zed.py --depth_mode ultra
 
 ---
 
+### `visualize_zed_normal_sim.py` — GelSight Mini normal map simulator
+
+Streams ZED 2i RGB + surface normals side-by-side (identical layout to `visualize_zed_normals.py`).  On `c`, freezes the frame and opens a capture window where you can:
+
+1. **Segment** the object of interest with SAM (bounding-box prompt)
+2. **Pick** a contact point on the segmented surface with a left-click
+3. **View** an orthographic projection of the surface normal map cropped to the GelSight Mini sensor FoV (18.6 × 14.3 mm), with depth holes filled by inpainting
+
+The picked contact point is shown as a red dot on both the RGB and normal panels.  The orthographic projection opens in a separate window and annotates the estimated depth and inpaint method used.
+
+**Dependencies** (additional, in `pm_real` env):
+
+```bash
+pip install scipy   # optional — required only for --inpaint_method nearest
+```
+
+SAM checkpoint must be downloaded first (see `capture_turntable.py` section).
+
+**Run:**
+
+```bash
+# Default (ZED neural_plus depth, SAM ViT-B, TELEA inpainting, 20 dpm output)
+python real_data_transfer/visualize_zed_normal_sim.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth
+
+# Higher-quality inpainting
+python real_data_transfer/visualize_zed_normal_sim.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --inpaint_method ns
+
+# Fastest inpainting (nearest-neighbour via scipy EDT)
+python real_data_transfer/visualize_zed_normal_sim.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --inpaint_method nearest
+
+# Finer output resolution (40 dots per mm → 744×572 px projection)
+python real_data_transfer/visualize_zed_normal_sim.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --ortho_dpm 40
+```
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--depth_mode` | `neural_plus` | ZED depth estimation mode: `performance`, `quality`, `ultra`, `neural`, `neural_plus` |
+| `--confidence` | `95` | ZED depth confidence threshold 0–100 (lower accepts noisier pixels) |
+| `--sam_checkpoint` | `log/sam_vit_b_01ec64.pth` | Path to SAM checkpoint |
+| `--sam_model_type` | `vit_b` | SAM model: `vit_b`, `vit_l`, `vit_h` |
+| `--inpaint_method` | `telea` | Hole inpainting: `telea` (fast, good), `ns` (slower, slightly better), `nearest` (fastest, scipy required) |
+| `--ortho_dpm` | `20` | Output dots-per-mm for orthographic projection (20 dpm → 372×286 px at GelSight FoV) |
+
+**Controls (main window):**
+
+| Input | Action |
+|-------|--------|
+| `c` | Freeze frame, enter capture mode |
+| `q` | Quit |
+
+**Controls (capture window):**
+
+| Input | Action |
+|-------|--------|
+| Drag left panel | Draw SAM bounding box |
+| `Enter` | Run SAM segmentation |
+| `r` | Redraw box / re-segment |
+| Left-click on object | Pick contact point and compute projection |
+| `p` | Re-pick contact point |
+| `Esc` | Close capture window, return to live stream |
+
+**Inpainting methods:**
+
+| Method | Flag | Speed | Notes |
+|--------|------|-------|-------|
+| TELEA (Criminisi) | `telea` | fast | Default; good quality for small holes |
+| Navier-Stokes | `ns` | slower | Slightly smoother results |
+| Nearest-neighbour | `nearest` | fastest | Requires `scipy`; preserves sharpness, no smoothing |
+
+> The orthographic projection is centred at the picked pixel and covers `18.6 × 14.3 mm` at the object's measured depth.  Depth holes within the crop are inpainted before rendering.  Pixels outside the SAM mask are blacked out.
+
+---
+
 ### `gen_aruco_pdf.py` — Print ARuCO marker sheet
 
 Generates a PDF of N ARuCO markers (DICT_4X4_50) at a specified physical size, laid out in a grid on A4 pages.  Print and cut out the markers to attach to the turntable.
