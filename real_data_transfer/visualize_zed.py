@@ -92,13 +92,18 @@ def main():
         default="neural_plus",
         help="ZED depth estimation mode (default: neural_plus)",
     )
+    parser.add_argument(
+        "--confidence_threshold", type=int, default=95,
+        help="ZED depth confidence threshold 0-100 (default: 95; lower accepts noisier pixels)",
+    )
     args = parser.parse_args()
 
     cam = build_camera(DEPTH_MODES[args.depth_mode])
-    print(f"Depth mode: {args.depth_mode}")
+    print(f"Depth mode: {args.depth_mode}  confidence_threshold: {args.confidence_threshold}")
 
     rt = sl.RuntimeParameters()
     rt.enable_fill_mode = False  # keep holes; avoids edge bleeding
+    rt.confidence_threshold = args.confidence_threshold
 
     image_sl = sl.Mat()
     depth_sl = sl.Mat()

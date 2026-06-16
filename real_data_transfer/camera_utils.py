@@ -137,7 +137,7 @@ class RealSenseCamera(CameraBase):
 # ── ZED 2i ────────────────────────────────────────────────────────────────────
 
 class ZEDCamera(CameraBase):
-    def __init__(self, depth_mode: str = "neural_plus"):
+    def __init__(self, depth_mode: str = "neural_plus", confidence_threshold: int = 95):
         try:
             import pyzed.sl as sl
         except ImportError:
@@ -181,6 +181,7 @@ class ZEDCamera(CameraBase):
         self._cam = cam
         self._rt = sl.RuntimeParameters()
         self._rt.enable_fill_mode = False
+        self._rt.confidence_threshold = confidence_threshold
 
         self._image_sl = sl.Mat()
         self._xyz_sl = sl.Mat()
@@ -244,5 +245,8 @@ def build_camera(args) -> CameraBase:
     """Build the camera requested by args.camera (and args.depth_mode for ZED)."""
     if args.camera == "zed":
         depth_mode = getattr(args, "depth_mode", "neural_plus") or "neural_plus"
-        return ZEDCamera(depth_mode=depth_mode)
+        confidence = getattr(args, "confidence_threshold", 95)
+        if confidence is None:
+            confidence = 95
+        return ZEDCamera(depth_mode=depth_mode, confidence_threshold=confidence)
     return RealSenseCamera()

@@ -97,13 +97,19 @@ def main():
         "--min_depth", type=float, default=0.1,
         help="Minimum depth in metres (default: 0.1)",
     )
+    parser.add_argument(
+        "--confidence_threshold", type=int, default=95,
+        help="ZED depth confidence threshold 0-100 (default: 95; lower accepts noisier pixels)",
+    )
     args = parser.parse_args()
 
     cam = build_camera(DEPTH_MODES[args.depth_mode], args.min_depth)
-    print(f"Depth mode: {args.depth_mode}  min_depth: {args.min_depth} m")
+    print(f"Depth mode: {args.depth_mode}  min_depth: {args.min_depth} m  "
+          f"confidence_threshold: {args.confidence_threshold}")
 
     rt = sl.RuntimeParameters()
     rt.enable_fill_mode = False
+    rt.confidence_threshold = args.confidence_threshold
 
     image_sl  = sl.Mat()
     normals_sl = sl.Mat()

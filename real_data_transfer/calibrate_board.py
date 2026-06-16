@@ -342,6 +342,9 @@ def parse_args():
                    choices=["performance", "quality", "ultra", "neural", "neural_plus"],
                    default="neural_plus",
                    help="ZED depth mode (default: neural_plus; ignored for realsense)")
+    p.add_argument("--confidence_threshold", type=int, default=95,
+                   help="ZED depth confidence threshold 0-100 (default: 95; "
+                        "lower accepts noisier pixels; ignored for realsense)")
     return p.parse_args()
 
 

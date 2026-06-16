@@ -37,10 +37,13 @@ def main():
     parser.add_argument("--depth_mode",
                         choices=["performance", "quality", "ultra", "neural", "neural_plus"],
                         default="neural_plus")
+    parser.add_argument("--confidence_threshold", type=int, default=95,
+                        help="ZED depth confidence threshold 0-100 (default: 95; "
+                             "lower accepts noisier pixels)")
     args = parser.parse_args()
 
     MARKER_SIZE = args.marker_size
-    cam = ZEDCamera(depth_mode=args.depth_mode)
+    cam = ZEDCamera(depth_mode=args.depth_mode, confidence_threshold=args.confidence_threshold)
     intr = cam.intrinsics
     camera_matrix = intr["camera_matrix"]
     dist_coeffs   = intr["dist_coeffs"]   # zeros for ZED (pre-rectified)
