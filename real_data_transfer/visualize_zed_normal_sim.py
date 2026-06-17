@@ -168,6 +168,7 @@ def inpaint_normals(crop: np.ndarray, method: str = "telea") -> np.ndarray:
 
 def ortho_project(
     normals_np: np.ndarray,
+    color_bgr: np.ndarray,
     depth_m: np.ndarray,
     mask: np.ndarray,
     px: int,
@@ -177,9 +178,10 @@ def ortho_project(
     dpm: float,
 ) -> "np.ndarray | None":
     """
-    Orthographic projection of the normal map centred at (px, py).
+    Orthographic projection of the normal map and RGB image centred at (px, py).
 
-    Returns (H_out, W_out, 3) uint8 BGR image, or None if no valid depth.
+    Returns (H_out, W_out*2, 3) uint8 BGR image (normals left | RGB right),
+    or None if no valid depth.
     """
     H, W = normals_np.shape[:2]
 
@@ -209,16 +211,19 @@ def ortho_project(
     x2 = min(W, x2_raw)
 
     normals_crop = np.full((h_px, w_px, 4), np.nan, dtype=np.float32)
-    mask_crop = np.zeros((h_px, w_px), dtype=np.uint8)
+    color_crop   = np.zeros((h_px, w_px, 3), dtype=np.uint8)
+    mask_crop    = np.zeros((h_px, w_px), dtype=np.uint8)
     pad_y = y1 - y1_raw
     pad_x = x1 - x1_raw
     ah = y2 - y1
     aw = x2 - x1
     normals_crop[pad_y:pad_y + ah, pad_x:pad_x + aw] = normals_np[y1:y2, x1:x2]
-    mask_crop[pad_y:pad_y + ah, pad_x:pad_x + aw] = mask[y1:y2, x1:x2]
+    color_crop  [pad_y:pad_y + ah, pad_x:pad_x + aw] = color_bgr [y1:y2, x1:x2]
+    mask_crop   [pad_y:pad_y + ah, pad_x:pad_x + aw] = mask       [y1:y2, x1:x2]
 
     # 4. Mask out non-object pixels before inpainting (treated as holes)
     normals_crop[mask_crop == 0] = np.nan
+    color_crop[mask_crop == 0] = 0
 
     # 5. Inpaint NaN holes within crop
     normals_filled = inpaint_normals(normals_crop, method)
@@ -230,17 +235,18 @@ def ortho_project(
     # 7. Resize to output resolution (physical mm × dpm)
     out_w = max(1, round(GELSIGHT_FOV_W_MM * dpm))
     out_h = max(1, round(GELSIGHT_FOV_H_MM * dpm))
-    ortho_bgr = cv2.resize(normal_bgr, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+    ortho_normal = cv2.resize(normal_bgr, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+    ortho_color  = cv2.resize(color_crop,  (out_w, out_h), interpolation=cv2.INTER_LINEAR)
 
     # 8. Annotation
-    cv2.putText(
-        ortho_bgr,
-        f"GelSight FoV: {GELSIGHT_FOV_W_MM}x{GELSIGHT_FOV_H_MM} mm  "
-        f"depth: {Z_m * 100:.1f} cm  [{method}]",
-        (6, out_h - 8),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1,
-    )
-    return ortho_bgr
+    ann = (f"GelSight FoV: {GELSIGHT_FOV_W_MM}x{GELSIGHT_FOV_H_MM} mm  "
+           f"depth: {Z_m * 100:.1f} cm  [{method}]")
+    cv2.putText(ortho_normal, ann, (6, out_h - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
+    cv2.putText(ortho_color, "RGB", (6, out_h - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
+
+    return np.hstack([ortho_normal, ortho_color])
 
 
 # ── capture flow ──────────────────────────────────────────────────────────────
@@ -256,7 +262,7 @@ def run_capture_flow(
 ) -> None:
     """Interactive capture window: segment → pick → orthographic projection."""
     WIN      = "Capture: drag=box  Enter=SAM  left-click=pick  r=redo  Esc=cancel"
-    ORTHO_WIN = "GelSight Sim: Orthographic Normal Projection"
+    ORTHO_WIN = "GelSight Sim: Normals (left) | RGB (right)"
 
     # ── shared mutable state ─────────────────────────────────────────────────
     phase = ["box"]          # "box" | "pick" | "done"
@@ -392,7 +398,7 @@ def run_capture_flow(
 
                 px, py = pick_xy[0]
                 result = ortho_project(
-                    normals_np, depth_m, mask[0],
+                    normals_np, color_bgr, depth_m, mask[0],
                     px, py, intr, inpaint_method, ortho_dpm,
                 )
                 if result is not None:
