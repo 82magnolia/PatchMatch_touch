@@ -406,6 +406,9 @@ def parse_args():
                    help="Normal-map hole inpainting method (default: telea)")
     p.add_argument("--save_dir", default="log/gelsight_captures",
                    help="Output directory (default: log/gelsight_captures)")
+    p.add_argument("--debug_sensor_align", action="store_true",
+                   help="Show a debug window with normals/RGB blended over the live "
+                        "GelSight frame (alpha 0.5/0.5) to verify sensor alignment.")
     return p.parse_args()
 
 
@@ -538,6 +541,7 @@ def main():
     ZED_WIN   = "ZED: ARuCO Tracking  (r=record  s=stop  a=abort  q=quit)"
     GS_WIN    = "GelSight Live"
     ORTHO_WIN = "Orthographic Normal Preview"
+    DEBUG_WIN = "Sensor Alignment: Normals+GelSight | RGB+GelSight"
 
     touch_idx   = 0
     recording   = False
@@ -621,6 +625,16 @@ def main():
             # Ortho preview
             if ortho_prev is not None:
                 cv2.imshow(ORTHO_WIN, ortho_prev)
+
+            # Sensor alignment debug: blend ortho normal/RGB with live GelSight
+            if args.debug_sensor_align and ortho_prev is not None:
+                gs_vis = gs_frame if gs_frame is not None else np.zeros(
+                    (GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
+                ortho_normal = ortho_prev[:, :GELSIGHT_W]   # left half = normal colormap
+                ortho_color  = ortho_prev[:, GELSIGHT_W:]   # right half = RGB crop
+                blend_normal = cv2.addWeighted(ortho_normal, 0.5, gs_vis, 0.5, 0)
+                blend_color  = cv2.addWeighted(ortho_color,  0.5, gs_vis, 0.5, 0)
+                cv2.imshow(DEBUG_WIN, np.hstack([blend_normal, blend_color]))
 
             key = cv2.waitKey(1) & 0xFF
 

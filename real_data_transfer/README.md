@@ -270,6 +270,7 @@ python real_data_transfer/capture_gelsight.py \
 | `--inpaint_method` | `telea` | Normal-map hole inpainting: `telea`, `ns`, `nearest` |
 | `--ortho_dpm` | `20` | Output dots-per-mm for orthographic projections |
 | `--save_dir` | `log/gelsight_captures` | Output directory |
+| `--debug_sensor_align` | off | Show a debug window with the ortho normal map and RGB crop each blended 50/50 over the live GelSight frame, side-by-side. Useful for verifying that the sensor pose is correctly aligned before recording. |
 
 **Output files per touch location** (in `--save_dir`):
 
