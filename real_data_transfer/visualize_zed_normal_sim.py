@@ -106,7 +106,7 @@ def normals_to_colormap(normals_np: np.ndarray) -> np.ndarray:
     valid = np.isfinite(nxyz).all(axis=2)
     rgb = np.zeros((*nxyz.shape[:2], 3), dtype=np.uint8)
     rgb[valid] = ((nxyz[valid] + 1.0) * 0.5 * 255).clip(0, 255).astype(np.uint8)
-    return rgb[:, :, ::-1]  # RGB → BGR
+    return np.ascontiguousarray(rgb[:, :, ::-1])  # RGB → BGR
 
 
 def overlay_mask(color_bgr: np.ndarray, mask: np.ndarray,
@@ -180,12 +180,20 @@ def ortho_project(
     """
     Orthographic projection of the normal map and RGB image centred at (px, py).
 
+    Builds a regular (out_h × out_w) grid of physical offsets covering the GelSight
+    FoV (18.6 × 14.3 mm) in the sensor plane. Since no ARuCO pose is available here,
+    the sensor plane is assumed parallel to the image plane (x_axis=[1,0,0],
+    y_axis=[0,1,0]). Each grid point is projected into ZED pixel coordinates to
+    sample normals and color directly — no intermediate resize needed.
+
     Returns (H_out, W_out*2, 3) uint8 BGR image (normals left | RGB right),
-    or None if no valid depth.
+    or None if depth or normals are unavailable.
     """
     H, W = normals_np.shape[:2]
+    out_w = max(1, round(GELSIGHT_FOV_W_MM * dpm))
+    out_h = max(1, round(GELSIGHT_FOV_H_MM * dpm))
 
-    # 1. Depth at pick: median over 9×9 neighbourhood
+    # Depth at pick: median over 9×9 neighbourhood
     r = 4
     d_patch = depth_m[max(0, py - r): py + r + 1, max(0, px - r): px + r + 1]
     valid_d = d_patch[np.isfinite(d_patch) & (d_patch > 0)]
@@ -194,59 +202,48 @@ def ortho_project(
         return None
     Z_m = float(np.median(valid_d))
 
-    # 2. Physical FoV → pixel crop size at depth Z_m
-    fx, fy = intr["fx"], intr["fy"]
-    w_px = max(1, round(GELSIGHT_FOV_W_MM * 1e-3 * fx / Z_m))
-    h_px = max(1, round(GELSIGHT_FOV_H_MM * 1e-3 * fy / Z_m))
+    fx, fy, cx, cy = intr["fx"], intr["fy"], intr["cx"], intr["cy"]
 
-    # 3. Extract crop with zero-padding when near image boundary
-    half_w, half_h = w_px // 2, h_px // 2
-    y1_raw = py - half_h
-    y2_raw = y1_raw + h_px
-    x1_raw = px - half_w
-    x2_raw = x1_raw + w_px
-    y1 = max(0, y1_raw)
-    y2 = min(H, y2_raw)
-    x1 = max(0, x1_raw)
-    x2 = min(W, x2_raw)
+    # Contact point in camera frame
+    p_contact = np.array([(px - cx) * Z_m / fx, (py - cy) * Z_m / fy, Z_m])
 
-    normals_crop = np.full((h_px, w_px, 4), np.nan, dtype=np.float32)
-    color_crop   = np.zeros((h_px, w_px, 3), dtype=np.uint8)
-    mask_crop    = np.zeros((h_px, w_px), dtype=np.uint8)
-    pad_y = y1 - y1_raw
-    pad_x = x1 - x1_raw
-    ah = y2 - y1
-    aw = x2 - x1
-    normals_crop[pad_y:pad_y + ah, pad_x:pad_x + aw] = normals_np[y1:y2, x1:x2]
-    color_crop  [pad_y:pad_y + ah, pad_x:pad_x + aw] = color_bgr [y1:y2, x1:x2]
-    mask_crop   [pad_y:pad_y + ah, pad_x:pad_x + aw] = mask       [y1:y2, x1:x2]
+    # Orthographic grid in the sensor plane (parallel to image plane)
+    u = np.linspace(-GELSIGHT_FOV_W_MM / 2, GELSIGHT_FOV_W_MM / 2, out_w) * 1e-3
+    v = np.linspace(-GELSIGHT_FOV_H_MM / 2, GELSIGHT_FOV_H_MM / 2, out_h) * 1e-3
+    uu, vv = np.meshgrid(u, v)  # (out_h, out_w)
 
-    # 4. Mask out non-object pixels before inpainting (treated as holes)
+    # 3D points: x/y offset in sensor plane, z constant at contact depth
+    Px = p_contact[0] + uu
+    Py = p_contact[1] + vv
+
+    # Project into ZED pixel coordinates
+    spx = np.clip((fx * Px / Z_m + cx).round().astype(int), 0, W - 1)
+    spy = np.clip((fy * Py / Z_m + cy).round().astype(int), 0, H - 1)
+
+    # Sample ZED data at projected positions
+    normals_crop = normals_np[spy, spx].copy()  # (out_h, out_w, 4)
+    color_crop = color_bgr[spy, spx].copy()     # (out_h, out_w, 3)
+    mask_crop = mask[spy, spx].copy()           # (out_h, out_w)
+
     normals_crop[mask_crop == 0] = np.nan
-    color_crop[mask_crop == 0] = 0
+    if not np.isfinite(normals_crop[:, :, 0]).any():
+        print("  WARNING: no valid normals in projection area — try another location.")
+        return None
 
-    # 5. Inpaint NaN holes within crop
     normals_filled = inpaint_normals(normals_crop, method)
 
-    # 6. Convert to BGR colormap; blank non-object regions
     normal_bgr = normals_to_colormap(normals_filled)
     normal_bgr[mask_crop == 0] = 0
+    color_crop[mask_crop == 0] = 0
 
-    # 7. Resize to output resolution (physical mm × dpm)
-    out_w = max(1, round(GELSIGHT_FOV_W_MM * dpm))
-    out_h = max(1, round(GELSIGHT_FOV_H_MM * dpm))
-    ortho_normal = cv2.resize(normal_bgr, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
-    ortho_color  = cv2.resize(color_crop,  (out_w, out_h), interpolation=cv2.INTER_LINEAR)
-
-    # 8. Annotation
     ann = (f"GelSight FoV: {GELSIGHT_FOV_W_MM}x{GELSIGHT_FOV_H_MM} mm  "
            f"depth: {Z_m * 100:.1f} cm  [{method}]")
-    cv2.putText(ortho_normal, ann, (6, out_h - 8),
+    cv2.putText(normal_bgr, ann, (6, out_h - 8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
-    cv2.putText(ortho_color, "RGB", (6, out_h - 8),
+    cv2.putText(color_crop, "RGB", (6, out_h - 8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
 
-    return np.hstack([ortho_normal, ortho_color])
+    return np.hstack([normal_bgr, color_crop])
 
 
 # ── capture flow ──────────────────────────────────────────────────────────────
@@ -261,13 +258,13 @@ def run_capture_flow(
     ortho_dpm: float,
 ) -> None:
     """Interactive capture window: segment → pick → orthographic projection."""
-    WIN      = "Capture: drag=box  Enter=SAM  left-click=pick  r=redo  Esc=cancel"
+    WIN = "Capture: drag=box  Enter=SAM  left-click=pick  r=redo  Esc=cancel"
     ORTHO_WIN = "GelSight Sim: Normals (left) | RGB (right)"
 
     # ── shared mutable state ─────────────────────────────────────────────────
-    phase = ["box"]          # "box" | "pick" | "done"
-    box_pts = [None]         # [x1,y1,x2,y2] in full-res
-    drag_start = [None]      # display-res start of drag
+    phase = ["box"]       # "box" | "pick" | "done"
+    box_pts = [None]      # [x1,y1,x2,y2] in full-res
+    drag_start = [None]   # display-res start of drag
     mask = [None]            # (H,W) uint8 SAM mask
     pick_xy = [None]         # (px, py) full-res
     ortho_img = [None]       # (H,W,3) uint8 BGR
@@ -422,10 +419,10 @@ def run_capture_flow(
                     cv2.destroyWindow(ORTHO_WIN)
                 except Exception:
                     pass
-            elif (key == 13  # Enter → run SAM
-                  and phase[0] == "box"
-                  and box_pts[0] is not None
-                  and drag_start[0] is None):
+            elif (key == 13 and  # Enter → run SAM
+                  phase[0] == "box" and
+                  box_pts[0] is not None and
+                  drag_start[0] is None):
                 banner = overlay_banner(display, "Running SAM... please wait")
                 cv2.imshow(WIN, banner)
                 cv2.waitKey(1)

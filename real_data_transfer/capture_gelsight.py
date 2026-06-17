@@ -106,75 +106,94 @@ def read_gelsight_frame(cap, border_fraction=0.15):
 
 # ── Orthographic projection ───────────────────────────────────────────────────
 
-def ortho_project_raw(normals_np, color_bgr, depth_m, mask, px, py, intr, method, rvec=None):
+def ortho_project_raw(normals_np, color_bgr, mask, intr, method,
+                      rvec=None, tvec=None):
     """
-    Orthographic projection at (px, py) for the GelSight Mini FoV.
+    True orthographic projection of the GelSight Mini FoV using sensor pose.
 
-    Returns (normal_bgr, raw_normals_hw3, color_bgr_crop) all at GELSIGHT_W x GELSIGHT_H,
-    or None if no valid depth at the pick location.
+    Builds a regular (GELSIGHT_H × GELSIGHT_W) grid of physical offsets covering
+    the sensor FoV (18.6 × 14.3 mm), places it in the sensor plane using rvec/tvec,
+    and projects each point into ZED pixel coordinates to sample normals and color.
+    Requires rvec and tvec; returns None if either is missing or all samples are invalid.
 
-    normal_bgr:       (H_out, W_out, 3) uint8 BGR colormap
-    raw_normals_hw3:  (H_out, W_out, 3) float32 in [-1, 1], normals in sensor frame
-    color_bgr_crop:   (H_out, W_out, 3) uint8 BGR
+    Returns (normal_bgr, raw_normals_hw3, color_bgr_crop) at GELSIGHT_W × GELSIGHT_H.
+    normal_bgr:      (H, W, 3) uint8 BGR colormap
+    raw_normals_hw3: (H, W, 3) float32 in [-1, 1], expressed in sensor frame
+    color_bgr_crop:  (H, W, 3) uint8 BGR
     """
-    H, W = normals_np.shape[:2]
-    r = 4
-    d_patch = depth_m[max(0, py - r): py + r + 1, max(0, px - r): px + r + 1]
-    valid_d = d_patch[np.isfinite(d_patch) & (d_patch > 0)]
-    if len(valid_d) == 0:
+    if rvec is None or tvec is None:
         return None
-    Z_m = float(np.median(valid_d))
 
-    fx, fy = intr["fx"], intr["fy"]
-    w_px = max(1, round(GELSIGHT_FOV_W_MM * 1e-3 * fx / Z_m))
-    h_px = max(1, round(GELSIGHT_FOV_H_MM * 1e-3 * fy / Z_m))
-    half_w, half_h = w_px // 2, h_px // 2
+    H, W = normals_np.shape[:2]
+    out_h, out_w = GELSIGHT_H, GELSIGHT_W
 
-    y1_raw, y2_raw = py - half_h, py - half_h + h_px
-    x1_raw, x2_raw = px - half_w, px - half_w + w_px
-    y1, y2 = max(0, y1_raw), min(H, y2_raw)
-    x1, x2 = max(0, x1_raw), min(W, x2_raw)
-    pad_y, pad_x = y1 - y1_raw, x1 - x1_raw
-    ah, aw = y2 - y1, x2 - x1
+    # Sensor frame: marker Z points toward camera; gel contact faces opposite side.
+    # R_sensor rotates sensor frame → camera frame.
+    R, _ = cv2.Rodrigues(rvec)
+    R_flip   = np.diag([1.0, -1.0, -1.0])  # marker frame → sensor frame (180° around X)
+    R_sensor = R @ R_flip                   # sensor frame → camera frame
 
-    normals_crop = np.full((h_px, w_px, 4), np.nan, dtype=np.float32)
-    mask_crop = np.zeros((h_px, w_px), dtype=np.uint8)
-    color_crop = np.zeros((h_px, w_px, 3), dtype=np.uint8)
+    # Contact point in camera frame
+    p_contact = R @ np.array([0.0, 0.0, -ARUCO_TO_CONTACT_M]) + tvec  # (3,)
 
-    normals_crop[pad_y:pad_y + ah, pad_x:pad_x + aw] = normals_np[y1:y2, x1:x2]
-    mask_crop[pad_y:pad_y + ah, pad_x:pad_x + aw] = mask[y1:y2, x1:x2]
-    color_crop[pad_y:pad_y + ah, pad_x:pad_x + aw] = color_bgr[y1:y2, x1:x2]
+    # Sensor-plane basis vectors in camera frame
+    x_axis = R_sensor[:, 0]  # sensor X in camera frame
+    y_axis = R_sensor[:, 1]  # sensor Y in camera frame
+
+    # Grid of physical offsets (metres) covering the GelSight FoV
+    u = np.linspace(-GELSIGHT_FOV_W_MM / 2, GELSIGHT_FOV_W_MM / 2, out_w) * 1e-3
+    v = np.linspace(-GELSIGHT_FOV_H_MM / 2, GELSIGHT_FOV_H_MM / 2, out_h) * 1e-3
+    uu, vv = np.meshgrid(u, v)  # (out_h, out_w)
+
+    # 3D points in camera frame for each output pixel
+    P_cam = (p_contact[:, None, None]
+             + x_axis[:, None, None] * uu[None]
+             + y_axis[:, None, None] * vv[None])  # (3, out_h, out_w)
+
+    Pz = P_cam[2]
+    valid_proj = Pz > 0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        spx = np.where(valid_proj,
+                       (intr["fx"] * P_cam[0] / Pz + intr["cx"]).round().astype(int), 0)
+        spy = np.where(valid_proj,
+                       (intr["fy"] * P_cam[1] / Pz + intr["cy"]).round().astype(int), 0)
+    spx = np.clip(spx, 0, W - 1)
+    spy = np.clip(spy, 0, H - 1)
+
+    # Sample ZED data at projected grid positions
+    normals_crop = normals_np[spy, spx].copy()   # (out_h, out_w, 4)
+    mask_crop    = mask      [spy, spx].copy()   # (out_h, out_w)
+    color_crop   = color_bgr [spy, spx].copy()   # (out_h, out_w, 3)
+
+    # Invalidate pixels that projected behind the camera or outside the object mask
+    normals_crop[~valid_proj] = np.nan
+    mask_crop   [~valid_proj] = 0
+    color_crop  [~valid_proj] = 0
 
     normals_crop[mask_crop == 0] = np.nan
+    if not np.isfinite(normals_crop[:, :, 0]).any():
+        return None
+
     normals_filled = inpaint_normals(normals_crop, method)
 
-    # Re-orient normals from ZED camera frame into the GelSight sensor (marker) frame
-    if rvec is not None:
-        R, _ = cv2.Rodrigues(rvec)
-        nxyz = normals_filled[:, :, :3]
-        valid_n = np.isfinite(nxyz).all(axis=-1)
-        if valid_n.any():
-            nxyz_rot = np.full_like(nxyz, np.nan)
-            nxyz_rot[valid_n] = (R.T @ nxyz[valid_n].T).T
-            normals_filled = normals_filled.copy()
-            normals_filled[:, :, :3] = nxyz_rot
+    # Re-orient normals from ZED camera frame into the GelSight sensor frame
+    nxyz = normals_filled[:, :, :3]
+    valid_n = np.isfinite(nxyz).all(axis=-1)
+    if valid_n.any():
+        nxyz_rot = np.full_like(nxyz, np.nan)
+        nxyz_rot[valid_n] = (R_sensor.T @ nxyz[valid_n].T).T
+        normals_filled = normals_filled.copy()
+        normals_filled[:, :, :3] = nxyz_rot
 
     color_crop[mask_crop == 0] = 0
 
-    out_w, out_h = GELSIGHT_W, GELSIGHT_H
-
     normal_bgr = normals_to_colormap(normals_filled)
     normal_bgr[mask_crop == 0] = 0
-    normal_bgr_out = cv2.resize(normal_bgr, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
 
     raw_norm = normals_filled[:, :, :3].copy()
-    raw_norm_out = cv2.resize(raw_norm, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
-    mask_out = cv2.resize(mask_crop, (out_w, out_h), interpolation=cv2.INTER_NEAREST)
-    raw_norm_out[mask_out == 0] = 0.0
+    raw_norm[mask_crop == 0] = 0.0
 
-    color_out = cv2.resize(color_crop, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
-
-    return normal_bgr_out, raw_norm_out, color_out
+    return normal_bgr, raw_norm, color_crop
 
 
 # ── Video helpers ─────────────────────────────────────────────────────────────
@@ -395,6 +414,7 @@ def main():
     CACHE_WIN = "Object Cache: RGB | Normals (masked)"
 
     color_bgr_cached = normals_cached = depth_cached = mask_cached = blank_frame = None
+    cache_disp_base = None
 
     while color_bgr_cached is None:
         if cam.grab(rt) != sl.ERROR_CODE.SUCCESS:
@@ -452,7 +472,8 @@ def main():
                 cv2.resize(c_m, (ZED_DISPLAY_W, ZED_DISPLAY_H)),
                 cv2.resize(normals_to_colormap(n_m), (ZED_DISPLAY_W, ZED_DISPLAY_H)),
             ])
-            cv2.imshow(CACHE_WIN, cache_disp)
+            cache_disp_base = cache_disp.copy()
+            cv2.imshow(CACHE_WIN, cache_disp_base)
             print("  Cached: blank_frame.jpg + object_cache.npz")
 
     cv2.destroyWindow(LIVE_WIN)
@@ -505,10 +526,10 @@ def main():
                     last_px_py = px_py
                     cv2.circle(vis, px_py, 8, (0, 0, 255), -1)
                     result = ortho_project_raw(
-                        normals_cached, color_bgr_cached, depth_cached, mask_cached,
-                        px_py[0], px_py[1], intr, args.inpaint_method, rvec=rvec)
+                        normals_cached, color_bgr_cached, mask_cached,
+                        intr, args.inpaint_method, rvec=rvec, tvec=tvec)
                     if result is not None:
-                        ortho_prev = result[0]
+                        ortho_prev = np.hstack([result[0], result[2]])
             else:
                 cv2.putText(vis, "Marker ID=6 not found",
                             (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
@@ -523,6 +544,16 @@ def main():
                         (10, ZED_DISPLAY_H - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
             cv2.imshow(ZED_WIN, zed_disp)
+
+            # Cache display: segmented RGB | normals with contact dot
+            if cache_disp_base is not None:
+                cache_disp = cache_disp_base.copy()
+                if last_px_py is not None:
+                    dx = int(last_px_py[0] * ZED_DISPLAY_W / ZED_W)
+                    dy = int(last_px_py[1] * ZED_DISPLAY_H / ZED_H)
+                    cv2.circle(cache_disp, (dx, dy), 8, (0, 0, 255), -1)
+                    cv2.circle(cache_disp, (dx + ZED_DISPLAY_W, dy), 8, (0, 0, 255), -1)
+                cv2.imshow(CACHE_WIN, cache_disp)
 
             # GelSight display
             gs_disp = gs_frame.copy()
@@ -570,9 +601,8 @@ def main():
                     continue
 
                 res = ortho_project_raw(
-                    normals_cached, color_bgr_cached, depth_cached, mask_cached,
-                    last_px_py[0], last_px_py[1], intr,
-                    args.inpaint_method, rvec=last_rvec)
+                    normals_cached, color_bgr_cached, mask_cached,
+                    intr, args.inpaint_method, rvec=last_rvec, tvec=last_tvec)
                 if res is None:
                     print("  ERROR: no valid depth at contact point. Try again.")
                     buffer = []
