@@ -155,6 +155,79 @@ Outputs are named `{original_stem}_enhanced.mp4`. When using `--transfer_dir`, v
 
 ---
 
+## Residual Prediction Mode
+
+Instead of predicting absolute tactile frames, the model can operate in **contact residual space**:
+
+```
+residual[t] = video[t] - blank
+```
+
+where `blank` is frame 0 of the reference video (`{pair_idx}_ref_shadow.mp4`) — the no-contact sensor reading. The model predicts refined residuals; adding `blank` back gives the final absolute tactile video. This representation lets the network focus purely on the contact signal rather than the background texture.
+
+**No architecture changes are needed.** The model's built-in residual connection (`output = network(input) + input`) naturally operates in residual space when the input is a residual frame.
+
+### Training
+
+```bash
+python rebot_net/train.py \
+    --transfer_dir log/transfer \
+    --save_dir     log/rebot_checkpoints_residual \
+    --model_size   rebot_S \
+    --epochs       100 \
+    --batch_size   4 \
+    --lr           2e-4 \
+    --residual \
+    --wandb_project tactile_enhance \
+    --wandb_run_name residual_S
+```
+
+### Evaluation
+
+```bash
+python rebot_net/eval.py \
+    --transfer_dir log/transfer \
+    --checkpoint   log/rebot_checkpoints_residual/best.pth \
+    --model_size   rebot_S \
+    --save_dir     log/rebot_eval_residual \
+    --video_save --save_gt \
+    --residual
+```
+
+Metrics (MSE/PSNR/SSIM/LPIPS) are always computed on **absolute** reconstructions (`pred_residual + blank`), matching the non-residual evaluation for fair comparison.
+
+### Inference
+
+```bash
+# Single video
+CUDA_VISIBLE_DEVICES=0 python rebot_net/infer.py \
+    --input_video log/transfer/52/0_transferred_em.mp4 \
+    --checkpoint  log/rebot_checkpoints_residual/best.pth \
+    --model_size  rebot_S \
+    --save_dir    log/rebot_infer_residual \
+    --residual
+
+# All objects
+CUDA_VISIBLE_DEVICES=0 python rebot_net/infer.py \
+    --transfer_dir log/transfer \
+    --checkpoint   log/rebot_checkpoints_residual/best.pth \
+    --model_size   rebot_S \
+    --save_dir     log/rebot_infer_residual \
+    --residual
+```
+
+The blank frame is loaded from `{pair_idx}_ref_shadow.mp4` in the same directory as the input video. If the reference video is not found, the script falls back to absolute mode for that video.
+
+### Output files in residual mode
+
+| File | Description |
+|------|-------------|
+| `{stem}_enhanced.mp4` | Absolute tactile video prediction (`pred_residual + blank`) |
+| `{stem}_pred_residual.mp4` | Predicted contact residual, visualized as `(r × 0.5 + 0.5)` → [0, 1] |
+| `{stem}_gt_residual.mp4` | Ground-truth contact residual visualization (requires `--save_gt`) |
+
+---
+
 ## Normal-Image Baseline
 
 A baseline variant that skips PatchMatch entirely: the model receives a static surface normal image at the query touch location (tiled into a video) as input and predicts the same ground-truth tactile video. This establishes a lower bound to quantify the benefit of PatchMatch transfer.

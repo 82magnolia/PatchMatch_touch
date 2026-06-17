@@ -81,6 +81,9 @@ def parse_args():
     p.add_argument('--wandb_project', default='tactile_enhance')
     p.add_argument('--wandb_run_name', default=None)
     p.add_argument('--wandb_offline', action='store_true')
+    p.add_argument('--residual', action='store_true',
+                   help="Train in residual space: subtract blank (ref frame 0) from LQ and GT; "
+                        "model predicts refined residuals, added back to blank for absolute output")
     return p.parse_args()
 
 
@@ -96,8 +99,10 @@ def main():
     val_ids   = all_ids[930:950]
     print(f"Split: {len(train_ids)} train, {len(val_ids)} val objects")
 
-    train_dataset = TactileTransferDataset(args.transfer_dir, train_ids, split='train')
-    val_dataset   = TactileTransferDataset(args.transfer_dir, val_ids,   split='val')
+    train_dataset = TactileTransferDataset(args.transfer_dir, train_ids, split='train',
+                                           residual=args.residual)
+    val_dataset   = TactileTransferDataset(args.transfer_dir, val_ids,   split='val',
+                                           residual=args.residual)
     print(f"Train samples: {len(train_dataset)}, Val objects: {len(val_ids)}")
 
     train_loader = data.DataLoader(

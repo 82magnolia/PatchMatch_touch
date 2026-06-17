@@ -24,6 +24,11 @@ def _write_video(path, frames_rgb_float, fps=5.0):
     out.release()
 
 
+def _residual_to_vis(residual_np):
+    """Map residual frame from [-1,1] to [0,1] for visualization."""
+    return np.clip(residual_np * 0.5 + 0.5, 0, 1)
+
+
 def _read_video_frames(path):
     """Read an MP4 into a list of float32 [0,1] RGB (H,W,3) arrays."""
     cap = cv2.VideoCapture(path)
@@ -84,6 +89,7 @@ class Trainer:
         self.device = device
         self.args = args
         self.global_step = 0
+        self.residual = getattr(args, 'residual', False)
 
     def train_epoch(self, epoch):
         self.model.train()
@@ -98,6 +104,7 @@ class Trainer:
             pred = self.model(lq)              # (B, 3, H, W)
 
             with torch.no_grad():
+                # In residual mode lq[:,1] is lq_residual; diff still identifies changed pixels
                 loss_mask = (gt - lq[:, 1]).abs().amax(dim=1, keepdim=True) > 1e-2
             if not loss_mask.any():
                 continue
@@ -147,12 +154,28 @@ class Trainer:
                       f"[{video_count}/{total_videos}]", end='', flush=True)
 
                 pred_frames, gt_frames, transferred_frames = [], [], []
-                for lq_pair, gt_frame in dataset.iter_video_pairs(obj_id, pair_idx):
+                pred_residual_frames, gt_residual_frames = [], []
+
+                for lq_pair, gt_frame, blank in dataset.iter_video_pairs(obj_id, pair_idx):
                     lq_in = lq_pair.unsqueeze(0).to(self.device)  # (1,2,3,H,W)
                     pred = self.model(lq_in).squeeze(0)            # (3,H,W)
-                    pred_np = pred.cpu().clamp(0, 1).permute(1, 2, 0).numpy()
-                    gt_np = gt_frame.permute(1, 2, 0).numpy()
-                    transferred_np = lq_pair[1].permute(1, 2, 0).numpy()
+
+                    if self.residual:
+                        # pred and gt_frame are residuals; reconstruct absolute
+                        blank_np = blank.permute(1, 2, 0).numpy()
+                        pred_res_np = pred.cpu().clamp(-1, 1).permute(1, 2, 0).numpy()
+                        gt_res_np = gt_frame.permute(1, 2, 0).numpy()
+                        pred_np = np.clip(pred_res_np + blank_np, 0, 1)
+                        gt_np = np.clip(gt_res_np + blank_np, 0, 1)
+                        transferred_np = np.clip(
+                            lq_pair[1].permute(1, 2, 0).numpy() + blank_np, 0, 1)
+                        pred_residual_frames.append(_residual_to_vis(pred_res_np))
+                        gt_residual_frames.append(_residual_to_vis(gt_res_np))
+                    else:
+                        pred_np = pred.cpu().clamp(0, 1).permute(1, 2, 0).numpy()
+                        gt_np = gt_frame.permute(1, 2, 0).numpy()
+                        transferred_np = lq_pair[1].permute(1, 2, 0).numpy()
+
                     pred_frames.append(pred_np)
                     gt_frames.append(gt_np)
                     transferred_frames.append(transferred_np)
@@ -161,7 +184,7 @@ class Trainer:
                     print()
                     continue
 
-                # Per-video metrics
+                # Per-video metrics (always on absolute values)
                 v_mse, v_psnr, v_ssim, v_lpips = [], [], [], []
                 for pred_np, gt_np in zip(pred_frames, gt_frames):
                     mse = compute_mse(gt_np, pred_np)
@@ -187,6 +210,16 @@ class Trainer:
                     out_path = os.path.join(video_save_dir,
                                             f"{obj_id}_{pair_idx}_enhanced.mp4")
                     _write_video(out_path, pred_frames)
+
+                    if self.residual and pred_residual_frames:
+                        _write_video(
+                            os.path.join(video_save_dir,
+                                         f"{obj_id}_{pair_idx}_pred_residual.mp4"),
+                            pred_residual_frames)
+                        _write_video(
+                            os.path.join(video_save_dir,
+                                         f"{obj_id}_{pair_idx}_gt_residual.mp4"),
+                            gt_residual_frames)
 
                     save_gt = getattr(self.args, 'save_gt', False)
                     if save_gt:

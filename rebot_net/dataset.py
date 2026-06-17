@@ -18,26 +18,44 @@ def _to_tensor(frame):
     return torch.from_numpy(frame.astype(np.float32) / 255.0).permute(2, 0, 1)
 
 
+def _load_blank(ref_path):
+    """Load frame 0 of the reference video as the no-contact blank frame."""
+    cap = cv2.VideoCapture(ref_path)
+    ret, frame = cap.read()
+    cap.release()
+    if not ret:
+        raise RuntimeError(f"Failed to read blank frame from {ref_path}")
+    return _to_tensor(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+
 class TactileTransferDataset(data.Dataset):
     """Paired dataset of PatchMatch-transferred and ground-truth tactile videos.
 
     Each sample is a frame pair (t-1, t) from the transferred video as input
     and frame t from the query (GT) video as target.
 
+    When residual=True, inputs and targets are expressed as contact residuals:
+        residual[t] = video[t] - blank
+    where blank is frame 0 of the reference video ({pair_idx}_ref_shadow.mp4).
+    The returned dict includes a 'blank' key for reconstruction.
+
     Directory layout expected:
         transfer_dir/
             {obj_id}/
                 {pair_idx}_transferred_em.mp4   # network input
                 {pair_idx}_query_shadow.mp4      # ground truth
+                {pair_idx}_ref_shadow.mp4        # reference (blank source)
     """
 
     NUM_PAIRS = 8
 
-    def __init__(self, transfer_dir, object_ids, split='train', use_hflip=True):
+    def __init__(self, transfer_dir, object_ids, split='train', use_hflip=True,
+                 residual=False):
         super().__init__()
         self.transfer_dir = transfer_dir
         self.split = split
         self.use_hflip = use_hflip and (split == 'train')
+        self.residual = residual
 
         # Build flat sample index: list of (obj_id, pair_idx, frame_idx)
         self.samples = []
@@ -47,6 +65,10 @@ class TactileTransferDataset(data.Dataset):
                 vid_path = os.path.join(obj_dir, f"{pair_idx}_transferred_em.mp4")
                 if not os.path.exists(vid_path):
                     continue
+                if residual:
+                    ref_path = os.path.join(obj_dir, f"{pair_idx}_ref_shadow.mp4")
+                    if not os.path.exists(ref_path):
+                        continue
                 cap = cv2.VideoCapture(vid_path)
                 n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 cap.release()
@@ -84,6 +106,13 @@ class TactileTransferDataset(data.Dataset):
         lq = torch.stack([_to_tensor(frame_t_minus_1), _to_tensor(frame_t)], dim=0)
         gt = _to_tensor(frame_gt)
 
+        if self.residual:
+            ref_path = os.path.join(obj_dir, f"{pair_idx}_ref_shadow.mp4")
+            blank = _load_blank(ref_path)
+            lq = lq - blank.unsqueeze(0)   # (2, 3, H, W)
+            gt = gt - blank
+            return {'lq': lq, 'gt': gt, 'blank': blank, 'meta': (obj_id, pair_idx, t)}
+
         return {'lq': lq, 'gt': gt, 'meta': (obj_id, pair_idx, t)}
 
     def lq_video_exists(self, obj_id, pair_idx):
@@ -92,10 +121,19 @@ class TactileTransferDataset(data.Dataset):
         return os.path.exists(path)
 
     def iter_video_pairs(self, obj_id, pair_idx):
-        """Yield (lq_pair, gt_frame) tensors for every frame of one video pair in order."""
+        """Yield (lq_pair, gt_frame, blank_or_None) for every frame in order.
+
+        blank_or_None is a (3,H,W) float tensor when residual=True, else None.
+        lq and gt are in residual space when residual=True.
+        """
         obj_dir = os.path.join(self.transfer_dir, str(obj_id))
         lq_path = os.path.join(obj_dir, f"{pair_idx}_transferred_em.mp4")
         gt_path = os.path.join(obj_dir, f"{pair_idx}_query_shadow.mp4")
+
+        blank = None
+        if self.residual:
+            ref_path = os.path.join(obj_dir, f"{pair_idx}_ref_shadow.mp4")
+            blank = _load_blank(ref_path)
 
         cap_lq = cv2.VideoCapture(lq_path)
         cap_gt = cv2.VideoCapture(gt_path)
@@ -115,7 +153,12 @@ class TactileTransferDataset(data.Dataset):
                 lq = torch.stack([_to_tensor(prev_frame), _to_tensor(f_lq)], dim=0)
                 gt = _to_tensor(f_gt)
                 prev_frame = f_lq
-                yield lq, gt
+
+                if self.residual:
+                    lq = lq - blank.unsqueeze(0)
+                    gt = gt - blank
+
+                yield lq, gt, blank
         finally:
             cap_lq.release()
             cap_gt.release()

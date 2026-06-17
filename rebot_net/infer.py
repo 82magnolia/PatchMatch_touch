@@ -30,6 +30,14 @@ Usage:
         --checkpoint   log/rebot_checkpoints/best.pth \
         --model_size   rebot_S \
         --save_dir     log/rebot_infer
+
+Residual mode (subtract blank from input, predict refined residual, add blank back):
+    python rebot_net/infer.py \
+        --input_video log/transfer/52/0_transferred_em.mp4 \
+        --checkpoint  log/rebot_checkpoints_residual/best.pth \
+        --model_size  rebot_S \
+        --save_dir    log/rebot_infer_residual \
+        --residual
 """
 
 import argparse
@@ -42,7 +50,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(__file__))
 from train import MODEL_CONFIGS, build_model
-from trainer import _write_video, _read_video_frames, _make_grid_video
+from trainer import _write_video, _read_video_frames, _make_grid_video, _residual_to_vis
 
 
 def _read_video(path):
@@ -63,29 +71,77 @@ def _to_tensor(frame_rgb):
 
 
 @torch.no_grad()
-def enhance_video(model, frames_rgb, device):
-    """Enhance a list of (H,W,3) uint8 frames; returns float32 [0,1] frames."""
+def enhance_video(model, frames_rgb, device, blank_tensor=None):
+    """Enhance a list of (H,W,3) uint8 frames; returns float32 [0,1] absolute frames.
+
+    When blank_tensor is provided (residual mode), subtracts it before inference
+    and adds it back afterward. blank_tensor is a (3,H,W) float32 CPU tensor.
+    Returns also a list of residual visualization frames (or None if not residual).
+    """
     enhanced = []
+    residual_vis = [] if blank_tensor is not None else None
     prev_tensor = None
+
     for frame in frames_rgb:
         curr_tensor = _to_tensor(frame)
         if prev_tensor is None:
             prev_tensor = curr_tensor
-        lq = torch.stack([prev_tensor, curr_tensor], dim=0).unsqueeze(0).to(device)
-        pred = model(lq).squeeze(0).cpu().clamp(0, 1)
-        enhanced.append(pred.permute(1, 2, 0).numpy())
+
+        if blank_tensor is not None:
+            lq_curr = curr_tensor - blank_tensor
+            lq_prev = prev_tensor - blank_tensor
+        else:
+            lq_curr = curr_tensor
+            lq_prev = prev_tensor
+
+        lq = torch.stack([lq_prev, lq_curr], dim=0).unsqueeze(0).to(device)
+        pred = model(lq).squeeze(0).cpu()
+
+        if blank_tensor is not None:
+            pred_res_np = pred.clamp(-1, 1).permute(1, 2, 0).numpy()
+            pred_abs = np.clip(pred_res_np + blank_tensor.permute(1, 2, 0).numpy(), 0, 1)
+            enhanced.append(pred_abs)
+            residual_vis.append(_residual_to_vis(pred_res_np))
+        else:
+            enhanced.append(pred.clamp(0, 1).permute(1, 2, 0).numpy())
+
         prev_tensor = curr_tensor
-    return enhanced
+
+    return enhanced, residual_vis
 
 
-def process_single_video(model, input_path, save_dir, device, save_gt=False):
+def _load_blank_from_ref(ref_path):
+    """Return frame 0 of the reference video as a (3,H,W) float32 CPU tensor."""
+    cap = cv2.VideoCapture(ref_path)
+    ret, frame = cap.read()
+    cap.release()
+    if not ret:
+        raise RuntimeError(f"Failed to read blank frame from {ref_path}")
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return torch.from_numpy(frame_rgb.astype(np.float32) / 255.0).permute(2, 0, 1)
+
+
+def process_single_video(model, input_path, save_dir, device, save_gt=False,
+                         residual=False):
     frames_uint8, fps = _read_video(input_path)
     if not frames_uint8:
         print(f"  Warning: no frames read from {input_path}, skipping.")
         return
 
-    print(f"  Enhancing {input_path}  ({len(frames_uint8)} frames @ {fps:.1f} fps) ...", flush=True)
-    enhanced = enhance_video(model, frames_uint8, device)
+    blank_tensor = None
+    if residual:
+        src_dir = os.path.dirname(input_path)
+        stem = os.path.splitext(os.path.basename(input_path))[0]
+        base = stem.replace('_transferred_em', '')
+        ref_path = os.path.join(src_dir, f"{base}_ref_shadow.mp4")
+        if not os.path.exists(ref_path):
+            print(f"  Warning: ref video not found at {ref_path}, skipping residual mode.")
+        else:
+            blank_tensor = _load_blank_from_ref(ref_path)
+
+    print(f"  Enhancing {input_path}  ({len(frames_uint8)} frames @ {fps:.1f} fps) ...",
+          flush=True)
+    enhanced, res_vis = enhance_video(model, frames_uint8, device, blank_tensor)
 
     os.makedirs(save_dir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(input_path))[0]
@@ -93,6 +149,11 @@ def process_single_video(model, input_path, save_dir, device, save_gt=False):
     out_path = os.path.join(save_dir, f"{stem}_enhanced.mp4")
     _write_video(out_path, enhanced, fps=fps)
     print(f"  Saved: {out_path}")
+
+    if res_vis is not None:
+        res_path = os.path.join(save_dir, f"{stem}_pred_residual.mp4")
+        _write_video(res_path, res_vis, fps=fps)
+        print(f"  Saved: {res_path}")
 
     if save_gt:
         src_dir = os.path.dirname(input_path)
@@ -114,6 +175,14 @@ def process_single_video(model, input_path, save_dir, device, save_gt=False):
                 tl=ref_frames, tr=query_frames,
                 bl=transferred, br=enhanced, fps=fps)
 
+        if res_vis is not None and query_frames:
+            # GT residual: query - blank (blank already loaded above)
+            blank_np = blank_tensor.permute(1, 2, 0).numpy()
+            gt_res_vis = [_residual_to_vis(np.clip(f - blank_np, -1, 1))
+                          for f in query_frames]
+            _write_video(os.path.join(save_dir, f"{base}_gt_residual.mp4"),
+                         gt_res_vis, fps=fps)
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="ReBotNet inference — enhance transferred tactile videos")
@@ -131,6 +200,10 @@ def parse_args():
                    help="Directory to write enhanced videos")
     p.add_argument('--save_gt', action='store_true',
                    help="Also copy the ground-truth query and reference videos alongside enhanced output")
+    p.add_argument('--residual', action='store_true',
+                   help="Residual mode: subtract blank (frame 0 of ref_shadow.mp4) from input, "
+                        "predict refined residual, add blank back for absolute output. "
+                        "Also saves *_pred_residual.mp4 visualization.")
     return p.parse_args()
 
 
@@ -138,7 +211,7 @@ def main():
     args = parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    print(f"Using device: {device}  |  Residual mode: {args.residual}")
 
     # Load model
     model = build_model(args.model_size).to(device)
@@ -150,7 +223,7 @@ def main():
 
     if args.input_video:
         process_single_video(model, args.input_video, args.save_dir, device,
-                             save_gt=args.save_gt)
+                             save_gt=args.save_gt, residual=args.residual)
 
     else:
         # Collect object IDs
@@ -182,7 +255,7 @@ def main():
                 done += 1
                 print(f"[{done}/{total}] obj {obj_id} pair {pair_idx}", end='  ', flush=True)
                 process_single_video(model, vid_path, out_dir, device,
-                                     save_gt=args.save_gt)
+                                     save_gt=args.save_gt, residual=args.residual)
 
     print("\nDone.")
 
