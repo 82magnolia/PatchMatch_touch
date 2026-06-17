@@ -255,7 +255,9 @@ def write_video(path, frames, fps):
 def trim_and_resample(frames, blank_bgr, threshold, num_frames):
     """Trim stale frames before/after contact, resample to num_frames.
 
-    Returns a list of num_frames uint8 BGR frames, or None if no contact detected.
+    Returns (resampled_frames, peak_raw_idx) where peak_raw_idx is the index
+    into the original `frames` list with maximum contact signal.
+    Returns (None, None) if no contact detected.
     """
     blank = blank_bgr.astype(np.float32) / 255.0
     diffs = np.array([
@@ -264,12 +266,13 @@ def trim_and_resample(frames, blank_bgr, threshold, num_frames):
     ])
     above = np.where(diffs > threshold)[0]
     if len(above) == 0:
-        return None
+        return None, None
+    peak_raw_idx = int(np.argmax(diffs))
     contact = frames[above[0]: above[-1] + 1]
     if len(contact) == 0:
-        return None
+        return None, None
     idx = np.linspace(0, len(contact) - 1, num_frames).round().astype(int)
-    return [contact[i] for i in idx]
+    return [contact[i] for i in idx], peak_raw_idx
 
 
 # ── Stage 1: Object selection ──────────────────────────────────────────────────
@@ -536,13 +539,14 @@ def main():
     GS_WIN    = "GelSight Live"
     ORTHO_WIN = "Orthographic Normal Preview"
 
-    touch_idx  = 0
-    recording  = False
-    buffer     = []
-    last_rvec  = None
-    last_tvec  = None
-    last_px_py = None
-    ortho_prev = None
+    touch_idx   = 0
+    recording   = False
+    buffer      = []
+    pose_buffer = []  # (rvec, tvec) per recorded frame, parallel to buffer
+    last_rvec   = None
+    last_tvec   = None
+    last_px_py  = None
+    ortho_prev  = None
 
     try:
         while True:
@@ -559,6 +563,10 @@ def main():
                 gs_frame = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
             if recording:
                 buffer.append(gs_frame.copy())
+                pose_buffer.append((
+                    last_rvec.copy() if last_rvec is not None else None,
+                    last_tvec.copy() if last_tvec is not None else None,
+                ))
 
             # ARuCO detection
             rvec, tvec = detect_gelsight_marker(
@@ -627,6 +635,7 @@ def main():
             elif key == ord('a') and recording:
                 recording = False
                 buffer = []
+                pose_buffer = []
                 print(f"  [Touch #{touch_idx}] Recording aborted.")
 
             elif key == ord('s') and recording:
@@ -639,21 +648,35 @@ def main():
                     buffer = []
                     continue
 
-                resampled = trim_and_resample(
+                resampled, peak_idx = trim_and_resample(
                     buffer, blank_frame, args.contact_threshold, args.num_frames)
                 if resampled is None:
                     print(f"  WARNING: no contact detected "
                           f"(threshold={args.contact_threshold}). "
                           "Adjust --contact_threshold or retry.")
                     buffer = []
+                    pose_buffer = []
                     continue
 
+                # Use the pose closest in time to the peak-contact GelSight frame.
+                peak_rvec, peak_tvec = pose_buffer[peak_idx]
+                if peak_rvec is None:
+                    # Fall back to last known pose if marker wasn't visible at peak.
+                    peak_rvec, peak_tvec = last_rvec, last_tvec
+                    print("  WARNING: no marker pose at peak-contact frame — "
+                          "using last known pose.")
+
+                # pose_buffer[i] is the ARuCO pose detected on the ZED frame that was
+                # current when GelSight frame i was captured.  Using the peak-contact
+                # index gives the sensor pose at the moment of deepest press, which best
+                # represents the contact geometry saved in the static normal/color files.
                 res = ortho_project_raw(
                     normals_cached, color_bgr_cached, mask_cached,
-                    intr, args.inpaint_method, rvec=last_rvec, tvec=last_tvec)
+                    intr, args.inpaint_method, rvec=peak_rvec, tvec=peak_tvec)
                 if res is None:
                     print("  ERROR: no valid depth at contact point. Try again.")
                     buffer = []
+                    pose_buffer = []
                     continue
                 normal_bgr_out, raw_norm_out, color_out = res
 
@@ -667,8 +690,8 @@ def main():
                         "touch_idx": touch_idx,
                         "px": int(last_px_py[0]),
                         "py": int(last_px_py[1]),
-                        "rvec": last_rvec.tolist() if last_rvec is not None else None,
-                        "tvec": last_tvec.tolist() if last_tvec is not None else None,
+                        "rvec": peak_rvec.tolist() if peak_rvec is not None else None,
+                        "tvec": peak_tvec.tolist() if peak_tvec is not None else None,
                         "n_raw_frames": n_buf,
                         "n_resampled_frames": len(resampled),
                     }, f, indent=2)
@@ -678,6 +701,7 @@ def main():
                       f"{touch_idx}_shadow.mp4  ({len(resampled)} frames)")
                 touch_idx += 1
                 buffer = []
+                pose_buffer = []
 
     finally:
         cam.close()
