@@ -153,22 +153,35 @@ def ortho_project_raw(normals_np, color_bgr, mask, intr, method,
     Pz = P_cam[2]
     valid_proj = Pz > 0
     with np.errstate(invalid="ignore", divide="ignore"):
-        spx = np.where(valid_proj,
-                       (intr["fx"] * P_cam[0] / Pz + intr["cx"]).round().astype(int), 0)
-        spy = np.where(valid_proj,
-                       (intr["fy"] * P_cam[1] / Pz + intr["cy"]).round().astype(int), 0)
-    spx = np.clip(spx, 0, W - 1)
-    spy = np.clip(spy, 0, H - 1)
+        spx_f = np.where(valid_proj,
+                         intr["fx"] * P_cam[0] / Pz + intr["cx"], -1).astype(np.float32)
+        spy_f = np.where(valid_proj,
+                         intr["fy"] * P_cam[1] / Pz + intr["cy"], -1).astype(np.float32)
 
-    # Sample ZED data at projected grid positions
-    normals_crop = normals_np[spy, spx].copy()   # (out_h, out_w, 4)
-    mask_crop    = mask      [spy, spx].copy()   # (out_h, out_w)
-    color_crop   = color_bgr [spy, spx].copy()   # (out_h, out_w, 3)
+    # Bilinear sampling via cv2.remap — eliminates nearest-neighbour jaggies when
+    # the GelSight FoV covers far fewer ZED pixels than the 320×240 output grid.
+    remap_kw = dict(borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
-    # Invalidate pixels that projected behind the camera or outside the object mask
+    color_crop = cv2.remap(color_bgr, spx_f, spy_f,
+                           cv2.INTER_LINEAR, **remap_kw)
+
+    # Normals: zero-fill NaN before bilinear remap, restore invalidity after
+    nxyz = normals_np[:, :, :3]
+    n_valid = np.isfinite(nxyz).all(axis=2)
+    nxyz_safe = np.where(n_valid[:, :, None], nxyz, 0.0).astype(np.float32)
+    norm_remap = cv2.remap(nxyz_safe, spx_f, spy_f, cv2.INTER_LINEAR, **remap_kw)
+    valid_remap = cv2.remap(n_valid.astype(np.uint8), spx_f, spy_f,
+                            cv2.INTER_NEAREST, **remap_kw)
+    normals_crop = np.full((out_h, out_w, 4), np.nan, dtype=np.float32)
+    normals_crop[:, :, :3] = norm_remap
+    normals_crop[valid_remap == 0] = np.nan
+
+    mask_crop = cv2.remap(mask, spx_f, spy_f, cv2.INTER_NEAREST, **remap_kw)
+
+    # Invalidate pixels that projected behind the camera
     normals_crop[~valid_proj] = np.nan
-    mask_crop   [~valid_proj] = 0
-    color_crop  [~valid_proj] = 0
+    mask_crop[~valid_proj] = 0
+    color_crop[~valid_proj] = 0
 
     normals_crop[mask_crop == 0] = np.nan
     if not np.isfinite(normals_crop[:, :, 0]).any():

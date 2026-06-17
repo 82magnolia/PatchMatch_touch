@@ -216,14 +216,25 @@ def ortho_project(
     Px = p_contact[0] + uu
     Py = p_contact[1] + vv
 
-    # Project into ZED pixel coordinates
-    spx = np.clip((fx * Px / Z_m + cx).round().astype(int), 0, W - 1)
-    spy = np.clip((fy * Py / Z_m + cy).round().astype(int), 0, H - 1)
+    # Bilinear sampling via cv2.remap — eliminates nearest-neighbour jaggies
+    spx_f = (fx * Px / Z_m + cx).astype(np.float32)
+    spy_f = (fy * Py / Z_m + cy).astype(np.float32)
+    remap_kw = dict(borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
-    # Sample ZED data at projected positions
-    normals_crop = normals_np[spy, spx].copy()  # (out_h, out_w, 4)
-    color_crop = color_bgr[spy, spx].copy()     # (out_h, out_w, 3)
-    mask_crop = mask[spy, spx].copy()           # (out_h, out_w)
+    color_crop = cv2.remap(color_bgr, spx_f, spy_f, cv2.INTER_LINEAR, **remap_kw)
+
+    # Normals: zero-fill NaN before bilinear remap, restore invalidity after
+    nxyz = normals_np[:, :, :3]
+    n_valid = np.isfinite(nxyz).all(axis=2)
+    nxyz_safe = np.where(n_valid[:, :, None], nxyz, 0.0).astype(np.float32)
+    norm_remap = cv2.remap(nxyz_safe, spx_f, spy_f, cv2.INTER_LINEAR, **remap_kw)
+    valid_remap = cv2.remap(n_valid.astype(np.uint8), spx_f, spy_f,
+                            cv2.INTER_NEAREST, **remap_kw)
+    normals_crop = np.full((out_h, out_w, 4), np.nan, dtype=np.float32)
+    normals_crop[:, :, :3] = norm_remap
+    normals_crop[valid_remap == 0] = np.nan
+
+    mask_crop = cv2.remap(mask, spx_f, spy_f, cv2.INTER_NEAREST, **remap_kw)
 
     normals_crop[mask_crop == 0] = np.nan
     if not np.isfinite(normals_crop[:, :, 0]).any():
@@ -419,10 +430,7 @@ def run_capture_flow(
                     cv2.destroyWindow(ORTHO_WIN)
                 except Exception:
                     pass
-            elif (key == 13 and  # Enter → run SAM
-                  phase[0] == "box" and
-                  box_pts[0] is not None and
-                  drag_start[0] is None):
+            elif key == 13 and phase[0] == "box" and box_pts[0] is not None and drag_start[0] is None:  # Enter → run SAM
                 banner = overlay_banner(display, "Running SAM... please wait")
                 cv2.imshow(WIN, banner)
                 cv2.waitKey(1)
