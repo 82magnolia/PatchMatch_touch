@@ -17,6 +17,7 @@ import sys
 import os
 import json
 import argparse
+import threading
 import numpy as np
 import cv2
 import torch
@@ -102,6 +103,36 @@ def read_gelsight_frame(cap, border_fraction=0.15):
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     rgb = _crop_and_resize_gs(rgb, GELSIGHT_W, GELSIGHT_H, border_fraction)
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+
+class GelSightCapture:
+    """Background thread that drains the VideoCapture buffer continuously,
+    keeping only the latest processed frame to eliminate display lag."""
+
+    def __init__(self, cap, border_fraction=0.15):
+        self._cap = cap
+        self._border_fraction = border_fraction
+        self._frame = None
+        self._lock = threading.Lock()
+        self._running = True
+        self._thread = threading.Thread(target=self._reader, daemon=True)
+        self._thread.start()
+
+    def _reader(self):
+        while self._running:
+            frame = read_gelsight_frame(self._cap, self._border_fraction)
+            if frame is not None:
+                with self._lock:
+                    self._frame = frame
+
+    def read(self):
+        with self._lock:
+            return None if self._frame is None else self._frame.copy()
+
+    def release(self):
+        self._running = False
+        self._thread.join(timeout=2.0)
+        self._cap.release()
 
 
 # ── Orthographic projection ───────────────────────────────────────────────────
@@ -453,7 +484,7 @@ def main():
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             cam.close()
-            gs_cap.release()
+            gs_cap.release()  # GelSightCapture not yet started; release directly
             cv2.destroyAllWindows()
             sys.exit(0)
         elif key == ord('c'):
@@ -497,6 +528,10 @@ def main():
           f"size={args.marker_size*1000:.0f} mm")
     print("  Keys: r=start recording  s=stop+save  a=abort  q=quit")
 
+    # Background thread drains the GelSight buffer so the main loop always
+    # gets the latest frame instead of a buffered (lagging) one.
+    gs_capture = GelSightCapture(gs_cap, args.border_fraction)
+
     ZED_WIN   = "ZED: ARuCO Tracking  (r=record  s=stop  a=abort  q=quit)"
     GS_WIN    = "GelSight Live"
     ORTHO_WIN = "Orthographic Normal Preview"
@@ -518,8 +553,8 @@ def main():
             else:
                 color_live = np.zeros((ZED_H, ZED_W, 3), dtype=np.uint8)
 
-            # GelSight grab
-            gs_frame = read_gelsight_frame(gs_cap, args.border_fraction)
+            # GelSight grab — always latest frame (background thread drains buffer)
+            gs_frame = gs_capture.read()
             if gs_frame is None:
                 gs_frame = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
             if recording:
@@ -646,7 +681,7 @@ def main():
 
     finally:
         cam.close()
-        gs_cap.release()
+        gs_capture.release()
         cv2.destroyAllWindows()
         print(f"\nDone. {touch_idx} touch location(s) saved to: {args.save_dir}")
 
