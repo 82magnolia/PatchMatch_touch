@@ -48,6 +48,21 @@ ZED_DISPLAY_W, ZED_DISPLAY_H = 640, 360
 ZED_W, ZED_H                 = 1280, 720
 GELSIGHT_W, GELSIGHT_H       = 320, 240
 
+def _make_Rz(degrees):
+    """Rotation matrix around the Z axis by `degrees` (counter-clockwise)."""
+    theta = np.deg2rad(degrees)
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[c, -s, 0.0],
+                     [s,  c, 0.0],
+                     [0.0, 0.0, 1.0]], dtype=np.float64)
+
+
+def _rotate_rvec_z(rvec, R_z):
+    """Apply an extra Z-axis rotation (in marker frame) to a Rodrigues vector."""
+    R, _ = cv2.Rodrigues(rvec)
+    rvec_new, _ = cv2.Rodrigues(R @ R_z)
+    return rvec_new.flatten()
+
 
 # ── ARuCO ─────────────────────────────────────────────────────────────────────
 
@@ -147,6 +162,10 @@ def ortho_project_raw(normals_np, color_bgr, mask, intr, method,
     and projects each point into ZED pixel coordinates to sample normals and color.
     Requires rvec and tvec; returns None if either is missing or all samples are invalid.
 
+    rvec should already encode the z-axis alignment correction via _rotate_rvec_z().
+    R_sensor (with R_z baked in) is used for spatial grid placement only.
+    Normal re-orientation uses R_orig @ R_flip (R_z undone) to avoid swapping nx↔ny.
+
     Returns (normal_bgr, raw_normals_hw3, color_bgr_crop) at GELSIGHT_W × GELSIGHT_H.
     normal_bgr:      (H, W, 3) uint8 BGR colormap
     raw_normals_hw3: (H, W, 3) float32 in [-1, 1], expressed in sensor frame
@@ -159,10 +178,16 @@ def ortho_project_raw(normals_np, color_bgr, mask, intr, method,
     out_h, out_w = GELSIGHT_H, GELSIGHT_W
 
     # Sensor frame: marker Z points toward camera; gel contact faces opposite side.
-    # R_sensor rotates sensor frame → camera frame.
+    # rvec encodes R_orig @ R_z(90°) (via _rotate_rvec_z). R_z(90°) corrects the
+    # in-plane spatial layout but must NOT be included in the normal re-orientation:
+    # R_z(90°) swaps nx↔ny (since it maps x→-y, y→x), causing cyan↔violet.
+    # R_sensor (with R_z) is used for spatial sampling only.
+    # R_sensor_normals (without R_z) = R_orig @ R_flip is used for normal re-orientation.
     R, _ = cv2.Rodrigues(rvec)
     R_flip   = np.diag([1.0, -1.0, -1.0])  # marker frame → sensor frame (180° around X)
-    R_sensor = R @ R_flip                   # sensor frame → camera frame
+    R_sensor = R @ R_flip                   # for spatial sampling (includes R_z)
+    R_z_align = _make_Rz(90)               # the hardcoded alignment rotation
+    R_sensor_normals = R @ R_z_align.T @ R_flip  # = R_orig @ R_flip, for normal rotation
 
     # Contact point in camera frame
     p_contact = R @ np.array([0.0, 0.0, -ARUCO_TO_CONTACT_M]) + tvec  # (3,)
@@ -220,12 +245,19 @@ def ortho_project_raw(normals_np, color_bgr, mask, intr, method,
 
     normals_filled = inpaint_normals(normals_crop, method)
 
-    # Re-orient normals from ZED camera frame into the GelSight sensor frame
+    # Re-orient normals from ZED camera frame into the GelSight sensor frame.
+    # Use R_sensor_normals (= R_orig @ R_flip, without R_z) so spatial alignment
+    # rotation does not swap nx↔ny in the normal colormap.
+    # NOTE: the re-oriented normals here are in the physical sensor frame, so their
+    # colormap will differ from the cached object normals shown in the CACHE_WIN panel
+    # (which are in ZED camera frame). This is expected — the cached panel applies a
+    # global rotation (the ZED→sensor transformation) before the point cloud is
+    # rendered, making the color encoding appear different even for the same surface.
     nxyz = normals_filled[:, :, :3]
     valid_n = np.isfinite(nxyz).all(axis=-1)
     if valid_n.any():
         nxyz_rot = np.full_like(nxyz, np.nan)
-        nxyz_rot[valid_n] = (R_sensor.T @ nxyz[valid_n].T).T
+        nxyz_rot[valid_n] = (R_sensor_normals.T @ nxyz[valid_n].T).T
         normals_filled = normals_filled.copy()
         normals_filled[:, :, :3] = nxyz_rot
 
@@ -543,6 +575,11 @@ def main():
     ORTHO_WIN = "Orthographic Normal Preview"
     DEBUG_WIN = "Sensor Alignment: Normals+GelSight | RGB+GelSight"
 
+    # 90° CCW z-axis rotation corrects the in-plane misalignment between the
+    # ARuCO marker frame and the physical GelSight sensor orientation.
+    R_z = _make_Rz(90)
+    print("Z-axis alignment rotation: 90° CCW")
+
     touch_idx   = 0
     recording   = False
     buffer      = []
@@ -587,7 +624,8 @@ def main():
                     cv2.circle(vis, px_py, 8, (0, 0, 255), -1)
                     result = ortho_project_raw(
                         normals_cached, color_bgr_cached, mask_cached,
-                        intr, args.inpaint_method, rvec=rvec, tvec=tvec)
+                        intr, args.inpaint_method,
+                        rvec=_rotate_rvec_z(rvec, R_z), tvec=tvec)
                     if result is not None:
                         ortho_prev = np.hstack([result[0], result[2]])
             else:
@@ -686,7 +724,8 @@ def main():
                 # represents the contact geometry saved in the static normal/color files.
                 res = ortho_project_raw(
                     normals_cached, color_bgr_cached, mask_cached,
-                    intr, args.inpaint_method, rvec=peak_rvec, tvec=peak_tvec)
+                    intr, args.inpaint_method,
+                    rvec=_rotate_rvec_z(peak_rvec, R_z), tvec=peak_tvec)
                 if res is None:
                     print("  ERROR: no valid depth at contact point. Try again.")
                     buffer = []
