@@ -49,6 +49,7 @@ ZED_W, ZED_H                 = 1280, 720
 GELSIGHT_W, GELSIGHT_H       = 320, 240
 HEIGHT_CUTOFF_M              = 0.050   # display saturation: depths beyond 50 mm clamp to max color
 HEIGHT_MASK_THRES_M          = -0.008   # contact mask threshold: height_map < this value is contact
+RENDER_MASK_THRES_M          = -0.004   # per-frame video mask threshold (shifts with pressing depth)
 
 def _make_Rz(degrees):
     """Rotation matrix around the Z axis by `degrees` (counter-clockwise)."""
@@ -291,7 +292,8 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
     h_u8 = (np.clip(-height_map / HEIGHT_CUTOFF_M, 0, 1) * 255).astype(np.uint8)
     height_vis = cv2.applyColorMap(h_u8, cv2.COLORMAP_VIRIDIS)
 
-    return normal_bgr, raw_norm, color_crop, height_vis, contact_mask
+    return (normal_bgr, raw_norm, color_crop, height_vis, contact_mask,
+            height_map, sensor_z_hmap, valid_depth_remap, mask_crop)
 
 
 # ── Video helpers ─────────────────────────────────────────────────────────────
@@ -306,12 +308,54 @@ def write_video(path, frames, fps):
     out.release()
 
 
+def make_render_mask_video(height_map_0, valid_depth_remap, mask_crop,
+                           sensor_z_0, tvec_0, pose_contact_slice, num_frames):
+    """Generate per-frame render mask images by shifting height_map threshold by pressing depth.
+
+    pressing_depth_i = dot(sensor_z_0, tvec_i - tvec_0)
+    contact at frame i: height_map_0 < pressing_depth_i + RENDER_MASK_THRES_M
+
+    Returns a list of num_frames BGR images (white=contact, black=no contact).
+    Falls back to a static mask (depth=0) if fewer than 2 valid poses exist.
+    """
+    from scipy.interpolate import RBFInterpolator
+
+    n_contact = len(pose_contact_slice)
+    raw_x, raw_y = [], []
+    for i, (rv, tv) in enumerate(pose_contact_slice):
+        if tv is not None:
+            d = float(np.dot(sensor_z_0, tv - tvec_0))
+            raw_x.append(i / max(n_contact - 1, 1))
+            raw_y.append(d)
+
+    # Evaluate smoothed depths at the num_frames resampled positions in [0, 1].
+    eval_x = np.linspace(0, 1, num_frames)
+    if len(raw_x) >= 2:
+        rbf = RBFInterpolator(
+            np.array(raw_x)[:, None], np.array(raw_y),
+            kernel="thin_plate_spline", smoothing=0.1)
+        depths = rbf(eval_x[:, None])
+    else:
+        print("  WARNING: fewer than 2 valid poses in contact range — "
+              "contact mask video uses static threshold.")
+        depths = np.zeros(num_frames)
+
+    frames_out = []
+    for d in depths:
+        threshold = float(d) + RENDER_MASK_THRES_M
+        cm = (height_map_0 < threshold) & valid_depth_remap & (mask_crop > 0)
+        vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
+        vis[cm] = 255
+        frames_out.append(vis)
+    return frames_out
+
+
 def trim_and_resample(frames, blank_bgr, threshold, num_frames):
     """Trim stale frames before/after contact, resample to num_frames.
 
-    Returns (resampled_frames, peak_raw_idx) where peak_raw_idx is the index
-    into the original `frames` list with maximum contact signal.
-    Returns (None, None) if no contact detected.
+    Returns (resampled_frames, peak_raw_idx, contact_start_idx, contact_end_idx)
+    where indices are into the original `frames` list.
+    Returns (None, None, None, None) if no contact detected.
     """
     blank = blank_bgr.astype(np.float32) / 255.0
     diffs = np.array([
@@ -320,13 +364,14 @@ def trim_and_resample(frames, blank_bgr, threshold, num_frames):
     ])
     above = np.where(diffs > threshold)[0]
     if len(above) == 0:
-        return None, None
+        return None, None, None, None
     peak_raw_idx = int(np.argmax(diffs))
-    contact = frames[above[0]: above[-1] + 1]
+    cs_idx, ce_idx = int(above[0]), int(above[-1])
+    contact = frames[cs_idx: ce_idx + 1]
     if len(contact) == 0:
-        return None, None
+        return None, None, None, None
     idx = np.linspace(0, len(contact) - 1, num_frames).round().astype(int)
-    return [contact[i] for i in idx], peak_raw_idx
+    return [contact[i] for i in idx], peak_raw_idx, cs_idx, ce_idx
 
 
 # ── Stage 1: Object selection ──────────────────────────────────────────────────
@@ -730,7 +775,7 @@ def main():
                     buffer = []
                     continue
 
-                resampled, peak_idx = trim_and_resample(
+                resampled, peak_idx, cs_idx, ce_idx = trim_and_resample(
                     buffer, blank_frame, args.contact_threshold, args.num_frames)
                 if resampled is None:
                     print(f"  WARNING: no contact detected "
@@ -761,7 +806,31 @@ def main():
                     buffer = []
                     pose_buffer = []
                     continue
-                normal_bgr_out, raw_norm_out, color_out, height_vis_out, rcm_out = res
+                normal_bgr_out, raw_norm_out, color_out, height_vis_out, rcm_out = res[:5]
+
+                # Per-frame contact mask video: use the contact-start pose for height_map_0
+                # so the threshold shifts by pressing depth for each resampled frame.
+                cs_rvec_raw, cs_tvec_raw = pose_buffer[cs_idx]
+                if cs_rvec_raw is None:
+                    cs_rvec_raw, cs_tvec_raw = peak_rvec, peak_tvec
+                    print("  WARNING: no marker pose at contact start — "
+                          "using peak pose for contact mask video.")
+                cs_res = ortho_project_raw(
+                    normals_cached, color_bgr_cached, mask_cached,
+                    depth_cached, intr, args.inpaint_method,
+                    rvec=_rotate_rvec_z(cs_rvec_raw, R_z), tvec=cs_tvec_raw)
+                if cs_res is not None:
+                    hmap_0, sz_0, vdr_0, mc_0 = cs_res[5], cs_res[6], cs_res[7], cs_res[8]
+                    pose_contact = pose_buffer[cs_idx: ce_idx + 1]
+                    rm_frames = make_render_mask_video(
+                        hmap_0, vdr_0, mc_0, sz_0, cs_tvec_raw,
+                        pose_contact, args.num_frames)
+                else:
+                    print("  WARNING: contact-start ortho failed — "
+                          "render mask video will be static.")
+                    rm_vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
+                    rm_vis[rcm_out] = 255
+                    rm_frames = [rm_vis] * args.num_frames
 
                 prefix = os.path.join(args.save_dir, str(touch_idx))
                 cv2.imwrite(f"{prefix}_normal.jpg", normal_bgr_out)
@@ -771,6 +840,9 @@ def main():
                 cv2.imwrite(f"{prefix}_contact_mask.jpg",
                             (rcm_out.astype(np.uint8) * 255))
                 write_video(f"{prefix}_shadow.mp4", resampled, gs_fps)
+                write_video(f"{prefix}_render_mask.mp4", rm_frames, gs_fps)
+                side_by_side = [np.hstack([s, r]) for s, r in zip(resampled, rm_frames)]
+                write_video(f"{prefix}_shadow_render_mask.mp4", side_by_side, gs_fps)
                 with open(f"{prefix}_meta.json", "w") as f:
                     json.dump({
                         "touch_idx": touch_idx,
