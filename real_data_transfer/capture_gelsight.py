@@ -42,11 +42,13 @@ except ImportError:
 GELSIGHT_MARKER_ID = 6
 HOLDER_HEIGHT_M    = 0.030    # gsmini_holder.stl: Z range 0–30 mm
 GEL_THICKNESS_M    = 0.00425  # GelSight Mini specs: 4.25 mm gel
-ARUCO_TO_CONTACT_M = HOLDER_HEIGHT_M  # gel contact flush with holder bottom
+ARUCO_TO_CONTACT_M = 0.050    # measured: 50 mm from marker face to gel tip
 
 ZED_DISPLAY_W, ZED_DISPLAY_H = 640, 360
 ZED_W, ZED_H                 = 1280, 720
 GELSIGHT_W, GELSIGHT_H       = 320, 240
+HEIGHT_CUTOFF_M              = 0.050   # display saturation: depths beyond 50 mm clamp to max color
+HEIGHT_MASK_THRES_M          = -0.008   # contact mask threshold: height_map < this value is contact
 
 def _make_Rz(degrees):
     """Rotation matrix around the Z axis by `degrees` (counter-clockwise)."""
@@ -152,7 +154,7 @@ class GelSightCapture:
 
 # ── Orthographic projection ───────────────────────────────────────────────────
 
-def ortho_project_raw(normals_np, color_bgr, mask, intr, method,
+def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
                       rvec=None, tvec=None):
     """
     True orthographic projection of the GelSight Mini FoV using sensor pose.
@@ -218,6 +220,20 @@ def ortho_project_raw(normals_np, color_bgr, mask, intr, method,
     # the GelSight FoV covers far fewer ZED pixels than the 320×240 output grid.
     remap_kw = dict(borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
+    # Height map: sample ZED depth at each output pixel's ZED sample location,
+    # backproject to 3D, then measure displacement along physical sensor Z.
+    depth_safe = np.where(np.isfinite(depth_m) & (depth_m > 0),
+                          depth_m, 0.0).astype(np.float32)
+    depth_sampled = cv2.remap(depth_safe, spx_f, spy_f, cv2.INTER_LINEAR, **remap_kw)
+    valid_depth_remap = depth_sampled > 0
+    P_obj = np.stack([
+        (spx_f - intr["cx"]) / intr["fx"] * depth_sampled,
+        (spy_f - intr["cy"]) / intr["fy"] * depth_sampled,
+        depth_sampled,
+    ], axis=-1)  # (out_h, out_w, 3) in camera frame
+    sensor_z_hmap = R_sensor_normals[:, 2]  # physical sensor Z (excludes R_z correction)
+    height_map = np.einsum("hwc,c->hw", P_obj - p_contact, sensor_z_hmap)
+
     color_crop = cv2.remap(color_bgr, spx_f, spy_f,
                            cv2.INTER_LINEAR, **remap_kw)
 
@@ -269,7 +285,13 @@ def ortho_project_raw(normals_np, color_bgr, mask, intr, method,
     raw_norm = normals_filled[:, :, :3].copy()
     raw_norm[mask_crop == 0] = 0.0
 
-    return normal_bgr, raw_norm, color_crop
+    # Render contact mask: object surface above the virtual gel plane (height_map < 0
+    # means the object is closer to the camera than the gel tip, i.e. in contact).
+    contact_mask = (height_map < HEIGHT_MASK_THRES_M) & valid_depth_remap & (mask_crop > 0)
+    h_u8 = (np.clip(-height_map / HEIGHT_CUTOFF_M, 0, 1) * 255).astype(np.uint8)
+    height_vis = cv2.applyColorMap(h_u8, cv2.COLORMAP_VIRIDIS)
+
+    return normal_bgr, raw_norm, color_crop, height_vis, contact_mask
 
 
 # ── Video helpers ─────────────────────────────────────────────────────────────
@@ -624,10 +646,17 @@ def main():
                     cv2.circle(vis, px_py, 8, (0, 0, 255), -1)
                     result = ortho_project_raw(
                         normals_cached, color_bgr_cached, mask_cached,
-                        intr, args.inpaint_method,
+                        depth_cached, intr, args.inpaint_method,
                         rvec=_rotate_rvec_z(rvec, R_z), tvec=tvec)
                     if result is not None:
-                        ortho_prev = np.hstack([result[0], result[2]])
+                        rcm_vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
+                        rcm_vis[result[4]] = (255, 255, 255)
+                        cv2.putText(rcm_vis, "Contact mask", (6, GELSIGHT_H - 8),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1)
+                        ortho_prev = np.vstack([
+                            np.hstack([result[0], result[2]]),
+                            np.hstack([result[3], rcm_vis]),
+                        ])
             else:
                 cv2.putText(vis, "Marker ID=6 not found",
                             (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
@@ -664,12 +693,13 @@ def main():
             if ortho_prev is not None:
                 cv2.imshow(ORTHO_WIN, ortho_prev)
 
-            # Sensor alignment debug: blend ortho normal/RGB with live GelSight
+            # Sensor alignment debug: blend ortho normal/RGB with live GelSight.
+            # ortho_prev is 2x2: top row = normal | color, bottom row = height | mask.
             if args.debug_sensor_align and ortho_prev is not None:
                 gs_vis = gs_frame if gs_frame is not None else np.zeros(
                     (GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
-                ortho_normal = ortho_prev[:, :GELSIGHT_W]   # left half = normal colormap
-                ortho_color  = ortho_prev[:, GELSIGHT_W:]   # right half = RGB crop
+                ortho_normal = ortho_prev[:GELSIGHT_H, :GELSIGHT_W]
+                ortho_color  = ortho_prev[:GELSIGHT_H, GELSIGHT_W:2 * GELSIGHT_W]
                 blend_normal = cv2.addWeighted(ortho_normal, 0.5, gs_vis, 0.5, 0)
                 blend_color  = cv2.addWeighted(ortho_color,  0.5, gs_vis, 0.5, 0)
                 cv2.imshow(DEBUG_WIN, np.hstack([blend_normal, blend_color]))
@@ -724,19 +754,22 @@ def main():
                 # represents the contact geometry saved in the static normal/color files.
                 res = ortho_project_raw(
                     normals_cached, color_bgr_cached, mask_cached,
-                    intr, args.inpaint_method,
+                    depth_cached, intr, args.inpaint_method,
                     rvec=_rotate_rvec_z(peak_rvec, R_z), tvec=peak_tvec)
                 if res is None:
                     print("  ERROR: no valid depth at contact point. Try again.")
                     buffer = []
                     pose_buffer = []
                     continue
-                normal_bgr_out, raw_norm_out, color_out = res
+                normal_bgr_out, raw_norm_out, color_out, height_vis_out, rcm_out = res
 
                 prefix = os.path.join(args.save_dir, str(touch_idx))
                 cv2.imwrite(f"{prefix}_normal.jpg", normal_bgr_out)
                 np.savez_compressed(f"{prefix}_normal.npz", normal=raw_norm_out)
                 cv2.imwrite(f"{prefix}_color.jpg", color_out)
+                cv2.imwrite(f"{prefix}_height.jpg", height_vis_out)
+                cv2.imwrite(f"{prefix}_contact_mask.jpg",
+                            (rcm_out.astype(np.uint8) * 255))
                 write_video(f"{prefix}_shadow.mp4", resampled, gs_fps)
                 with open(f"{prefix}_meta.json", "w") as f:
                     json.dump({

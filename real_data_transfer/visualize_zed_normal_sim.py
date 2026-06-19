@@ -51,6 +51,8 @@ CAPTURE_W, CAPTURE_H = 1280, 720
 
 GELSIGHT_FOV_W_MM = 18.6
 GELSIGHT_FOV_H_MM = 14.3
+HEIGHT_CUTOFF_M = 0.050  # display saturation: depths beyond 50 mm clamp to max color
+HEIGHT_MASK_THRES_M = 0.000  # contact mask threshold: height_map < this value is contact
 
 DEPTH_MODES = {
     "performance": sl.DEPTH_MODE.PERFORMANCE,
@@ -247,14 +249,36 @@ def ortho_project(
     normal_bgr[mask_crop == 0] = 0
     color_crop[mask_crop == 0] = 0
 
+    # Height map: sensor assumed parallel to image plane → sensor_z = [0,0,1],
+    # so height = depth_sampled − Z_m (positive = object behind contact plane).
+    depth_safe = np.where(np.isfinite(depth_m) & (depth_m > 0),
+                          depth_m, 0.0).astype(np.float32)
+    depth_sampled = cv2.remap(depth_safe, spx_f, spy_f, cv2.INTER_LINEAR, **remap_kw)
+    valid_depth_remap = depth_sampled > 0
+    height_map = depth_sampled - Z_m
+    # height_map < 0: object is closer to camera than the gel tip → in contact.
+    contact_mask = (height_map < HEIGHT_MASK_THRES_M) & valid_depth_remap & (mask_crop > 0)
+    h_u8 = (np.clip(-height_map / HEIGHT_CUTOFF_M, 0, 1) * 255).astype(np.uint8)
+    height_vis = cv2.applyColorMap(h_u8, cv2.COLORMAP_VIRIDIS)
+
     ann = (f"GelSight FoV: {GELSIGHT_FOV_W_MM}x{GELSIGHT_FOV_H_MM} mm  "
            f"depth: {Z_m * 100:.1f} cm  [{method}]")
     cv2.putText(normal_bgr, ann, (6, out_h - 8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
     cv2.putText(color_crop, "RGB", (6, out_h - 8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
+    cv2.putText(height_vis, f"Height [0-{HEIGHT_CUTOFF_M*1000:.0f}mm sat]", (6, out_h - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
 
-    return np.hstack([normal_bgr, color_crop])
+    rcm_vis = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+    rcm_vis[contact_mask] = (255, 255, 255)
+    cv2.putText(rcm_vis, "Contact mask", (6, out_h - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1)
+
+    return np.vstack([
+        np.hstack([normal_bgr, color_crop]),
+        np.hstack([height_vis, rcm_vis]),
+    ])
 
 
 # ── capture flow ──────────────────────────────────────────────────────────────
