@@ -50,6 +50,7 @@ GELSIGHT_W, GELSIGHT_H       = 320, 240
 HEIGHT_CUTOFF_M              = 0.050   # display saturation: depths beyond 50 mm clamp to max color
 HEIGHT_MASK_THRES_M          = -0.008   # contact mask threshold: height_map < this value is contact
 RENDER_MASK_THRES_M          = -0.004   # per-frame video mask threshold (shifts with pressing depth)
+VIDEO_FPS                    = 5.0      # output video fps, matches optical simulation
 
 def _make_Rz(degrees):
     """Rotation matrix around the Z axis by `degrees` (counter-clockwise)."""
@@ -839,10 +840,10 @@ def main():
                 cv2.imwrite(f"{prefix}_height.jpg", height_vis_out)
                 cv2.imwrite(f"{prefix}_contact_mask.jpg",
                             (rcm_out.astype(np.uint8) * 255))
-                write_video(f"{prefix}_shadow.mp4", resampled, gs_fps)
-                write_video(f"{prefix}_render_mask.mp4", rm_frames, gs_fps)
+                write_video(f"{prefix}_shadow.mp4", resampled, VIDEO_FPS)
+                write_video(f"{prefix}_render_mask.mp4", rm_frames, VIDEO_FPS)
                 side_by_side = [np.hstack([s, r]) for s, r in zip(resampled, rm_frames)]
-                write_video(f"{prefix}_shadow_render_mask.mp4", side_by_side, gs_fps)
+                write_video(f"{prefix}_shadow_render_mask.mp4", side_by_side, VIDEO_FPS)
                 with open(f"{prefix}_meta.json", "w") as f:
                     json.dump({
                         "touch_idx": touch_idx,
