@@ -827,7 +827,7 @@ def main():
             gs_disp = gs_frame.copy()
             if recording:
                 cv2.putText(gs_disp, f"RECORDING  {len(buffer)} frames",
-                            (5, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                            (5, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
             # Sensor alignment debug: blend ortho normal/RGB with live GelSight.
             debug_disp = None
