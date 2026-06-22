@@ -27,6 +27,7 @@ from visualize_zed_normal_sim import (
     build_camera, normals_to_colormap, inpaint_normals, overlay_banner,
     DEPTH_MODES, GELSIGHT_FOV_W_MM, GELSIGHT_FOV_H_MM,
 )
+from visualize_zed_fs import load_model, run_inference, normals_from_xyz
 
 try:
     import pyzed.sl as sl
@@ -593,6 +594,21 @@ def parse_args():
     p.add_argument("--debug_sensor_align", action="store_true",
                    help="Show a debug window with normals/RGB blended over the live "
                         "GelSight frame (alpha 0.5/0.5) to verify sensor alignment.")
+    p.add_argument("--geometry_mode",
+                   choices=["zed", "foundation_stereo", "fast_foundation_stereo"],
+                   default="zed",
+                   help="Geometry source for depth/normals: zed (default) uses ZED built-in; "
+                        "foundation_stereo / fast_foundation_stereo runs FS inference on the "
+                        "stereo pair captured at Stage 1 object selection.")
+    p.add_argument("--fs_model_dir", default=None,
+                   help="Path to FoundationStereo checkpoint (.pth). "
+                        "Required when --geometry_mode != zed.")
+    p.add_argument("--fs_valid_iters", type=int, default=None,
+                   help="FS refinement iterations (default: 8 for fast, 32 for standard).")
+    p.add_argument("--fs_max_disp", type=int, default=192,
+                   help="Max disparity for Fast-FoundationStereo (default: 192).")
+    p.add_argument("--fs_scale", type=float, default=1.0,
+                   help="Image downscale factor for FS inference <=1 (default: 1.0).")
     return p.parse_args()
 
 
@@ -609,6 +625,18 @@ def main():
     except ValueError:
         gs_device = args.gelsight_device
 
+    if args.geometry_mode != "zed":
+        if not args.fs_model_dir:
+            sys.exit("--fs_model_dir is required when --geometry_mode != zed")
+        if args.fs_valid_iters is None:
+            args.fs_valid_iters = 8 if args.geometry_mode == "fast_foundation_stereo" else 32
+        print(f"Loading {args.geometry_mode} from {args.fs_model_dir} ...")
+        fs_model = load_model(args.geometry_mode, args.fs_model_dir,
+                              args.fs_valid_iters, args.fs_max_disp)
+        print("FS model ready.")
+    else:
+        fs_model = None
+
     print(f"Loading SAM ({args.sam_model_type}) from {args.sam_checkpoint} ...")
     sam = sam_model_registry[args.sam_model_type](checkpoint=args.sam_checkpoint)
     sam.to(device="cuda" if torch.cuda.is_available() else "cpu")
@@ -618,6 +646,15 @@ def main():
     cam, rt, intr = build_camera(args.depth_mode, args.zed_confidence)
     print(f"ZED opened.  fx={intr['fx']:.1f}  fy={intr['fy']:.1f}  "
           f"cx={intr['cx']:.1f}  cy={intr['cy']:.1f}")
+
+    fs_baseline = None
+    image_r_sl = None
+    right_bgr = None
+    if args.geometry_mode != "zed":
+        info = cam.get_camera_information()
+        fs_baseline = info.camera_configuration.calibration_parameters.get_camera_baseline()
+        image_r_sl = sl.Mat()
+        print(f"FS stereo baseline: {fs_baseline*1000:.1f} mm")
 
     gs_cap = cv2.VideoCapture(gs_device)
     gs_cap.set(cv2.CAP_PROP_FRAME_WIDTH, GELSIGHT_W)
@@ -657,6 +694,9 @@ def main():
         cam.retrieve_image(image_sl, sl.VIEW.LEFT)
         cam.retrieve_measure(normals_sl, sl.MEASURE.NORMALS)
         cam.retrieve_measure(depth_sl, sl.MEASURE.DEPTH)
+        if args.geometry_mode != "zed":
+            cam.retrieve_image(image_r_sl, sl.VIEW.RIGHT)
+            right_bgr = image_r_sl.get_data()[:, :, :3].copy()
 
         color_bgr  = image_sl.get_data()[:, :, :3].copy()
         normals_np = normals_sl.get_data().copy()
@@ -678,7 +718,37 @@ def main():
             cv2.destroyAllWindows()
             sys.exit(0)
         elif key == ord('c'):
-            mask = run_object_selection(color_bgr, normals_np, predictor)
+            # Run FS inference BEFORE object selection so FS normals appear in
+            # the SAM UI and the output is already at full ZED resolution.
+            fs_depth_full = None
+            fs_normals_full = None
+            normals_for_selection = normals_np
+            if args.geometry_mode != "zed" and right_bgr is not None:
+                print(f"  Running {args.geometry_mode} for depth/normals...")
+                left_rgb_fs  = cv2.cvtColor(color_bgr,  cv2.COLOR_BGR2RGB)
+                right_rgb_fs = cv2.cvtColor(right_bgr, cv2.COLOR_BGR2RGB)
+                _, fs_depth_lr, fs_xyz_lr = run_inference(
+                    fs_model, args.geometry_mode, left_rgb_fs, right_rgb_fs,
+                    intr, fs_baseline, args.fs_scale, args.fs_valid_iters,
+                    z_near=0.1, z_far=5.0)
+                # Upsample to full ZED resolution so depth is consistent with intr
+                if fs_depth_lr.shape != (ZED_H, ZED_W):
+                    fs_depth_full = cv2.resize(
+                        fs_depth_lr, (ZED_W, ZED_H), interpolation=cv2.INTER_LINEAR)
+                    fs_normals_lr = normals_from_xyz(fs_xyz_lr)
+                    fs_normals_full = cv2.resize(
+                        fs_normals_lr, (ZED_W, ZED_H), interpolation=cv2.INTER_LINEAR)
+                    norms = np.linalg.norm(fs_normals_full, axis=2, keepdims=True)
+                    fs_normals_full = np.where(
+                        norms > 1e-8, fs_normals_full / norms, 0.0).astype(np.float32)
+                else:
+                    fs_depth_full = fs_depth_lr
+                    fs_normals_full = normals_from_xyz(fs_xyz_lr)
+                fs_normals_full[~np.isfinite(fs_depth_full)] = np.nan
+                normals_for_selection = fs_normals_full
+                print("  FS geometry ready.")
+
+            mask = run_object_selection(color_bgr, normals_for_selection, predictor)
             if mask is None:
                 print("  Object selection cancelled — try again.")
                 continue
@@ -692,16 +762,29 @@ def main():
 
             cam.retrieve_measure(xyz_sl, sl.MEASURE.XYZRGBA)
             xyz_np = xyz_sl.get_data()[:, :, :3].copy()
+
+            if args.geometry_mode != "zed" and fs_depth_full is not None:
+                invalid = (mask == 0) | ~np.isfinite(fs_depth_full)
+                fs_normals_full[invalid] = np.nan
+                fs_depth_full[invalid] = np.nan
+                normals_to_cache = fs_normals_full
+                depth_to_cache   = fs_depth_full
+            else:
+                normals_to_cache = normals_np
+                depth_to_cache   = depth_m
+
             np.savez_compressed(
                 os.path.join(args.save_dir, "object_cache.npz"),
-                color=color_bgr, normals=normals_np,
-                depth=depth_m, xyz=xyz_np, mask=mask)
+                color=color_bgr, normals=normals_to_cache,
+                depth=depth_to_cache, xyz=xyz_np, mask=mask)
 
-            color_bgr_cached, normals_cached, depth_cached, mask_cached = (
-                color_bgr, normals_np, depth_m, mask)
+            color_bgr_cached  = color_bgr
+            normals_cached    = normals_to_cache
+            depth_cached      = depth_to_cache
+            mask_cached       = mask
 
             c_m = color_bgr.copy(); c_m[mask == 0] = 0
-            n_m = normals_np.copy(); n_m[mask == 0] = np.nan
+            n_m = normals_cached.copy(); n_m[mask == 0] = np.nan
             cache_disp = np.hstack([
                 c_m,
                 normals_to_colormap(n_m),

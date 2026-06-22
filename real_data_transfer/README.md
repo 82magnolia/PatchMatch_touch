@@ -333,6 +333,23 @@ python real_data_transfer/capture_gelsight.py \
     --sam_checkpoint log/sam_vit_b_01ec64.pth \
     --gelsight_device 2 \
     --save_dir log/gelsight_captures/session_01
+
+# Use FoundationStereo for higher-quality depth/normals on specular surfaces
+python real_data_transfer/capture_gelsight.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --geometry_mode foundation_stereo \
+    --fs_model_dir real_data_transfer/FoundationStereo/pretrained_models/model_best_bp2.pth \
+    --fs_scale 0.9 \
+    --save_dir log/gelsight_captures/session_fs \
+    --gelsight_device 2 \
+
+# Use Fast-FoundationStereo (faster, slightly lower quality)
+python real_data_transfer/capture_gelsight.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --geometry_mode fast_foundation_stereo \
+    --fs_model_dir real_data_transfer/Fast-FoundationStereo/weights/model_best_bp2_serialize.pth \
+    --save_dir log/gelsight_captures/session_fast_fs \
+    --gelsight_device 2 \
 ```
 
 **Options:**
@@ -351,6 +368,11 @@ python real_data_transfer/capture_gelsight.py \
 | `--render_scale` | `1` | One or more FoV multipliers for normal/RGB orthographic renders, each still output at 320×240 |
 | `--save_dir` | `log/gelsight_captures` | Output directory |
 | `--debug_sensor_align` | off | Add a dashboard row with the ortho normal map and RGB crop each blended 50/50 over the live GelSight frame, side-by-side. Useful for verifying that the sensor pose is correctly aligned before recording. |
+| `--geometry_mode` | `zed` | Geometry source: `zed` (ZED built-in), `foundation_stereo`, or `fast_foundation_stereo`. FS modes run stereo inference on the captured pair at Stage 1 and use the resulting depth/normals for all ortho projections and render masks. |
+| `--fs_model_dir` | — | Path to FS checkpoint `.pth`. Required when `--geometry_mode != zed`. |
+| `--fs_valid_iters` | 8 / 32 | FS refinement iterations (auto-set per model type). |
+| `--fs_max_disp` | `192` | Max disparity for Fast-FoundationStereo. |
+| `--fs_scale` | `1.0` | Image downscale factor for FS inference (≤1). Use `0.9` for <11 GB GPU. |
 
 **Output files per touch location** (in `--save_dir`):
 
