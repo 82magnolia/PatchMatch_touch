@@ -214,6 +214,74 @@ python real_data_transfer/visualize_zed_normal_sim.py \
 
 ---
 
+### `visualize_zed_fs.py` — FoundationStereo depth/normal viewer (ZED 2i)
+
+Streams ZED RGB + ZED surface normals side-by-side in a live window. Press `c` to capture a rectified stereo pair and run **FoundationStereo** or **Fast-FoundationStereo** inference. Results appear in a second window (RGB | FS depth | FS normals) and an interactive Open3D point cloud viewer.
+
+**Additional dependencies** (in `pm_real` env, on top of the base setup):
+
+```bash
+conda activate pm_real
+pip install timm einops omegaconf imageio
+# open3d should already be installed; if not:
+pip install open3d
+```
+
+No `setup.py` for either repo — they are imported directly via `sys.path` from `real_data_transfer/FoundationStereo/` and `real_data_transfer/Fast-FoundationStereo/`.
+
+**Download checkpoints:**
+
+- **Fast-FoundationStereo** — download from the [Fast-FoundationStereo releases](https://github.com/NVlabs/Fast-FoundationStereo) and place the checkpoint and its accompanying `cfg.yaml` under `real_data_transfer/Fast-FoundationStereo/weights/`.
+- **FoundationStereo** — download from [HuggingFace](https://huggingface.co/nvidia/FoundationStereo) and place the checkpoint and its accompanying `cfg.yaml` under `real_data_transfer/FoundationStereo/pretrained_models/`.
+
+Both directories are git-ignored.
+
+**Run:**
+
+```bash
+# Fast-FoundationStereo (default, ~50 ms/frame @ 8 iters on RTX 3090)
+python real_data_transfer/visualize_zed_fs.py \
+    --model_dir real_data_transfer/Fast-FoundationStereo/weights/model_best_bp2_serialize.pth \
+    --model_type fast_foundation_stereo
+
+# FoundationStereo (higher quality, slower)
+python real_data_transfer/visualize_zed_fs.py \
+    --model_dir real_data_transfer/FoundationStereo/pretrained_models/model_best_bp2.pth \
+    --model_type foundation_stereo \
+    --valid_iters 32
+
+# Halve resolution for faster inference
+python real_data_transfer/visualize_zed_fs.py \
+    --model_dir real_data_transfer/Fast-FoundationStereo/weights/model_best_bp2_serialize.pth \
+    --scale 0.5
+```
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model_dir` | *(required)* | Path to model checkpoint `.pth` |
+| `--model_type` | `fast_foundation_stereo` | `foundation_stereo` or `fast_foundation_stereo` |
+| `--valid_iters` | 8 / 32 | Refinement iterations (auto-set per model type) |
+| `--max_disp` | `192` | Max disparity for Fast-FoundationStereo |
+| `--scale` | `1.0` | Image downscale factor for inference (≤1) |
+| `--depth_mode` | `neural_plus` | ZED depth mode for live normal display |
+| `--zed_confidence` | `95` | ZED depth confidence 0–100 |
+| `--z_near` | `0.1` | Near depth clip in metres |
+| `--z_far` | `3.0` | Far depth clip in metres |
+
+**Controls:**
+
+| Input | Action |
+|-------|--------|
+| `c` | Capture stereo frame and run FoundationStereo inference |
+| `q` | Quit |
+| Mouse (Open3D window) | Rotate / zoom / pan point cloud |
+
+> The ZED already outputs rectified stereo images, so no additional rectification is needed. Baseline is read automatically from ZED calibration. FS normals are computed from the depth map via finite-difference cross-product of the xyz map.
+
+---
+
 ### `capture_gelsight.py` — Real GelSight tactile capture for PatchMatch pipeline
 
 Produces `{idx}_normal.jpg/.npz`, `{idx}_color.jpg`, `{idx}_shadow.mp4` per touch location — the same file layout read by `main_retrieval_transfer_accel.py` (with `--scale` omitted). Combines ZED 2i depth/normals with a GelSight Mini tactile sensor.
