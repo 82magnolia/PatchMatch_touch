@@ -250,6 +250,18 @@ python real_data_transfer/visualize_zed_fs.py \
     --model_type foundation_stereo \
     --valid_iters 32
 
+# FoundationStereo on <11 GB GPU: scale down to fit in memory
+python real_data_transfer/visualize_zed_fs.py \
+    --model_dir real_data_transfer/FoundationStereo/pretrained_models/model_best_bp2.pth \
+    --model_type foundation_stereo \
+    --valid_iters 32 --scale 0.9
+
+# FoundationStereo small model (lighter weight, downloadable from FoundationStereo GitHub)
+python real_data_transfer/visualize_zed_fs.py \
+    --model_dir real_data_transfer/FoundationStereo/pretrained_models/small/model_best_bp2.pth \
+    --model_type foundation_stereo \
+    --valid_iters 32
+
 # Halve resolution for faster inference
 python real_data_transfer/visualize_zed_fs.py \
     --model_dir real_data_transfer/Fast-FoundationStereo/weights/model_best_bp2_serialize.pth \
