@@ -362,7 +362,7 @@ def trim_and_resample(frames, blank_bgr, threshold, num_frames):
     where indices are into the original `frames` list.
     Returns (None, None, None, None) if no contact detected.
     """
-    blank = blank_bgr.astype(np.float32) / 255.0
+    blank = frames[0].astype(np.float32) / 255.0
     diffs = np.array([
         np.linalg.norm(f.astype(np.float32) / 255.0 - blank, axis=-1).mean()
         for f in frames
@@ -579,7 +579,7 @@ def parse_args():
     p.add_argument("--num_frames", type=int, default=50,
                    help="Target frame count after resampling (default: 50, "
                         "matches gen_contact_query.sh --depth_range_info 0 10 50)")
-    p.add_argument("--contact_threshold", type=float, default=0.05,
+    p.add_argument("--contact_threshold", type=float, default=0.15,
                    help="Mean L2 diff vs blank frame for contact detection (default: 0.05)")
     p.add_argument("--border_fraction", type=float, default=0.15,
                    help="Border fraction to crop from each GelSight frame edge (default: 0.15, "
@@ -724,6 +724,12 @@ def main():
             fs_normals_full = None
             normals_for_selection = normals_np
             if args.geometry_mode != "zed" and right_bgr is not None:
+                banner = grid.copy()
+                cv2.putText(banner, f"Running {args.geometry_mode}... please wait",
+                            (10, ZED_DISPLAY_H // 2), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7, (0, 200, 255), 2)
+                cv2.imshow(LIVE_WIN, banner)
+                cv2.waitKey(1)
                 print(f"  Running {args.geometry_mode} for depth/normals...")
                 left_rgb_fs  = cv2.cvtColor(color_bgr,  cv2.COLOR_BGR2RGB)
                 right_rgb_fs = cv2.cvtColor(right_bgr, cv2.COLOR_BGR2RGB)
