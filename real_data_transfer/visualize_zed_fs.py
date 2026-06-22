@@ -174,12 +174,11 @@ def run_inference(model, model_type: str, left_rgb: np.ndarray, right_rgb: np.nd
 
     disp_small = padder.unpad(disp_t.float()).cpu().numpy().squeeze()  # (nh, nw)
 
-    # Upscale disparity and intrinsics back to original resolution
-    disp = cv2.resize(disp_small.astype(np.float32), (W, H),
-                      interpolation=cv2.INTER_LINEAR) * (W / nw)
+    disp = disp_small.astype(np.float32).clip(0, None)
 
-    K = np.array([[intr["fx"], 0, intr["cx"]],
-                  [0, intr["fy"], intr["cy"]],
+    sx = nw / W
+    K = np.array([[intr["fx"] * sx, 0, intr["cx"] * sx],
+                  [0, intr["fy"] * sx, intr["cy"] * sx],
                   [0, 0, 1]], dtype=np.float64)
 
     with np.errstate(divide="ignore", invalid="ignore"):

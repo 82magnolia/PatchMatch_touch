@@ -4,3 +4,5 @@ __pycache__/
 .ipynb_checkpoints/
 .vscode/
 wandb/
+real_data_transfer/FoundationStereo/pretrained_models/
+real_data_transfer/Fast-FoundationStereo/weights/
