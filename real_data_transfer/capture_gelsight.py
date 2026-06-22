@@ -157,13 +157,14 @@ class GelSightCapture:
 # ── Orthographic projection ───────────────────────────────────────────────────
 
 def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
-                      rvec=None, tvec=None):
+                      rvec=None, tvec=None, render_scale=1.0):
     """
     True orthographic projection of the GelSight Mini FoV using sensor pose.
 
     Builds a regular (GELSIGHT_H × GELSIGHT_W) grid of physical offsets covering
-    the sensor FoV (18.6 × 14.3 mm), places it in the sensor plane using rvec/tvec,
-    and projects each point into ZED pixel coordinates to sample normals and color.
+    the sensor FoV (18.6 × 14.3 mm) multiplied by render_scale, places it in the
+    sensor plane using rvec/tvec, and projects each point into ZED pixel
+    coordinates to sample normals and color.
     Requires rvec and tvec; returns None if either is missing or all samples are invalid.
 
     rvec should already encode the z-axis alignment correction via _rotate_rvec_z().
@@ -200,9 +201,11 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
     x_axis = R_sensor[:, 0]  # sensor X in camera frame
     y_axis = R_sensor[:, 1]  # sensor Y in camera frame
 
-    # Grid of physical offsets (metres) covering the GelSight FoV
-    u = np.linspace(-GELSIGHT_FOV_W_MM / 2, GELSIGHT_FOV_W_MM / 2, out_w) * 1e-3
-    v = np.linspace(-GELSIGHT_FOV_H_MM / 2, GELSIGHT_FOV_H_MM / 2, out_h) * 1e-3
+    # Grid of physical offsets (metres) covering the scaled GelSight FoV.
+    fov_w_mm = GELSIGHT_FOV_W_MM * render_scale
+    fov_h_mm = GELSIGHT_FOV_H_MM * render_scale
+    u = np.linspace(-fov_w_mm / 2, fov_w_mm / 2, out_w) * 1e-3
+    v = np.linspace(-fov_h_mm / 2, fov_h_mm / 2, out_h) * 1e-3
     uu, vv = np.meshgrid(u, v)  # (out_h, out_w)
 
     # 3D points in camera frame for each output pixel
@@ -413,9 +416,14 @@ def _vstack_padded(rows):
     return np.vstack([_pad_to(r, width, r.shape[0]) for r in rows])
 
 
+def _format_scale(scale):
+    return f"{scale:g}"
+
+
 def build_touch_dashboard(zed_disp, cache_disp, gs_disp, normal_prev=None,
                           color_prev=None, height_prev=None,
-                          contact_mask_prev=None, debug_disp=None):
+                          contact_mask_prev=None, multiscale_prevs=None,
+                          debug_disp=None):
     zed_vis = cv2.resize(zed_disp, (ZED_W // 2, ZED_H // 2)) if zed_disp is not None else None
     cache_vis = (cv2.resize(cache_disp, (ZED_W, ZED_H // 2))
                  if cache_disp is not None else None)
@@ -434,6 +442,17 @@ def build_touch_dashboard(zed_disp, cache_disp, gs_disp, normal_prev=None,
     rows = [top, bottom]
     if debug_disp is not None:
         rows.append(_label_panel(debug_disp, "Sensor alignment debug"))
+    if multiscale_prevs:
+        scale_panels = []
+        for scale, normal_img, color_img in multiscale_prevs:
+            scale_label = _format_scale(scale)
+            scale_panels.extend([
+                _panel_or_blank(normal_img, GELSIGHT_W, GELSIGHT_H,
+                                f"Normals x{scale_label}"),
+                _panel_or_blank(color_img, GELSIGHT_W, GELSIGHT_H,
+                                f"RGB x{scale_label}"),
+            ])
+        rows.append(_hstack_padded(scale_panels))
     return _vstack_padded(rows)
 
 
@@ -566,6 +585,9 @@ def parse_args():
                         "matches gsrobotics GelSightMini default)")
     p.add_argument("--inpaint_method", default="telea", choices=["telea", "ns", "nearest"],
                    help="Normal-map hole inpainting method (default: telea)")
+    p.add_argument("--render_scale", type=float, nargs="+", default=[1.0],
+                   help="One or more FoV multipliers for normal/RGB orthographic "
+                        "renders, each still output at 320x240 (default: 1)")
     p.add_argument("--save_dir", default="log/gelsight_captures",
                    help="Output directory (default: log/gelsight_captures)")
     p.add_argument("--debug_sensor_align", action="store_true",
@@ -578,6 +600,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if any(scale <= 0 for scale in args.render_scale):
+        sys.exit("--render_scale values must be positive")
     os.makedirs(args.save_dir, exist_ok=True)
 
     try:
@@ -715,6 +739,7 @@ def main():
     color_prev  = None
     height_prev = None
     contact_mask_prev = None
+    multiscale_prevs = []
 
     try:
         while True:
@@ -749,10 +774,11 @@ def main():
                 if px_py is not None:
                     last_px_py = px_py
                     cv2.circle(vis, px_py, 8, (0, 0, 255), -1)
+                    aligned_rvec = _rotate_rvec_z(rvec, R_z)
                     result = ortho_project_raw(
                         normals_cached, color_bgr_cached, mask_cached,
                         depth_cached, intr, args.inpaint_method,
-                        rvec=_rotate_rvec_z(rvec, R_z), tvec=tvec)
+                        rvec=aligned_rvec, tvec=tvec)
                     if result is not None:
                         rcm_vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
                         rcm_vis[result[4]] = (255, 255, 255)
@@ -760,6 +786,21 @@ def main():
                         color_prev = result[2]
                         height_prev = result[3]
                         contact_mask_prev = rcm_vis
+                    scale_prevs = []
+                    for scale in args.render_scale:
+                        if np.isclose(scale, 1.0) and result is not None:
+                            scale_prevs.append((scale, result[0], result[2]))
+                            continue
+                        scale_res = ortho_project_raw(
+                            normals_cached, color_bgr_cached, mask_cached,
+                            depth_cached, intr, args.inpaint_method,
+                            rvec=aligned_rvec, tvec=tvec,
+                            render_scale=scale)
+                        if scale_res is None:
+                            scale_prevs.append((scale, None, None))
+                        else:
+                            scale_prevs.append((scale, scale_res[0], scale_res[2]))
+                    multiscale_prevs = scale_prevs
             else:
                 cv2.putText(vis, "Marker ID=6 not found",
                             (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
@@ -800,7 +841,7 @@ def main():
 
             dashboard = build_touch_dashboard(
                 zed_disp, cache_disp, gs_disp, normal_prev, color_prev,
-                height_prev, contact_mask_prev, debug_disp)
+                height_prev, contact_mask_prev, multiscale_prevs, debug_disp)
             cv2.imshow(DASHBOARD_WIN, dashboard)
 
             key = cv2.waitKey(1) & 0xFF
@@ -851,16 +892,32 @@ def main():
                 # current when GelSight frame i was captured.  Using the peak-contact
                 # index gives the sensor pose at the moment of deepest press, which best
                 # represents the contact geometry saved in the static normal/color files.
+                peak_aligned_rvec = _rotate_rvec_z(peak_rvec, R_z)
                 res = ortho_project_raw(
                     normals_cached, color_bgr_cached, mask_cached,
                     depth_cached, intr, args.inpaint_method,
-                    rvec=_rotate_rvec_z(peak_rvec, R_z), tvec=peak_tvec)
+                    rvec=peak_aligned_rvec, tvec=peak_tvec)
                 if res is None:
                     print("  ERROR: no valid depth at contact point. Try again.")
                     buffer = []
                     pose_buffer = []
                     continue
                 normal_bgr_out, raw_norm_out, color_out, height_vis_out, rcm_out = res[:5]
+
+                scaled_static = {}
+                for scale in args.render_scale:
+                    if np.isclose(scale, 1.0):
+                        scaled_static[scale] = (normal_bgr_out, raw_norm_out, color_out)
+                        continue
+                    scale_res = ortho_project_raw(
+                        normals_cached, color_bgr_cached, mask_cached,
+                        depth_cached, intr, args.inpaint_method,
+                        rvec=peak_aligned_rvec, tvec=peak_tvec,
+                        render_scale=scale)
+                    if scale_res is None:
+                        print(f"  WARNING: scale {scale:g} ortho failed — skipping.")
+                    else:
+                        scaled_static[scale] = (scale_res[0], scale_res[1], scale_res[2])
 
                 # Per-frame contact mask video: use the contact-start pose for height_map_0
                 # so the threshold shifts by pressing depth for each resampled frame.
@@ -890,6 +947,12 @@ def main():
                 cv2.imwrite(f"{prefix}_normal.jpg", normal_bgr_out)
                 np.savez_compressed(f"{prefix}_normal.npz", normal=raw_norm_out)
                 cv2.imwrite(f"{prefix}_color.jpg", color_out)
+                for scale, (normal_bgr_s, raw_norm_s, color_s) in scaled_static.items():
+                    scale_tag = _format_scale(scale)
+                    cv2.imwrite(f"{prefix}_scale{scale_tag}_normal.jpg", normal_bgr_s)
+                    np.savez_compressed(
+                        f"{prefix}_scale{scale_tag}_normal.npz", normal=raw_norm_s)
+                    cv2.imwrite(f"{prefix}_scale{scale_tag}_color.jpg", color_s)
                 cv2.imwrite(f"{prefix}_height.jpg", height_vis_out)
                 cv2.imwrite(f"{prefix}_contact_mask.jpg",
                             (rcm_out.astype(np.uint8) * 255))
@@ -906,6 +969,7 @@ def main():
                         "tvec": peak_tvec.tolist() if peak_tvec is not None else None,
                         "n_raw_frames": n_buf,
                         "n_resampled_frames": len(resampled),
+                        "render_scale": args.render_scale,
                     }, f, indent=2)
 
                 print(f"  Saved touch #{touch_idx}: "
