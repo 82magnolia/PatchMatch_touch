@@ -310,9 +310,14 @@ def main():
                 cv2.imshow(RESULT_WIN, result_img)
 
                 # Open3D point cloud in background thread
+                # Resize color to match xyz_map resolution (may differ when scale != 1)
+                pcd_color = (cv2.resize(left_rgb,
+                                        (xyz_map.shape[1], xyz_map.shape[0]),
+                                        interpolation=cv2.INTER_LINEAR)
+                             if left_rgb.shape[:2] != xyz_map.shape[:2] else left_rgb)
                 threading.Thread(
                     target=_show_pcd,
-                    args=(xyz_map, left_rgb, args.z_near, args.z_far),
+                    args=(xyz_map, pcd_color, args.z_near, args.z_far),
                     daemon=True,
                 ).start()
 
