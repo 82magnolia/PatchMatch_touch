@@ -228,7 +228,7 @@ Requires ARuCO marker ID=6 (DICT_4X4_50, 37 mm default) attached to the flat bac
 3. Object mask + ZED data cached; GelSight blank (no-contact) frame saved automatically
 
 **Stage 2 — Touch Recording** (repeat for each contact point):
-1. ZED window shows live ARuCO tracking (red dot = computed contact location)
+1. Dashboard window shows live ARuCO tracking, object cache, GelSight live feed, and orthographic normals/RGB/height/contact-mask panels
 2. Press `r` to start recording GelSight frames into buffer
 3. Press `s` to stop → frames trimmed (contact detection vs blank) → resampled to `--num_frames` → saved
 4. Press `a` to abort recording without saving
@@ -268,9 +268,8 @@ python real_data_transfer/capture_gelsight.py \
 | `--num_frames` | `50` | Resampled frame count (matches `gen_contact_query.sh`) |
 | `--contact_threshold` | `0.05` | Mean L2 diff vs blank for contact trimming |
 | `--inpaint_method` | `telea` | Normal-map hole inpainting: `telea`, `ns`, `nearest` |
-| `--ortho_dpm` | `20` | Output dots-per-mm for orthographic projections |
 | `--save_dir` | `log/gelsight_captures` | Output directory |
-| `--debug_sensor_align` | off | Show a debug window with the ortho normal map and RGB crop each blended 50/50 over the live GelSight frame, side-by-side. Useful for verifying that the sensor pose is correctly aligned before recording. |
+| `--debug_sensor_align` | off | Add a dashboard row with the ortho normal map and RGB crop each blended 50/50 over the live GelSight frame, side-by-side. Useful for verifying that the sensor pose is correctly aligned before recording. |
 
 **Output files per touch location** (in `--save_dir`):
 

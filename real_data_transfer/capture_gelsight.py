@@ -48,8 +48,8 @@ ZED_DISPLAY_W, ZED_DISPLAY_H = 640, 360
 ZED_W, ZED_H                 = 1280, 720
 GELSIGHT_W, GELSIGHT_H       = 320, 240
 HEIGHT_CUTOFF_M              = 0.050   # display saturation: depths beyond 50 mm clamp to max color
-HEIGHT_MASK_THRES_M          = -0.008   # contact mask threshold: height_map < this value is contact
-RENDER_MASK_THRES_M          = -0.004   # per-frame video mask threshold (shifts with pressing depth)
+HEIGHT_MASK_THRES_M          = 0.000   # contact mask threshold: height_map < this value is contact
+RENDER_MASK_THRES_M          = 0.000   # per-frame video mask threshold (shifts with pressing depth)
 VIDEO_FPS                    = 5.0      # output video fps, matches optical simulation
 
 def _make_Rz(degrees):
@@ -267,7 +267,7 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
     # Use R_sensor_normals (= R_orig @ R_flip, without R_z) so spatial alignment
     # rotation does not swap nx↔ny in the normal colormap.
     # NOTE: the re-oriented normals here are in the physical sensor frame, so their
-    # colormap will differ from the cached object normals shown in the CACHE_WIN panel
+    # colormap will differ from the cached object normals shown in the dashboard
     # (which are in ZED camera frame). This is expected — the cached panel applies a
     # global rotation (the ZED→sensor transformation) before the point cloud is
     # rendered, making the color encoding appear different even for the same surface.
@@ -373,6 +373,68 @@ def trim_and_resample(frames, blank_bgr, threshold, num_frames):
         return None, None, None, None
     idx = np.linspace(0, len(contact) - 1, num_frames).round().astype(int)
     return [contact[i] for i in idx], peak_raw_idx, cs_idx, ce_idx
+
+
+# ── Display helpers ───────────────────────────────────────────────────────────
+
+def _label_panel(img, title):
+    out = img.copy()
+    cv2.rectangle(out, (0, 0), (out.shape[1], 24), (0, 0, 0), -1)
+    cv2.putText(out, title, (8, 17), cv2.FONT_HERSHEY_SIMPLEX,
+                0.5, (230, 230, 230), 1, cv2.LINE_AA)
+    return out
+
+
+def _blank_panel(width, height, title):
+    img = np.zeros((height, width, 3), dtype=np.uint8)
+    return _label_panel(img, title)
+
+
+def _panel_or_blank(img, width, height, title):
+    if img is None:
+        return _blank_panel(width, height, title)
+    return _label_panel(img, title)
+
+
+def _pad_to(img, width, height):
+    h, w = img.shape[:2]
+    out = np.zeros((height, width, 3), dtype=img.dtype)
+    out[:h, :w] = img
+    return out
+
+
+def _hstack_padded(panels):
+    height = max(p.shape[0] for p in panels)
+    return np.hstack([_pad_to(p, p.shape[1], height) for p in panels])
+
+
+def _vstack_padded(rows):
+    width = max(r.shape[1] for r in rows)
+    return np.vstack([_pad_to(r, width, r.shape[0]) for r in rows])
+
+
+def build_touch_dashboard(zed_disp, cache_disp, gs_disp, normal_prev=None,
+                          color_prev=None, height_prev=None,
+                          contact_mask_prev=None, debug_disp=None):
+    zed_vis = cv2.resize(zed_disp, (ZED_W // 2, ZED_H // 2)) if zed_disp is not None else None
+    cache_vis = (cv2.resize(cache_disp, (ZED_W, ZED_H // 2))
+                 if cache_disp is not None else None)
+    top = _hstack_padded([
+        _panel_or_blank(zed_vis, ZED_W // 2, ZED_H // 2, "ZED tracking"),
+        _panel_or_blank(cache_vis, ZED_W, ZED_H // 2, "Object cache"),
+    ])
+    bottom = _hstack_padded([
+        _panel_or_blank(gs_disp, GELSIGHT_W, GELSIGHT_H, "GelSight live"),
+        _panel_or_blank(normal_prev, GELSIGHT_W, GELSIGHT_H, "Normals"),
+        _panel_or_blank(color_prev, GELSIGHT_W, GELSIGHT_H, "RGB"),
+        _panel_or_blank(height_prev, GELSIGHT_W, GELSIGHT_H, "Height map"),
+        _panel_or_blank(contact_mask_prev, GELSIGHT_W, GELSIGHT_H,
+                        "Contact mask"),
+    ])
+    rows = [top, bottom]
+    if debug_disp is not None:
+        rows.append(_label_panel(debug_disp, "Sensor alignment debug"))
+    return _vstack_padded(rows)
 
 
 # ── Stage 1: Object selection ──────────────────────────────────────────────────
@@ -561,8 +623,6 @@ def main():
     print("Press 'c' to freeze and segment object, 'q' to quit.")
 
     LIVE_WIN  = "ZED: RGB | Normals  (c=capture  q=quit)"
-    CACHE_WIN = "Object Cache: RGB | Normals (masked)"
-
     color_bgr_cached = normals_cached = depth_cached = mask_cached = blank_frame = None
     cache_disp_base = None
 
@@ -619,11 +679,10 @@ def main():
             c_m = color_bgr.copy(); c_m[mask == 0] = 0
             n_m = normals_np.copy(); n_m[mask == 0] = np.nan
             cache_disp = np.hstack([
-                cv2.resize(c_m, (ZED_DISPLAY_W, ZED_DISPLAY_H)),
-                cv2.resize(normals_to_colormap(n_m), (ZED_DISPLAY_W, ZED_DISPLAY_H)),
+                c_m,
+                normals_to_colormap(n_m),
             ])
             cache_disp_base = cache_disp.copy()
-            cv2.imshow(CACHE_WIN, cache_disp_base)
             print("  Cached: blank_frame.jpg + object_cache.npz")
 
     cv2.destroyWindow(LIVE_WIN)
@@ -638,10 +697,7 @@ def main():
     # gets the latest frame instead of a buffered (lagging) one.
     gs_capture = GelSightCapture(gs_cap, args.border_fraction)
 
-    ZED_WIN   = "ZED: ARuCO Tracking  (r=record  s=stop  a=abort  q=quit)"
-    GS_WIN    = "GelSight Live"
-    ORTHO_WIN = "Orthographic Normal Preview"
-    DEBUG_WIN = "Sensor Alignment: Normals+GelSight | RGB+GelSight"
+    DASHBOARD_WIN = "GelSight Capture Dashboard  (r=record  s=stop  a=abort  q=quit)"
 
     # 90° CCW z-axis rotation corrects the in-plane misalignment between the
     # ARuCO marker frame and the physical GelSight sensor orientation.
@@ -655,7 +711,10 @@ def main():
     last_rvec   = None
     last_tvec   = None
     last_px_py  = None
-    ortho_prev  = None
+    normal_prev = None
+    color_prev  = None
+    height_prev = None
+    contact_mask_prev = None
 
     try:
         while True:
@@ -697,58 +756,52 @@ def main():
                     if result is not None:
                         rcm_vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
                         rcm_vis[result[4]] = (255, 255, 255)
-                        cv2.putText(rcm_vis, "Contact mask", (6, GELSIGHT_H - 8),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1)
-                        ortho_prev = np.vstack([
-                            np.hstack([result[0], result[2]]),
-                            np.hstack([result[3], rcm_vis]),
-                        ])
+                        normal_prev = result[0]
+                        color_prev = result[2]
+                        height_prev = result[3]
+                        contact_mask_prev = rcm_vis
             else:
                 cv2.putText(vis, "Marker ID=6 not found",
                             (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
             # ZED display
-            zed_disp = cv2.resize(vis, (ZED_DISPLAY_W, ZED_DISPLAY_H))
+            zed_disp = vis.copy()
             status_text = "RECORDING" if recording else f"Touch #{touch_idx} ready"
             status_color = (0, 0, 255) if recording else (0, 200, 0)
             cv2.putText(zed_disp, status_text, (10, 22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, status_color, 2)
             cv2.putText(zed_disp, "r=record  s=stop  a=abort  q=quit",
-                        (10, ZED_DISPLAY_H - 10),
+                        (10, ZED_H - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
-            cv2.imshow(ZED_WIN, zed_disp)
-
             # Cache display: segmented RGB | normals with contact dot
+            cache_disp = None
             if cache_disp_base is not None:
                 cache_disp = cache_disp_base.copy()
                 if last_px_py is not None:
-                    dx = int(last_px_py[0] * ZED_DISPLAY_W / ZED_W)
-                    dy = int(last_px_py[1] * ZED_DISPLAY_H / ZED_H)
+                    dx, dy = last_px_py
                     cv2.circle(cache_disp, (dx, dy), 8, (0, 0, 255), -1)
-                    cv2.circle(cache_disp, (dx + ZED_DISPLAY_W, dy), 8, (0, 0, 255), -1)
-                cv2.imshow(CACHE_WIN, cache_disp)
+                    cv2.circle(cache_disp, (dx + ZED_W, dy), 8, (0, 0, 255), -1)
 
             # GelSight display
             gs_disp = gs_frame.copy()
             if recording:
                 cv2.putText(gs_disp, f"RECORDING  {len(buffer)} frames",
                             (5, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-            cv2.imshow(GS_WIN, gs_disp)
-
-            # Ortho preview
-            if ortho_prev is not None:
-                cv2.imshow(ORTHO_WIN, ortho_prev)
 
             # Sensor alignment debug: blend ortho normal/RGB with live GelSight.
-            # ortho_prev is 2x2: top row = normal | color, bottom row = height | mask.
-            if args.debug_sensor_align and ortho_prev is not None:
+            debug_disp = None
+            if (args.debug_sensor_align and normal_prev is not None
+                    and color_prev is not None):
                 gs_vis = gs_frame if gs_frame is not None else np.zeros(
                     (GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
-                ortho_normal = ortho_prev[:GELSIGHT_H, :GELSIGHT_W]
-                ortho_color  = ortho_prev[:GELSIGHT_H, GELSIGHT_W:2 * GELSIGHT_W]
-                blend_normal = cv2.addWeighted(ortho_normal, 0.5, gs_vis, 0.5, 0)
-                blend_color  = cv2.addWeighted(ortho_color,  0.5, gs_vis, 0.5, 0)
-                cv2.imshow(DEBUG_WIN, np.hstack([blend_normal, blend_color]))
+                blend_normal = cv2.addWeighted(normal_prev, 0.5, gs_vis, 0.5, 0)
+                blend_color  = cv2.addWeighted(color_prev,  0.5, gs_vis, 0.5, 0)
+                debug_disp = np.hstack([blend_normal, blend_color])
+
+            dashboard = build_touch_dashboard(
+                zed_disp, cache_disp, gs_disp, normal_prev, color_prev,
+                height_prev, contact_mask_prev, debug_disp)
+            cv2.imshow(DASHBOARD_WIN, dashboard)
 
             key = cv2.waitKey(1) & 0xFF
 
