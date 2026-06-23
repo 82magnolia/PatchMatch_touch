@@ -174,15 +174,16 @@ def is_board_stable(rvec_buffer, angle_thresh_deg=1.5):
     return float(np.degrees(np.arccos(cos_val))) < angle_thresh_deg
 
 
-def rotate_normals_to_initial_frame(normals, R_cumulative):
-    """Rotate fresh ZED normals (camera frame) back to the initial-view object frame.
+def rotate_normals_to_initial_frame(normals, R_correction):
+    """Rotate fresh ZED normals (camera frame) back to the initial-view camera frame.
 
-    Applies R_cumulative.T pixel-wise to the first 3 channels. NaN pixels unchanged.
+    R_correction = R_board_initial @ R_board_cur^T  (camera-frame inverse of turntable rotation).
+    Applied pixel-wise to the first 3 channels. NaN pixels unchanged.
     """
     out = normals.copy().astype(np.float32)
     nxyz = out[:, :, :3]
     valid = np.isfinite(nxyz).all(axis=2)
-    nxyz[valid] = (R_cumulative.T @ nxyz[valid].T).T
+    nxyz[valid] = (R_correction @ nxyz[valid].T).T
     out[:, :, :3] = nxyz
     return out
 
@@ -842,8 +843,9 @@ def main():
     aruco_board = None
     board_detector = None
     board_marker_size = None
-    T_board_0 = None          # reference board pose (set on first 'c' press)
-    R_cumulative = np.eye(3)  # cumulative turntable rotation (initial frame → current)
+    T_board_0 = None          # reference board pose (updated after each 't' press)
+    R_board_initial = None    # board rotation at Stage 1 capture (never updated)
+    R_cumulative = np.eye(3)  # R_board_initial @ R_board_cur^T (camera-frame correction)
     cumulative_angle_deg = 0.0
 
     if args.board_config:
@@ -997,6 +999,7 @@ def main():
             if aruco_board is not None:
                 if board_pose_recent:
                     T_board_0 = average_board_poses(board_pose_recent)
+                    R_board_initial = T_board_0[:3, :3].copy()
                     print(f"  Board reference pose recorded ({len(board_pose_recent)} frames averaged).")
                 else:
                     print("  WARNING: board not detected at capture time — "
@@ -1302,12 +1305,15 @@ def main():
                                     print("  Object selection cancelled — try again.")
                                     continue  # let user press 'c' again
 
-                                # Compute cumulative rotation
-                                T_relative = np.linalg.inv(T_board_0) @ T_board_cur
-                                R_step = T_relative[:3, :3]
+                                # Compute camera-frame step rotation and correction
+                                R_cur_cam  = T_board_cur[:3, :3]
+                                R_prev_cam = T_board_0[:3, :3]
+                                # Step rotation in camera frame: R_step_cam = R_cur @ R_prev^T
+                                R_step_cam = R_cur_cam @ R_prev_cam.T
                                 step_angle_deg = float(np.degrees(np.arccos(
-                                    np.clip((np.trace(R_step) - 1) / 2.0, -1.0, 1.0))))
-                                R_cumulative = R_step @ R_cumulative
+                                    np.clip((np.trace(R_step_cam) - 1) / 2.0, -1.0, 1.0))))
+                                # Correction = R_board_initial @ R_cur^T (maps cur-frame → initial-frame)
+                                R_cumulative = R_board_initial @ R_cur_cam.T
                                 cumulative_angle_deg = float(np.degrees(np.arccos(
                                     np.clip((np.trace(R_cumulative) - 1) / 2.0,
                                             -1.0, 1.0))))
