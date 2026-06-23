@@ -302,8 +302,8 @@ Requires ARuCO marker ID=6 (DICT_4X4_50, 37 mm default) attached to the flat bac
 
 **Two-stage workflow:**
 
-**Stage 1 — Object Selection** (run once per session):
-1. ZED live RGB + normals stream appears
+**Stage 1 — Object Selection** (run once per view):
+1. ZED live RGB + normals stream appears (board axes overlaid when `--board_config` given)
 2. Press `c` → freeze frame → drag SAM bounding box → `Enter` → `y` to confirm
 3. Object mask + ZED data cached; GelSight blank (no-contact) frame saved automatically
 
@@ -312,7 +312,18 @@ Requires ARuCO marker ID=6 (DICT_4X4_50, 37 mm default) attached to the flat bac
 2. Press `r` to start recording GelSight frames into buffer
 3. Press `s` to stop → frames trimmed (contact detection vs blank) → resampled to `--num_frames` → saved
 4. Press `a` to abort recording without saving
-5. Press `q` to quit
+5. Press `t` *(board mode only)* to turn the turntable — see below
+6. Press `q` to quit
+
+**Multi-view turntable workflow** (`--board_config` required):
+
+After capturing touches at one view, press `t` to rotate the turntable:
+1. A live ZED + board-axes window opens; rotate the turntable physically
+2. The system auto-detects when the turntable has stopped (angular drift < 1.5° over 20 frames) and prints the step and cumulative rotation angle
+3. A SAM bounding-box prompt opens so you can re-segment the object in the new view
+4. Fresh ZED normals are rotated back to the **initial reference frame** (via `R_cumulative.T`) so all saved `{idx}_normal.npz` files share a consistent coordinate convention regardless of turntable angle; fresh ZED depth is used for height maps and render masks
+5. The dashboard cache panel updates; Stage 2 resumes — press `r`/`s` to record more touches
+6. Press `t` again to rotate further; repeat as desired
 
 **Run:**
 
@@ -350,6 +361,13 @@ python real_data_transfer/capture_gelsight.py \
     --fs_model_dir real_data_transfer/Fast-FoundationStereo/weights/model_best_bp2_serialize.pth \
     --save_dir log/gelsight_captures/session_fast_fs \
     --gelsight_device 2 \
+
+# Multi-view turntable capture (board must be calibrated first via calibrate_board.py)
+python real_data_transfer/capture_gelsight.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --board_config log/capture_assets/board_config.json \
+    --save_dir log/gelsight_captures/session_multiview \
+    --gelsight_device 2
 ```
 
 **Options:**
@@ -373,6 +391,7 @@ python real_data_transfer/capture_gelsight.py \
 | `--fs_valid_iters` | 8 / 32 | FS refinement iterations (auto-set per model type). |
 | `--fs_max_disp` | `192` | Max disparity for Fast-FoundationStereo. |
 | `--fs_scale` | `1.0` | Image downscale factor for FS inference (≤1). Use `0.9` for <11 GB GPU. |
+| `--board_config` | — | Path to `board_config.json` from `calibrate_board.py`. Enables multi-view turntable capture with the `t` key. |
 
 **Output files per touch location** (in `--save_dir`):
 
@@ -386,7 +405,7 @@ python real_data_transfer/capture_gelsight.py \
 | `{idx}_scale{scale}_normal.jpg/.npz` | Multi-scale normal render for each `--render_scale` entry |
 | `{idx}_scale{scale}_color.jpg` | Multi-scale RGB render for each `--render_scale` entry |
 | `{idx}_shadow.mp4` | Trimmed + resampled GelSight tactile video |
-| `{idx}_meta.json` | Contact pixel, ARuCO pose, frame counts |
+| `{idx}_meta.json` | Contact pixel, ARuCO pose, frame counts, `view_angle_deg` and `R_cumulative` (board mode) |
 
 **Downstream usage with PatchMatch pipeline:**
 
