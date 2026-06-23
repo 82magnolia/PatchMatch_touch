@@ -355,28 +355,56 @@ def make_render_mask_video(height_map_0, valid_depth_remap, mask_crop,
     return frames_out
 
 
-def trim_and_resample(frames, blank_bgr, threshold, num_frames):
-    """Trim stale frames before/after contact, resample to num_frames.
+def trim_and_resample(frames, blank_bgr, num_frames,
+                      peak_ratio=0.4, n_neighbors=3, smooth_sigma=2.0):
+    """Trim frames to the contact window and resample to num_frames.
 
-    Returns (resampled_frames, peak_raw_idx, contact_start_idx, contact_end_idx)
-    where indices are into the original `frames` list.
-    Returns (None, None, None, None) if no contact detected.
+    Contact boundaries are found on the gaussian-smoothed diff-from-blank curve:
+      cs_idx — rightmost frame left of peak where smooth_diff < peak*peak_ratio
+               and the next n_neighbors frames are all above that threshold.
+      ce_idx — leftmost frame right of peak where smooth_diff < peak*peak_ratio
+               and the prev n_neighbors frames are all above that threshold.
+
+    Returns (resampled_frames, peak_raw_idx, cs_idx, ce_idx, diffs, smooth_diffs).
+    resampled_frames is None if no contact is detected.
     """
+    from scipy.ndimage import gaussian_filter1d
+
     blank = blank_bgr.astype(np.float32) / 255.0
     diffs = np.array([
         np.linalg.norm(f.astype(np.float32) / 255.0 - blank, axis=-1).mean()
         for f in frames
     ])
-    above = np.where(diffs > threshold)[0]
-    if len(above) == 0:
-        return None, None, None, None
-    peak_raw_idx = int(np.argmax(diffs))
-    cs_idx, ce_idx = int(above[0]), int(above[-1])
+    smooth_diffs = gaussian_filter1d(diffs, sigma=smooth_sigma)
+
+    peak_raw_idx = int(np.argmax(smooth_diffs))
+    peak_val = float(smooth_diffs[peak_raw_idx])
+    if peak_val <= 0:
+        return None, peak_raw_idx, 0, len(frames) - 1, diffs, smooth_diffs, 0.0
+
+    threshold = peak_val * peak_ratio
+    # Rightmost frame left of peak: smooth_diff < threshold, next n_neighbors > threshold
+    cs_idx = 0
+    for i in range(peak_raw_idx):
+        if smooth_diffs[i] < threshold:
+            right = smooth_diffs[i + 1: i + 1 + n_neighbors]
+            if len(right) == n_neighbors and np.all(right > threshold):
+                cs_idx = i
+
+    # Leftmost frame right of peak: smooth_diff < threshold, prev n_neighbors > threshold
+    ce_idx = len(diffs) - 1
+    for j in range(len(diffs) - 1, peak_raw_idx, -1):
+        if smooth_diffs[j] < threshold:
+            left = smooth_diffs[max(0, j - n_neighbors): j]
+            if len(left) == n_neighbors and np.all(left > threshold):
+                ce_idx = j
+
     contact = frames[cs_idx: ce_idx + 1]
     if len(contact) == 0:
-        return None, None, None, None
+        return None, peak_raw_idx, cs_idx, ce_idx, diffs, smooth_diffs, threshold
+
     idx = np.linspace(0, len(contact) - 1, num_frames).round().astype(int)
-    return [contact[i] for i in idx], peak_raw_idx, cs_idx, ce_idx
+    return [contact[i] for i in idx], peak_raw_idx, cs_idx, ce_idx, diffs, smooth_diffs, threshold
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────
@@ -421,10 +449,47 @@ def _format_scale(scale):
     return f"{scale:g}"
 
 
+def _render_diff_plot(diffs, smooth_diffs, cs_idx, ce_idx, peak_idx,
+                      threshold, width=640, height=200):
+    """Render raw diff curve, smoothed curve, and threshold line as a BGR image."""
+    img = np.zeros((height, width, 3), dtype=np.uint8)
+    n = len(diffs)
+    if n < 2:
+        return img
+    max_val = max(float(smooth_diffs.max()), 1e-6)
+
+    def to_px(i, v):
+        x = int(i / (n - 1) * (width - 1))
+        y = int((1.0 - v / max_val) * (height - 1))
+        return (x, max(0, min(height - 1, y)))
+
+    # Threshold line (red)
+    ty = to_px(0, threshold)[1]
+    cv2.line(img, (0, ty), (width - 1, ty), (0, 0, 255), 1)
+
+    # Raw diffs (dark gray)
+    pts_raw = np.array([to_px(i, diffs[i]) for i in range(n)], dtype=np.int32)
+    cv2.polylines(img, [pts_raw.reshape(-1, 1, 2)], False, (80, 80, 80), 1)
+
+    # Smoothed diffs (white)
+    pts_sm = np.array([to_px(i, smooth_diffs[i]) for i in range(n)], dtype=np.int32)
+    cv2.polylines(img, [pts_sm.reshape(-1, 1, 2)], False, (255, 255, 255), 2)
+
+    # Contact boundaries (green) and peak (yellow)
+    for idx_val, color in [(cs_idx, (0, 255, 0)), (ce_idx, (0, 255, 0)),
+                           (peak_idx, (0, 255, 255))]:
+        if idx_val is not None:
+            x = int(idx_val / (n - 1) * (width - 1))
+            cv2.line(img, (x, 0), (x, height - 1), color, 1)
+
+    return img
+
+
 def build_touch_dashboard(zed_disp, cache_disp, gs_disp, normal_prev=None,
                           color_prev=None, height_prev=None,
                           contact_mask_prev=None, multiscale_prevs=None,
-                          debug_disp=None, gs_delta_disp=None):
+                          debug_disp=None, gs_delta_disp=None,
+                          diff_plot_disp=None):
     zed_vis = cv2.resize(zed_disp, (ZED_W // 2, ZED_H // 2)) if zed_disp is not None else None
     cache_vis = (cv2.resize(cache_disp, (ZED_W, ZED_H // 2))
                  if cache_disp is not None else None)
@@ -456,6 +521,8 @@ def build_touch_dashboard(zed_disp, cache_disp, gs_disp, normal_prev=None,
                                 f"RGB x{scale_label}"),
             ])
         rows.append(_hstack_padded(scale_panels))
+    if diff_plot_disp is not None:
+        rows.append(diff_plot_disp)
     return _vstack_padded(rows)
 
 
@@ -839,6 +906,7 @@ def main():
     multiscale_prevs = []
     prev_gs_frame = None
     gs_delta_disp = None
+    diff_plot_disp = None
 
     try:
         while True:
@@ -949,7 +1017,8 @@ def main():
             dashboard = build_touch_dashboard(
                 zed_disp, cache_disp, gs_disp, normal_prev, color_prev,
                 height_prev, contact_mask_prev, multiscale_prevs, debug_disp,
-                gs_delta_disp=gs_delta_disp if args.debug_gs_delta else None)
+                gs_delta_disp=gs_delta_disp if args.debug_gs_delta else None,
+                diff_plot_disp=diff_plot_disp if args.debug_gs_delta else None)
             cv2.imshow(DASHBOARD_WIN, dashboard)
 
             key = cv2.waitKey(1) & 0xFF
@@ -978,12 +1047,14 @@ def main():
                     buffer = []
                     continue
 
-                resampled, peak_idx, cs_idx, ce_idx = trim_and_resample(
-                    buffer, blank_frame, args.contact_threshold, args.num_frames)
+                resampled, peak_idx, cs_idx, ce_idx, diffs, smooth_diffs, trim_threshold = trim_and_resample(
+                    buffer, blank_frame, args.num_frames)
+                if args.debug_gs_delta:
+                    diff_plot_disp = _render_diff_plot(
+                        diffs, smooth_diffs, cs_idx, ce_idx, peak_idx,
+                        threshold=trim_threshold)
                 if resampled is None:
-                    print(f"  WARNING: no contact detected "
-                          f"(threshold={args.contact_threshold}). "
-                          "Adjust --contact_threshold or retry.")
+                    print("  WARNING: no contact detected — check diff curve with --debug_gs_delta.")
                     buffer = []
                     pose_buffer = []
                     continue
