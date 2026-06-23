@@ -362,7 +362,7 @@ def trim_and_resample(frames, blank_bgr, threshold, num_frames):
     where indices are into the original `frames` list.
     Returns (None, None, None, None) if no contact detected.
     """
-    blank = frames[0].astype(np.float32) / 255.0
+    blank = blank_bgr.astype(np.float32) / 255.0
     diffs = np.array([
         np.linalg.norm(f.astype(np.float32) / 255.0 - blank, axis=-1).mean()
         for f in frames
@@ -424,7 +424,7 @@ def _format_scale(scale):
 def build_touch_dashboard(zed_disp, cache_disp, gs_disp, normal_prev=None,
                           color_prev=None, height_prev=None,
                           contact_mask_prev=None, multiscale_prevs=None,
-                          debug_disp=None):
+                          debug_disp=None, gs_delta_disp=None):
     zed_vis = cv2.resize(zed_disp, (ZED_W // 2, ZED_H // 2)) if zed_disp is not None else None
     cache_vis = (cv2.resize(cache_disp, (ZED_W, ZED_H // 2))
                  if cache_disp is not None else None)
@@ -432,14 +432,16 @@ def build_touch_dashboard(zed_disp, cache_disp, gs_disp, normal_prev=None,
         _panel_or_blank(zed_vis, ZED_W // 2, ZED_H // 2, "ZED tracking"),
         _panel_or_blank(cache_vis, ZED_W, ZED_H // 2, "Object cache"),
     ])
-    bottom = _hstack_padded([
+    bottom_panels = [
         _panel_or_blank(gs_disp, GELSIGHT_W, GELSIGHT_H, "GelSight live"),
         _panel_or_blank(normal_prev, GELSIGHT_W, GELSIGHT_H, "Normals"),
         _panel_or_blank(color_prev, GELSIGHT_W, GELSIGHT_H, "RGB"),
         _panel_or_blank(height_prev, GELSIGHT_W, GELSIGHT_H, "Height map"),
-        _panel_or_blank(contact_mask_prev, GELSIGHT_W, GELSIGHT_H,
-                        "Contact mask"),
-    ])
+        _panel_or_blank(contact_mask_prev, GELSIGHT_W, GELSIGHT_H, "Contact mask"),
+    ]
+    if gs_delta_disp is not None:
+        bottom_panels.append(_label_panel(gs_delta_disp, "GelSight delta"))
+    bottom = _hstack_padded(bottom_panels)
     rows = [top, bottom]
     if debug_disp is not None:
         rows.append(_label_panel(debug_disp, "Sensor alignment debug"))
@@ -594,6 +596,9 @@ def parse_args():
     p.add_argument("--debug_sensor_align", action="store_true",
                    help="Show a debug window with normals/RGB blended over the live "
                         "GelSight frame (alpha 0.5/0.5) to verify sensor alignment.")
+    p.add_argument("--debug_gs_delta", action="store_true",
+                   help="Show absolute difference between consecutive GelSight frames "
+                        "in the dashboard to diagnose contact detection.")
     p.add_argument("--geometry_mode",
                    choices=["zed", "foundation_stereo", "fast_foundation_stereo"],
                    default="zed",
@@ -759,6 +764,9 @@ def main():
                 print("  Object selection cancelled — try again.")
                 continue
 
+            # Flush stale buffered frames so the blank is captured at current exposure.
+            for _ in range(10):
+                gs_cap.read()
             gs_blank = read_gelsight_frame(gs_cap, args.border_fraction)
             if gs_blank is None:
                 print("  WARNING: could not read GelSight blank frame — using black.")
@@ -829,6 +837,8 @@ def main():
     height_prev = None
     contact_mask_prev = None
     multiscale_prevs = []
+    prev_gs_frame = None
+    gs_delta_disp = None
 
     try:
         while True:
@@ -843,6 +853,14 @@ def main():
             gs_frame = gs_capture.read()
             if gs_frame is None:
                 gs_frame = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
+            if args.debug_gs_delta and prev_gs_frame is not None:
+                delta = cv2.absdiff(gs_frame, prev_gs_frame)
+                gs_delta_disp = cv2.convertScaleAbs(delta, alpha=4.0)
+                mag = delta.astype(np.float32).mean() / 255.0
+                cv2.putText(gs_delta_disp, f"{mag:.4f}",
+                            (6, GELSIGHT_H - 8), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5, (0, 0, 255), 1, cv2.LINE_AA)
+            prev_gs_frame = gs_frame.copy()
             if recording:
                 buffer.append(gs_frame.copy())
                 pose_buffer.append((
@@ -930,7 +948,8 @@ def main():
 
             dashboard = build_touch_dashboard(
                 zed_disp, cache_disp, gs_disp, normal_prev, color_prev,
-                height_prev, contact_mask_prev, multiscale_prevs, debug_disp)
+                height_prev, contact_mask_prev, multiscale_prevs, debug_disp,
+                gs_delta_disp=gs_delta_disp if args.debug_gs_delta else None)
             cv2.imshow(DASHBOARD_WIN, dashboard)
 
             key = cv2.waitKey(1) & 0xFF
