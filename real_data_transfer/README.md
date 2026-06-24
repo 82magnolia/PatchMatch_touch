@@ -516,6 +516,175 @@ where `T = --mask_temperature` and `σ` is the sigmoid. Values are stored as uin
 
 ---
 
+### `capture_gelsight_single_shot.py` — Continuous single-shot GelSight capture
+
+An alternative to `capture_gelsight.py` for high-throughput sessions. Instead of manually pressing `r`/`s` around each touch, this script records the GelSight stream and ARuCO poses continuously from Stage 2 start until `q` is pressed, then automatically segments the recording into individual contact events and processes them post-hoc. All per-touch outputs are identical in format to `capture_gelsight.py`.
+
+**Key differences from `capture_gelsight.py`:**
+
+| Feature | `capture_gelsight.py` | `capture_gelsight_single_shot.py` |
+|---------|----------------------|-----------------------------------|
+| Recording | Manual `r` / `s` per touch | Continuous; `q` to stop |
+| Segmentation | Real-time (trim after each `s`) | Post-hoc (runs after `q`) |
+| Raw session saved? | No | Yes (`session_gs.mp4`, poses, diffs) |
+| Re-process offline? | `render_masks.py` (masks only) | `process_single_shot.py` (full re-process) |
+| Live dashboard | Full (normals / contact mask) | Simplified (ZED + GelSight + rolling diff plot) |
+
+**Two-stage workflow:**
+
+**Stage 1 — Object Selection** (same as `capture_gelsight.py`):
+Press `c` → SAM bounding-box → `y` to confirm. Saves `object_cache_0.npz`, `blank_frame.jpg`, and `intrinsics.json`.
+
+**Stage 2 — Continuous Recording:**
+The dashboard shows three panels: ZED tracking (ARuCO axes), GelSight live feed, and a rolling diff-from-blank waveform with a `--seg_threshold` line so you can see contacts in real time.
+
+| Key | Action |
+|-----|--------|
+| `t` | Capture a new turntable view (same flow as `capture_gelsight.py`) — saves `object_cache_N.npz` |
+| `q` | Stop recording, save raw session data, run post-hoc segmentation and processing |
+
+After `q`, the script prints progress for each detected contact segment and saves all outputs to `--save_dir`.
+
+**Run:**
+
+```bash
+# Default (neural_plus depth, SAM ViT-B, 37 mm marker, 50 frames, seg_threshold=0.15)
+python real_data_transfer/capture_gelsight_single_shot.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --save_dir log/gelsight_captures/session_01
+
+# Looser segmentation threshold (catches lighter touches)
+python real_data_transfer/capture_gelsight_single_shot.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --seg_threshold 0.08 \
+    --save_dir log/gelsight_captures/session_01
+
+# Use FoundationStereo for depth/normals on specular surfaces
+python real_data_transfer/capture_gelsight_single_shot.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --geometry_mode foundation_stereo \
+    --fs_model_dir real_data_transfer/FoundationStereo/pretrained_models/model_best_bp2.pth \
+    --fs_scale 0.9 \
+    --save_dir log/gelsight_captures/session_fs
+
+# Soft render masks
+python real_data_transfer/capture_gelsight_single_shot.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --render_mask_type soft --mask_temperature 0.001 \
+    --save_dir log/gelsight_captures/session_01
+```
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--seg_threshold` | `0.15` | Diff-from-blank threshold for automatic contact detection |
+| `--min_gap_frames` | `10` | Minimum idle gap in frames between two segments |
+| `--peak_ratio` | `0.4` | Contact boundary sensitivity (same as `trim_and_resample`) |
+| `--num_frames` | `50` | Output frames per contact event |
+| `--render_mask_type` | `hard` | `hard` = binary; `soft` = sigmoid grayscale |
+| `--mask_temperature` | `0.002` | Sigmoid temperature in metres for soft masks |
+| `--inpaint_method` | `telea` | Normal-map hole inpainting: `telea`, `ns`, `nearest` |
+| `--render_scale` | `1` | One or more FoV multipliers for orthographic renders |
+| `--depth_mode` | `neural_plus` | ZED depth mode |
+| `--zed_confidence` | `95` | ZED depth confidence 0–100 |
+| `--sam_checkpoint` | `log/sam_vit_b_01ec64.pth` | SAM checkpoint path |
+| `--sam_model_type` | `vit_b` | SAM model variant |
+| `--gelsight_device` | `0` | OpenCV VideoCapture device index or path |
+| `--marker_size` | `0.037` | ARuCO marker physical size in metres |
+| `--save_dir` | `log/gelsight_captures` | Output directory |
+| `--geometry_mode` | `zed` | Geometry source: `zed`, `foundation_stereo`, `fast_foundation_stereo` |
+| `--fs_model_dir` | — | FS checkpoint path; required when `--geometry_mode != zed` |
+| `--fs_valid_iters` | 8 / 32 | FS refinement iterations |
+| `--fs_max_disp` | `192` | Max disparity for Fast-FoundationStereo |
+| `--fs_scale` | `1.0` | Image downscale factor for FS inference (≤ 1) |
+
+**Raw session files saved to `--save_dir`:**
+
+| File | Description |
+|------|-------------|
+| `session_gs.mp4` | Full GelSight recording (mp4v, `VIDEO_FPS`) |
+| `session_poses.npz` | `rvecs`/`tvecs` (N×3) per GelSight frame; NaN where marker absent |
+| `session_diffs.npz` | `diffs` (N,) diff-from-blank per frame |
+| `session_views.json` | `[{"view_idx": N, "gs_frame_start": M}, ...]` — maps frame ranges to object caches |
+| `object_cache_0.npz` | Stage 1 ZED cache (color, normals, depth, xyz, mask) |
+| `object_cache_N.npz` | One per `t`-key view update |
+| `blank_frame.jpg` | GelSight no-contact frame |
+| `intrinsics.json` | Camera intrinsics (fx, fy, cx, cy) for offline re-processing |
+
+**Per-touch outputs** are identical to `capture_gelsight.py`, plus `{idx}_seg_meta.json`:
+
+| File | Description |
+|------|-------------|
+| `{idx}_seg_meta.json` | `cs_idx_in_session`, `ce_idx_in_session`, `peak_idx_in_session`, `view_idx` — absolute frame indices in `session_gs.mp4` |
+
+---
+
+### `process_single_shot.py` — Offline re-processing for single-shot sessions
+
+Re-segments and re-processes a session recorded by `capture_gelsight_single_shot.py` using different parameters — no ZED or GelSight hardware required. Produces the same per-touch outputs as the original run.
+
+**When to use:**
+- Segmentation missed touches → lower `--seg_threshold`
+- Segmentation split one touch into two → raise `--min_gap_frames`
+- Need tighter/looser contact mask → adjust `--render_mask_thres`
+- Want soft masks → add `--render_mask_type soft`
+- Need a different scale → add `--render_scale 1 2`
+
+**Run:**
+
+```bash
+# Re-segment with a looser threshold (catch lighter touches)
+python real_data_transfer/process_single_shot.py \
+    --session_dir log/gelsight_captures/session_01 \
+    --seg_threshold 0.08
+
+# Write outputs to a separate directory (preserve originals)
+python real_data_transfer/process_single_shot.py \
+    --session_dir log/gelsight_captures/session_01 \
+    --output_dir  log/reprocess/session_01 \
+    --seg_threshold 0.08
+
+# Dry run: see which segments would be detected without writing files
+python real_data_transfer/process_single_shot.py \
+    --session_dir log/gelsight_captures/session_01 \
+    --seg_threshold 0.10 \
+    --dry_run
+
+# Re-render with soft masks and a tighter height threshold
+python real_data_transfer/process_single_shot.py \
+    --session_dir log/gelsight_captures/session_01 \
+    --render_mask_type soft \
+    --mask_temperature 0.0005 \
+    --render_mask_thres -0.006
+
+# Re-render with an additional 2× FoV scale
+python real_data_transfer/process_single_shot.py \
+    --session_dir log/gelsight_captures/session_01 \
+    --render_scale 1 2
+```
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--session_dir` | `log/gelsight_captures` | Directory written by `capture_gelsight_single_shot.py` |
+| `--output_dir` | *(same as `--session_dir`)* | Where to write re-processed outputs |
+| `--seg_threshold` | `0.15` | Diff-from-blank threshold for segment detection |
+| `--min_gap_frames` | `10` | Minimum idle gap in frames between segments |
+| `--peak_ratio` | `0.4` | Contact boundary sensitivity |
+| `--num_frames` | `50` | Output frames per contact event |
+| `--render_mask_thres` | `-0.006` | Height threshold in metres for render mask |
+| `--render_mask_type` | `hard` | `hard` = binary; `soft` = sigmoid grayscale |
+| `--mask_temperature` | `0.002` | Sigmoid temperature in metres for soft masks |
+| `--inpaint_method` | `telea` | Normal-map inpainting: `telea`, `ns`, `nearest` |
+| `--render_scale` | `1` | One or more FoV multipliers for orthographic renders |
+| `--dry_run` | off | Print detected segments without writing any files |
+
+> `process_single_shot.py` loads `session_diffs.npz` to re-segment without re-decoding the full video, then loads `session_gs.mp4` only when it has segments to write. Multi-view sessions are handled automatically via `session_views.json` — each segment is assigned to the correct `object_cache_N.npz` based on its frame index.
+
+---
+
 ### `gen_aruco_pdf.py` — Print ARuCO marker sheet
 
 Generates a PDF of N ARuCO markers (DICT_4X4_50) at a specified physical size, laid out in a grid on A4 pages.  Print and cut out the markers to attach to the turntable.
