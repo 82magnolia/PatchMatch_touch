@@ -52,7 +52,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 GELSIGHT_H = 240
 GELSIGHT_W = 320
-VIDEO_FPS  = 5.0
+VIDEO_FPS = 5.0
+MASK_OPEN_PX = 4  # morphological opening radius to remove SAM boundary artifacts
 
 
 # ── Helpers copied / shared with capture_gelsight ────────────────────────────
@@ -119,6 +120,8 @@ def make_render_mask_video(height_map_0, valid_depth_remap, mask_crop,
         depths = np.zeros(num_frames)
 
     invalid = ~valid_depth_remap | (mask_crop == 0)
+    morph_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (2 * MASK_OPEN_PX + 1, 2 * MASK_OPEN_PX + 1))
     frames_out = []
     for d in depths:
         threshold = float(d) + render_mask_thres
@@ -132,6 +135,7 @@ def make_render_mask_video(height_map_0, valid_depth_remap, mask_crop,
             cm = (height_map_0 < threshold) & valid_depth_remap & (mask_crop > 0)
             vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
             vis[cm] = 255
+        vis = cv2.morphologyEx(vis, cv2.MORPH_OPEN, morph_kernel)
         frames_out.append(vis)
     return frames_out
 

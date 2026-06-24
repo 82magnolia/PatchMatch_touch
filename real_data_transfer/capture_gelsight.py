@@ -52,6 +52,7 @@ HEIGHT_CUTOFF_M              = 0.050   # display saturation: depths beyond 50 mm
 HEIGHT_MASK_THRES_M          = 0.000   # contact mask threshold: height_map < this value is contact
 RENDER_MASK_THRES_M          = -0.006   # per-frame video mask threshold (shifts with pressing depth)
 VIDEO_FPS                    = 5.0      # output video fps, matches optical simulation
+MASK_OPEN_PX                 = 4        # morphological opening radius to remove SAM boundary artifacts
 
 def _make_Rz(degrees):
     """Rotation matrix around the Z axis by `degrees` (counter-clockwise)."""
@@ -352,6 +353,8 @@ def make_render_mask_video(height_map_0, valid_depth_remap, mask_crop,
         depths = np.zeros(num_frames)
 
     invalid = ~valid_depth_remap | (mask_crop == 0)
+    morph_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (2 * MASK_OPEN_PX + 1, 2 * MASK_OPEN_PX + 1))
     frames_out = []
     for d in depths:
         threshold = float(d) + RENDER_MASK_THRES_M
@@ -365,6 +368,7 @@ def make_render_mask_video(height_map_0, valid_depth_remap, mask_crop,
             cm = (height_map_0 < threshold) & valid_depth_remap & (mask_crop > 0)
             vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
             vis[cm] = 255
+        vis = cv2.morphologyEx(vis, cv2.MORPH_OPEN, morph_kernel)
         frames_out.append(vis)
     return frames_out
 
@@ -912,6 +916,9 @@ def main():
     R_z = _make_Rz(90)
     print("Z-axis alignment rotation: 90° CCW")
 
+    contact_morph_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (2 * MASK_OPEN_PX + 1, 2 * MASK_OPEN_PX + 1))
+
     touch_idx   = 0
     recording   = False
     buffer      = []
@@ -977,6 +984,7 @@ def main():
                     if result is not None:
                         rcm_vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
                         rcm_vis[result[4]] = (255, 255, 255)
+                        rcm_vis = cv2.morphologyEx(rcm_vis, cv2.MORPH_OPEN, contact_morph_kernel)
                         normal_prev = result[0]
                         color_prev = result[2]
                         height_prev = result[3]
@@ -1267,8 +1275,10 @@ def main():
                         f"{prefix}_scale{scale_tag}_normal.npz", normal=raw_norm_s)
                     cv2.imwrite(f"{prefix}_scale{scale_tag}_color.jpg", color_s)
                 cv2.imwrite(f"{prefix}_height.jpg", height_vis_out)
-                cv2.imwrite(f"{prefix}_contact_mask.jpg",
-                            (rcm_out.astype(np.uint8) * 255))
+                rcm_out_vis = (rcm_out.astype(np.uint8) * 255)
+                rcm_out_vis = cv2.morphologyEx(
+                    rcm_out_vis, cv2.MORPH_OPEN, contact_morph_kernel)
+                cv2.imwrite(f"{prefix}_contact_mask.jpg", rcm_out_vis)
                 write_video(f"{prefix}_shadow.mp4", resampled, VIDEO_FPS)
                 write_video(f"{prefix}_render_mask.mp4", rm_frames, VIDEO_FPS)
                 side_by_side = [np.hstack([s, r]) for s, r in zip(resampled, rm_frames)]
