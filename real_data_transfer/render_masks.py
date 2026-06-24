@@ -83,11 +83,17 @@ def read_video_frames(path):
 def make_render_mask_video(height_map_0, valid_depth_remap, mask_crop,
                            sensor_z_0, tvec_0, pose_contact_rvecs,
                            pose_contact_tvecs, num_frames,
-                           render_mask_thres=0.0):
+                           render_mask_thres=0.0,
+                           render_mask_type="hard",
+                           mask_temperature=0.002):
     """Regenerate per-frame render mask images with an adjustable threshold.
 
     pressing_depth_i = dot(sensor_z_0, tvec_i - tvec_0)
     contact at frame i: height_map_0 < pressing_depth_i + render_mask_thres
+
+    render_mask_type:
+      "hard" -- binary white/black frames (default)
+      "soft" -- grayscale sigmoid intensity: σ((threshold - h0) / T)
 
     pose_contact_rvecs / tvecs are (N, 3) float64 arrays; NaN rows = missing pose.
     """
@@ -112,12 +118,20 @@ def make_render_mask_video(height_map_0, valid_depth_remap, mask_crop,
         print("  WARNING: fewer than 2 valid poses — using static threshold.")
         depths = np.zeros(num_frames)
 
+    invalid = ~valid_depth_remap | (mask_crop == 0)
     frames_out = []
     for d in depths:
         threshold = float(d) + render_mask_thres
-        cm = (height_map_0 < threshold) & valid_depth_remap & (mask_crop > 0)
-        vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
-        vis[cm] = 255
+        if render_mask_type == "soft":
+            penetration = (threshold - height_map_0) / max(mask_temperature, 1e-9)
+            soft = 1.0 / (1.0 + np.exp(-penetration))
+            soft[invalid] = 0.0
+            intensity = (soft * 255).clip(0, 255).astype(np.uint8)
+            vis = np.stack([intensity, intensity, intensity], axis=-1)
+        else:
+            cm = (height_map_0 < threshold) & valid_depth_remap & (mask_crop > 0)
+            vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
+            vis[cm] = 255
         frames_out.append(vis)
     return frames_out
 
@@ -153,7 +167,8 @@ def retrim_contact_window(diffs, smooth_diffs, peak_ratio=0.4, n_neighbors=3):
 # ── Per-touch rendering ───────────────────────────────────────────────────────
 
 def render_touch(data_dir, touch_idx, render_mask_thres, peak_ratio, num_frames,
-                 output_dir=None, dry_run=False):
+                 output_dir=None, dry_run=False,
+                 render_mask_type="hard", mask_temperature=0.002):
     if output_dir is None:
         output_dir = data_dir
     os.makedirs(output_dir, exist_ok=True)
@@ -226,7 +241,9 @@ def render_touch(data_dir, touch_idx, render_mask_thres, peak_ratio, num_frames,
         sensor_z_0, tvec_0,
         pose_rvecs, pose_tvecs,
         num_frames=num_frames,
-        render_mask_thres=render_mask_thres)
+        render_mask_thres=render_mask_thres,
+        render_mask_type=render_mask_type,
+        mask_temperature=mask_temperature)
 
     write_video(f"{out_prefix}_render_mask.mp4", rm_frames, VIDEO_FPS)
     if shadow_frames:
@@ -257,9 +274,9 @@ def parse_args():
                    help="Directory to write re-rendered videos. Defaults to --data_dir.")
     p.add_argument("--touch_idx", type=int, default=None,
                    help="Touch index to re-render. Omit to process all touches in save_dir.")
-    p.add_argument("--render_mask_thres", type=float, default=0.0,
+    p.add_argument("--render_mask_thres", type=float, default=-0.006,
                    help="Height threshold in metres for contact detection "
-                        "(negative = tighter, positive = looser; default: 0.0)")
+                        "(negative = tighter, positive = looser; default: -0.006)")
     p.add_argument("--peak_ratio", type=float, default=None,
                    help="Re-trim the contact window using this peak_ratio on the saved "
                         "diff curve before rendering. Omit to use the original trim.")
@@ -267,6 +284,11 @@ def parse_args():
                    help="Number of output frames (default: same as original capture).")
     p.add_argument("--dry_run", action="store_true",
                    help="Print what would be done without writing any files.")
+    p.add_argument("--render_mask_type", choices=["hard", "soft"], default="hard",
+                   help="Contact mask encoding: 'hard' = binary white/black (default); "
+                        "'soft' = grayscale sigmoid intensity")
+    p.add_argument("--mask_temperature", type=float, default=0.002,
+                   help="Sigmoid temperature in metres for soft masks (default: 0.002 = 2 mm)")
     return p.parse_args()
 
 
@@ -298,7 +320,9 @@ def main():
                         peak_ratio=args.peak_ratio,
                         num_frames=args.num_frames,
                         output_dir=args.output_dir,
-                        dry_run=args.dry_run):
+                        dry_run=args.dry_run,
+                        render_mask_type=args.render_mask_type,
+                        mask_temperature=args.mask_temperature):
             ok += 1
 
     print(f"\nDone. {ok}/{len(indices)} touch(es) processed.")

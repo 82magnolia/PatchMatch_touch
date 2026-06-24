@@ -472,6 +472,12 @@ python real_data_transfer/render_masks.py \
 python real_data_transfer/render_masks.py \
     --data_dir log/gelsight_captures/session_01 \
     --dry_run
+
+# Soft mask: continuous sigmoid intensity instead of binary white/black
+python real_data_transfer/render_masks.py \
+    --data_dir log/gelsight_captures/session_fs_tmp/ \
+    --render_mask_type soft \
+    --mask_temperature 0.0005 --render_mask_thres -0.006
 ```
 
 **Options:**
@@ -481,10 +487,12 @@ python real_data_transfer/render_masks.py \
 | `--data_dir` | `log/gelsight_captures` | Directory written by `capture_gelsight.py` containing the raw capture data |
 | `--output_dir` | *(same as `--data_dir`)* | Directory to write re-rendered videos; created if it does not exist |
 | `--touch_idx` | *(all)* | Single touch index to re-render; omit to process all touches in `--data_dir` |
-| `--render_mask_thres` | `0.0` | Height threshold in metres for contact detection. Negative = tighter (fewer pixels in contact), positive = looser (more pixels) |
+| `--render_mask_thres` | `-0.006` | Height threshold in metres for contact detection. Negative = tighter (fewer pixels in contact), positive = looser (more pixels) |
 | `--peak_ratio` | *(original)* | Re-trim the contact window using this peak_ratio on the saved diff curve before rendering. Omit to keep the original trim boundaries |
 | `--num_frames` | *(original)* | Number of output frames; defaults to the frame count from the original capture |
 | `--dry_run` | off | Print what would be processed without writing any files |
+| `--render_mask_type` | `hard` | `hard` = binary white/black; `soft` = grayscale sigmoid intensity |
+| `--mask_temperature` | `0.002` | Sigmoid temperature in metres for soft masks (default 2 mm, ~ZED depth noise) |
 
 **How the threshold works:**
 
@@ -495,6 +503,16 @@ contact = height_map_0 < pressing_depth_i + render_mask_thres
 ```
 
 where `pressing_depth_i = dot(sensor_z_0, tvec_i - tvec_0)` tracks the sensor's advance depth over time. Setting `render_mask_thres = 0` (default) activates contact exactly when the object surface reaches the gel plane. Increasing it makes the mask appear earlier/larger; decreasing it makes it tighter.
+
+**Soft mask formula:**
+
+When `--render_mask_type soft`, each pixel is a continuous float in [0, 1]:
+
+```
+m[u,v] = σ((threshold - height_map_0[u,v]) / T)
+```
+
+where `T = --mask_temperature` and `σ` is the sigmoid. Values are stored as uint8 intensity (0–255) in a grayscale BGR video. Pixels outside the valid depth or object mask are forced to 0.
 
 ---
 

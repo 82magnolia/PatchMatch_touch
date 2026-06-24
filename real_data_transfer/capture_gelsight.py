@@ -315,13 +315,18 @@ def write_video(path, frames, fps):
 
 
 def make_render_mask_video(height_map_0, valid_depth_remap, mask_crop,
-                           sensor_z_0, tvec_0, pose_contact_slice, num_frames):
+                           sensor_z_0, tvec_0, pose_contact_slice, num_frames,
+                           render_mask_type="hard", mask_temperature=0.002):
     """Generate per-frame render mask images by shifting height_map threshold by pressing depth.
 
     pressing_depth_i = dot(sensor_z_0, tvec_i - tvec_0)
     contact at frame i: height_map_0 < pressing_depth_i + RENDER_MASK_THRES_M
 
-    Returns a list of num_frames BGR images (white=contact, black=no contact).
+    render_mask_type:
+      "hard" -- binary white/black frames (default)
+      "soft" -- grayscale sigmoid intensity: σ((threshold - h0) / T)
+
+    Returns a list of num_frames BGR images.
     Falls back to a static mask (depth=0) if fewer than 2 valid poses exist.
     """
     from scipy.interpolate import RBFInterpolator
@@ -346,12 +351,20 @@ def make_render_mask_video(height_map_0, valid_depth_remap, mask_crop,
               "contact mask video uses static threshold.")
         depths = np.zeros(num_frames)
 
+    invalid = ~valid_depth_remap | (mask_crop == 0)
     frames_out = []
     for d in depths:
         threshold = float(d) + RENDER_MASK_THRES_M
-        cm = (height_map_0 < threshold) & valid_depth_remap & (mask_crop > 0)
-        vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
-        vis[cm] = 255
+        if render_mask_type == "soft":
+            penetration = (threshold - height_map_0) / max(mask_temperature, 1e-9)
+            soft = 1.0 / (1.0 + np.exp(-penetration))
+            soft[invalid] = 0.0
+            intensity = (soft * 255).clip(0, 255).astype(np.uint8)
+            vis = np.stack([intensity, intensity, intensity], axis=-1)
+        else:
+            cm = (height_map_0 < threshold) & valid_depth_remap & (mask_crop > 0)
+            vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
+            vis[cm] = 255
         frames_out.append(vis)
     return frames_out
 
@@ -659,6 +672,11 @@ def parse_args():
     p.add_argument("--render_scale", type=float, nargs="+", default=[1.0],
                    help="One or more FoV multipliers for normal/RGB orthographic "
                         "renders, each still output at 320x240 (default: 1)")
+    p.add_argument("--render_mask_type", choices=["hard", "soft"], default="hard",
+                   help="Contact mask encoding: 'hard' = binary white/black (default); "
+                        "'soft' = grayscale sigmoid intensity")
+    p.add_argument("--mask_temperature", type=float, default=0.002,
+                   help="Sigmoid temperature in metres for soft masks (default: 0.002 = 2 mm)")
     p.add_argument("--save_dir", default="log/gelsight_captures",
                    help="Output directory (default: log/gelsight_captures)")
     p.add_argument("--debug_sensor_align", action="store_true",
@@ -1228,7 +1246,9 @@ def main():
                     hmap_0, sz_0, vdr_0, mc_0 = cs_res[5], cs_res[6], cs_res[7], cs_res[8]
                     rm_frames = make_render_mask_video(
                         hmap_0, vdr_0, mc_0, sz_0, cs_tvec_raw,
-                        pose_contact, args.num_frames)
+                        pose_contact, args.num_frames,
+                        render_mask_type=args.render_mask_type,
+                        mask_temperature=args.mask_temperature)
                 else:
                     print("  WARNING: contact-start ortho failed — "
                           "render mask video will be static.")
