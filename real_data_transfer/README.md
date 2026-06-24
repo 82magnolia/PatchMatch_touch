@@ -303,7 +303,7 @@ Requires ARuCO marker ID=6 (DICT_4X4_50, 37 mm default) attached to the flat bac
 **Two-stage workflow:**
 
 **Stage 1 — Object Selection** (run once per view):
-1. ZED live RGB + normals stream appears (board axes overlaid when `--board_config` given)
+1. ZED live RGB + normals stream appears
 2. Press `c` → freeze frame → drag SAM bounding box → `Enter` → `y` to confirm
 3. Object mask + ZED data cached; GelSight blank (no-contact) frame saved automatically
 
@@ -312,18 +312,18 @@ Requires ARuCO marker ID=6 (DICT_4X4_50, 37 mm default) attached to the flat bac
 2. Press `r` to start recording GelSight frames into buffer
 3. Press `s` to stop → frames trimmed (contact detection vs blank) → resampled to `--num_frames` → saved
 4. Press `a` to abort recording without saving
-5. Press `t` *(board mode only)* to turn the turntable — see below
+5. Press `t` to capture a new view after rotating the turntable — see below
 6. Press `q` to quit
 
-**Multi-view turntable workflow** (`--board_config` required):
+**Multi-view turntable workflow:**
 
-After capturing touches at one view, press `t` to rotate the turntable:
-1. A live ZED + board-axes window opens; rotate the turntable physically
-2. The system auto-detects when the turntable has stopped (angular drift < 1.5° over 20 frames) and prints the step and cumulative rotation angle
-3. A SAM bounding-box prompt opens so you can re-segment the object in the new view
-4. Fresh ZED normals are rotated back to the **initial reference frame** (via `R_cumulative.T`) so all saved `{idx}_normal.npz` files share a consistent coordinate convention regardless of turntable angle; fresh ZED depth is used for height maps and render masks
-5. The dashboard cache panel updates; Stage 2 resumes — press `r`/`s` to record more touches
-6. Press `t` again to rotate further; repeat as desired
+After capturing touches at one view, rotate the turntable and press `t`:
+1. A live ZED RGB + normals window opens showing the current camera view
+2. Physically rotate the turntable to the desired angle
+3. Press `c` → optionally runs FS inference (if `--geometry_mode` is set) → SAM bounding-box prompt opens to re-segment the object in the new view
+4. The dashboard cache panel updates with the new view's normals and depth (expressed in the current camera frame — each view is an independent measurement); Stage 2 resumes — press `r`/`s` to record more touches
+5. Press `t` again to rotate further; repeat as desired; all saves go to the same `--save_dir`
+6. Press `Esc` in the tracking window to cancel without updating the cache
 
 **Run:**
 
@@ -352,7 +352,7 @@ python real_data_transfer/capture_gelsight.py \
     --fs_model_dir real_data_transfer/FoundationStereo/pretrained_models/model_best_bp2.pth \
     --fs_scale 0.9 \
     --save_dir log/gelsight_captures/session_fs \
-    --gelsight_device 2 \
+    --gelsight_device 2
 
 # Use Fast-FoundationStereo (faster, slightly lower quality)
 python real_data_transfer/capture_gelsight.py \
@@ -360,13 +360,6 @@ python real_data_transfer/capture_gelsight.py \
     --geometry_mode fast_foundation_stereo \
     --fs_model_dir real_data_transfer/Fast-FoundationStereo/weights/model_best_bp2_serialize.pth \
     --save_dir log/gelsight_captures/session_fast_fs \
-    --gelsight_device 2 \
-
-# Multi-view turntable capture (board must be calibrated first via calibrate_board.py)
-python real_data_transfer/capture_gelsight.py \
-    --sam_checkpoint log/sam_vit_b_01ec64.pth \
-    --board_config log/capture_assets/board_config.json \
-    --save_dir log/gelsight_captures/session_multiview \
     --gelsight_device 2
 ```
 
@@ -391,7 +384,6 @@ python real_data_transfer/capture_gelsight.py \
 | `--fs_valid_iters` | 8 / 32 | FS refinement iterations (auto-set per model type). |
 | `--fs_max_disp` | `192` | Max disparity for Fast-FoundationStereo. |
 | `--fs_scale` | `1.0` | Image downscale factor for FS inference (≤1). Use `0.9` for <11 GB GPU. |
-| `--board_config` | — | Path to `board_config.json` from `calibrate_board.py`. Enables multi-view turntable capture with the `t` key. |
 
 **Output files per touch location** (in `--save_dir`):
 
@@ -405,7 +397,12 @@ python real_data_transfer/capture_gelsight.py \
 | `{idx}_scale{scale}_normal.jpg/.npz` | Multi-scale normal render for each `--render_scale` entry |
 | `{idx}_scale{scale}_color.jpg` | Multi-scale RGB render for each `--render_scale` entry |
 | `{idx}_shadow.mp4` | Trimmed + resampled GelSight tactile video |
-| `{idx}_meta.json` | Contact pixel, ARuCO pose, frame counts, `view_angle_deg` and `R_cumulative` (board mode) |
+| `{idx}_render_mask.mp4` | Per-frame contact mask video |
+| `{idx}_shadow_render_mask.mp4` | Side-by-side shadow + render mask |
+| `{idx}_contact_data.npz` | `height_map_0`, `valid_depth_remap`, `mask_crop`, `sensor_z_0`, `tvec_0` at contact start (for post-hoc re-rendering) |
+| `{idx}_pose_contact.npz` | `rvecs`/`tvecs` (N×3) for each frame in the contact window, NaN where marker was missing |
+| `{idx}_diffs.npz` | `diffs`, `smooth_diffs` from the contact detection curve (for re-trimming) |
+| `{idx}_meta.json` | Contact pixel, ARuCO pose, frame counts, `cs_idx`, `ce_idx`, `peak_idx`, `trim_threshold` |
 
 **Downstream usage with PatchMatch pipeline:**
 
@@ -420,6 +417,84 @@ python main_retrieval_transfer_accel.py \
     --save_dir log/transfer_real \
     --em --em_iters 3
 ```
+
+---
+
+### `render_masks.py` — Post-hoc contact mask re-rendering
+
+Re-generates `{idx}_render_mask.mp4` and `{idx}_shadow_render_mask.mp4` from the raw geometry saved by `capture_gelsight.py`, without needing the ZED or GelSight connected. Useful for adjusting the contact threshold or re-trimming the contact window after the fact.
+
+**Required saved files** (written automatically by `capture_gelsight.py`):
+
+| File | Used for |
+|------|---------|
+| `{idx}_contact_data.npz` | Height map, depth validity, mask, sensor axes at contact start |
+| `{idx}_pose_contact.npz` | Sensor pose sequence over the contact window |
+| `{idx}_shadow.mp4` | Resampled GelSight frames for the side-by-side video |
+| `{idx}_diffs.npz` | Diff curve (only needed when re-trimming with `--peak_ratio`) |
+
+**Run:**
+
+```bash
+# Re-render touch 3 with a looser contact threshold (+1 mm), output alongside originals
+python real_data_transfer/render_masks.py \
+    --data_dir log/gelsight_captures/session_01 \
+    --touch_idx 3 \
+    --render_mask_thres 0.001
+
+# Write re-rendered videos to a separate directory
+python real_data_transfer/render_masks.py \
+    --data_dir log/gelsight_captures/session_01 \
+    --output_dir log/remask/session_01 \
+    --touch_idx 3 \
+    --render_mask_thres 0.001
+
+# Re-render with a tighter threshold (-0.5 mm)
+python real_data_transfer/render_masks.py \
+    --data_dir log/gelsight_captures/session_01 \
+    --touch_idx 3 \
+    --render_mask_thres -0.0005
+
+# Re-trim the contact window AND re-render (change peak detection sensitivity)
+python real_data_transfer/render_masks.py \
+    --data_dir log/gelsight_captures/session_01 \
+    --touch_idx 3 \
+    --peak_ratio 0.3 \
+    --render_mask_thres 0.001
+
+# Batch: re-render all touches, write to a separate directory
+python real_data_transfer/render_masks.py \
+    --data_dir log/gelsight_captures/session_01 \
+    --output_dir log/remask/session_01 \
+    --render_mask_thres 0.0005
+
+# Dry run: check which touches have the required data without writing files
+python real_data_transfer/render_masks.py \
+    --data_dir log/gelsight_captures/session_01 \
+    --dry_run
+```
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--data_dir` | `log/gelsight_captures` | Directory written by `capture_gelsight.py` containing the raw capture data |
+| `--output_dir` | *(same as `--data_dir`)* | Directory to write re-rendered videos; created if it does not exist |
+| `--touch_idx` | *(all)* | Single touch index to re-render; omit to process all touches in `--data_dir` |
+| `--render_mask_thres` | `0.0` | Height threshold in metres for contact detection. Negative = tighter (fewer pixels in contact), positive = looser (more pixels) |
+| `--peak_ratio` | *(original)* | Re-trim the contact window using this peak_ratio on the saved diff curve before rendering. Omit to keep the original trim boundaries |
+| `--num_frames` | *(original)* | Number of output frames; defaults to the frame count from the original capture |
+| `--dry_run` | off | Print what would be processed without writing any files |
+
+**How the threshold works:**
+
+The contact mask per frame is:
+
+```
+contact = height_map_0 < pressing_depth_i + render_mask_thres
+```
+
+where `pressing_depth_i = dot(sensor_z_0, tvec_i - tvec_0)` tracks the sensor's advance depth over time. Setting `render_mask_thres = 0` (default) activates contact exactly when the object surface reaches the gel plane. Increasing it makes the mask appear earlier/larger; decreasing it makes it tighter.
 
 ---
 

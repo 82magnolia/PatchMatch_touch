@@ -50,7 +50,7 @@ ZED_W, ZED_H                 = 1280, 720
 GELSIGHT_W, GELSIGHT_H       = 320, 240
 HEIGHT_CUTOFF_M              = 0.050   # display saturation: depths beyond 50 mm clamp to max color
 HEIGHT_MASK_THRES_M          = 0.000   # contact mask threshold: height_map < this value is contact
-RENDER_MASK_THRES_M          = 0.000   # per-frame video mask threshold (shifts with pressing depth)
+RENDER_MASK_THRES_M          = -0.006   # per-frame video mask threshold (shifts with pressing depth)
 VIDEO_FPS                    = 5.0      # output video fps, matches optical simulation
 
 def _make_Rz(degrees):
@@ -1222,9 +1222,10 @@ def main():
                     normals_cached, color_bgr_cached, mask_cached,
                     depth_cached, intr, args.inpaint_method,
                     rvec=_rotate_rvec_z(cs_rvec_raw, R_z), tvec=cs_tvec_raw)
+                pose_contact = pose_buffer[cs_idx: ce_idx + 1]
+                hmap_0 = sz_0 = vdr_0 = mc_0 = None
                 if cs_res is not None:
                     hmap_0, sz_0, vdr_0, mc_0 = cs_res[5], cs_res[6], cs_res[7], cs_res[8]
-                    pose_contact = pose_buffer[cs_idx: ce_idx + 1]
                     rm_frames = make_render_mask_video(
                         hmap_0, vdr_0, mc_0, sz_0, cs_tvec_raw,
                         pose_contact, args.num_frames)
@@ -1252,6 +1253,40 @@ def main():
                 write_video(f"{prefix}_render_mask.mp4", rm_frames, VIDEO_FPS)
                 side_by_side = [np.hstack([s, r]) for s, r in zip(resampled, rm_frames)]
                 write_video(f"{prefix}_shadow_render_mask.mp4", side_by_side, VIDEO_FPS)
+
+                # ── Post-hoc re-rendering data ────────────────────────────────
+                # height_map_0, sensor_z_0, valid_depth_remap, mask_crop from
+                # the contact-start ortho projection; pose sequence for the
+                # contact window. Together these let render_masks.py regenerate
+                # the contact mask video at any threshold without re-running the
+                # full capture pipeline.
+                if hmap_0 is not None:
+                    np.savez_compressed(
+                        f"{prefix}_contact_data.npz",
+                        height_map_0=hmap_0.astype(np.float32),
+                        valid_depth_remap=vdr_0,
+                        mask_crop=mc_0,
+                        sensor_z_0=sz_0.astype(np.float32),
+                        tvec_0=np.array(cs_tvec_raw, dtype=np.float64),
+                        cs_rvec=np.array(cs_rvec_raw, dtype=np.float64),
+                    )
+                # Pose sequence for every frame in [cs_idx, ce_idx]; NaN where marker missing.
+                n_contact_frames = len(pose_contact)
+                pc_rvecs = np.full((n_contact_frames, 3), np.nan, dtype=np.float64)
+                pc_tvecs = np.full((n_contact_frames, 3), np.nan, dtype=np.float64)
+                for _i, (_rv, _tv) in enumerate(pose_contact):
+                    if _rv is not None:
+                        pc_rvecs[_i] = _rv
+                        pc_tvecs[_i] = _tv
+                np.savez_compressed(
+                    f"{prefix}_pose_contact.npz",
+                    rvecs=pc_rvecs, tvecs=pc_tvecs)
+                # Raw diff curve for re-trimming with different peak_ratio.
+                np.savez_compressed(
+                    f"{prefix}_diffs.npz",
+                    diffs=diffs.astype(np.float32),
+                    smooth_diffs=smooth_diffs.astype(np.float32))
+
                 with open(f"{prefix}_meta.json", "w") as f:
                     json.dump({
                         "touch_idx": touch_idx,
@@ -1262,6 +1297,10 @@ def main():
                         "n_raw_frames": n_buf,
                         "n_resampled_frames": len(resampled),
                         "render_scale": args.render_scale,
+                        "cs_idx": int(cs_idx),
+                        "ce_idx": int(ce_idx),
+                        "peak_idx": int(peak_idx),
+                        "trim_threshold": float(trim_threshold),
                     }, f, indent=2)
 
                 print(f"  Saved touch #{touch_idx}: "
