@@ -105,88 +105,6 @@ def compute_contact_pixel(rvec, tvec, intr):
     return (min(max(px, 0), ZED_W - 1), min(max(py, 0), ZED_H - 1))
 
 
-# ── ARuCO board helpers (multi-view turntable) ────────────────────────────────
-
-_board_clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-
-
-def load_board_config(path):
-    """Load board_config.json → (cv2.aruco.Board, aruco_dict, marker_size)."""
-    with open(path) as f:
-        cfg = json.load(f)
-    dict_name = cfg.get("aruco_dict", "DICT_4X4_50")
-    aruco_dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dict_name))
-    obj_points, ids = [], []
-    for mid_str, corners in cfg["markers"].items():
-        pts = np.array(corners, dtype=np.float32)
-        obj_points.append(pts)
-        ids.append(int(mid_str))
-    board = cv2.aruco.Board(obj_points, aruco_dict, np.array(ids))
-    marker_size = float(cfg.get("marker_size", 0.035))
-    print(f"Board loaded: {len(ids)} markers {sorted(ids)}, marker_size={marker_size:.3f} m")
-    return board, aruco_dict, marker_size
-
-
-def detect_board_pose_multi(frame_bgr, detector, board, camera_matrix, dist_coeffs):
-    """Estimate joint board pose. Returns (corners, rvec, tvec); rvec/tvec None if not found."""
-    gray = _board_clahe.apply(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY))
-    corners, ids, _ = detector.detectMarkers(gray)
-    if ids is None or len(ids) == 0:
-        return None, None, None
-    n, rvec, tvec = cv2.aruco.estimatePoseBoard(
-        corners, ids, board, camera_matrix, dist_coeffs, None, None)
-    if n == 0:
-        return corners, None, None
-    return corners, rvec, tvec
-
-
-def board_pose_to_T(rvec, tvec):
-    """Convert (rvec, tvec) → 4×4 SE(3) matrix."""
-    R, _ = cv2.Rodrigues(rvec.flatten())
-    T = np.eye(4)
-    T[:3, :3] = R
-    T[:3, 3] = tvec.flatten()
-    return T
-
-
-def average_board_poses(T_list):
-    """SVD-re-orthogonalised mean R + mean t over a list of 4×4 SE(3) matrices."""
-    Rs = [T[:3, :3] for T in T_list]
-    ts = [T[:3, 3] for T in T_list]
-    R_mean = np.mean(Rs, axis=0)
-    U, _, Vt = np.linalg.svd(R_mean)
-    R_mean = U @ Vt
-    if np.linalg.det(R_mean) < 0:
-        R_mean = U @ np.diag([1, 1, -1]) @ Vt
-    T = np.eye(4)
-    T[:3, :3] = R_mean
-    T[:3, 3] = np.mean(ts, axis=0)
-    return T
-
-
-def is_board_stable(rvec_buffer, angle_thresh_deg=1.5):
-    """True when the oldest and newest rvec in the buffer span < angle_thresh_deg (buffer ≥ 20)."""
-    if len(rvec_buffer) < 20:
-        return False
-    R0, _ = cv2.Rodrigues(np.array(rvec_buffer[0]).flatten())
-    R1, _ = cv2.Rodrigues(np.array(rvec_buffer[-1]).flatten())
-    cos_val = np.clip((np.trace(R0.T @ R1) - 1) / 2.0, -1.0, 1.0)
-    return float(np.degrees(np.arccos(cos_val))) < angle_thresh_deg
-
-
-def rotate_normals_to_initial_frame(normals, R_correction):
-    """Rotate fresh ZED normals (camera frame) back to the initial-view camera frame.
-
-    R_correction = R_board_initial @ R_board_cur^T  (camera-frame inverse of turntable rotation).
-    Applied pixel-wise to the first 3 channels. NaN pixels unchanged.
-    """
-    out = normals.copy().astype(np.float32)
-    nxyz = out[:, :, :3]
-    valid = np.isfinite(nxyz).all(axis=2)
-    nxyz[valid] = (R_correction @ nxyz[valid].T).T
-    out[:, :, :3] = nxyz
-    return out
-
 
 # ── GelSight frame processing (mirrors gsrobotics GelSightMini.update()) ──────
 
@@ -764,11 +682,6 @@ def parse_args():
                    help="Max disparity for Fast-FoundationStereo (default: 192).")
     p.add_argument("--fs_scale", type=float, default=1.0,
                    help="Image downscale factor for FS inference <=1 (default: 1.0).")
-    p.add_argument("--board_config", default=None,
-                   help="Path to board_config.json from calibrate_board.py. "
-                        "Enables multi-view turntable capture: press 't' in Stage 2 to turn the "
-                        "turntable; the system tracks the board, detects stability, runs SAM again, "
-                        "and rotates fresh ZED normals back to the initial reference frame.")
     return p.parse_args()
 
 
@@ -839,22 +752,6 @@ def main():
     depth_sl   = sl.Mat()
     xyz_sl     = sl.Mat()
 
-    # ── Board setup (multi-view mode) ─────────────────────────────────────────
-    aruco_board = None
-    board_detector = None
-    board_marker_size = None
-    T_board_0 = None          # reference board pose (updated after each 't' press)
-    R_board_initial = None    # board rotation at Stage 1 capture (never updated)
-    R_cumulative = np.eye(3)  # R_board_initial @ R_board_cur^T (camera-frame correction)
-    cumulative_angle_deg = 0.0
-
-    if args.board_config:
-        aruco_board, board_aruco_dict, board_marker_size = load_board_config(args.board_config)
-        params = cv2.aruco.DetectorParameters()
-        params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_APRILTAG
-        board_detector = cv2.aruco.ArucoDetector(board_aruco_dict, params)
-        print("Multi-view turntable mode enabled.  Press 't' in Stage 2 to turn the table.")
-
     # ── Stage 1: Object Selection ─────────────────────────────────────────────
     print("\n--- Stage 1: Object Selection ---")
     print("Press 'c' to freeze and segment object, 'q' to quit.")
@@ -862,9 +759,6 @@ def main():
     LIVE_WIN  = "ZED: RGB | Normals  (c=capture  q=quit)"
     color_bgr_cached = normals_cached = depth_cached = mask_cached = blank_frame = None
     cache_disp_base = None
-
-    # Rolling buffer of the last 5 board pose estimates for averaging at 'c' press.
-    board_pose_recent = []  # list of 4×4 T_board_in_cam
 
     while color_bgr_cached is None:
         if cam.grab(rt) != sl.ERROR_CODE.SUCCESS:
@@ -885,29 +779,6 @@ def main():
         c_d = cv2.resize(color_bgr, (ZED_DISPLAY_W, ZED_DISPLAY_H))
         n_d = cv2.resize(normals_to_colormap(normals_np), (ZED_DISPLAY_W, ZED_DISPLAY_H))
         grid = np.hstack([c_d, n_d])
-
-        # Board tracking overlay (board mode only)
-        if aruco_board is not None:
-            brd_corners, brd_rvec, brd_tvec = detect_board_pose_multi(
-                color_bgr, board_detector, aruco_board, camera_matrix, dist_coeffs)
-            if brd_rvec is not None:
-                T_brd = board_pose_to_T(brd_rvec, brd_tvec)
-                board_pose_recent.append(T_brd)
-                if len(board_pose_recent) > 5:
-                    board_pose_recent.pop(0)
-                # Draw axes on the display-size left panel
-                vis_board = c_d.copy()
-                scale_x = ZED_DISPLAY_W / ZED_W
-                scale_y = ZED_DISPLAY_H / ZED_H
-                intr_d = {k: v * s for k, v, s in [
-                    ("fx", intr["fx"], scale_x), ("fy", intr["fy"], scale_y),
-                    ("cx", intr["cx"], scale_x), ("cy", intr["cy"], scale_y)]}
-                cm_d = np.array([[intr_d["fx"], 0, intr_d["cx"]],
-                                 [0, intr_d["fy"], intr_d["cy"]],
-                                 [0, 0, 1]], dtype=np.float64)
-                cv2.drawFrameAxes(vis_board, cm_d, dist_coeffs,
-                                  brd_rvec, brd_tvec, board_marker_size * 0.5)
-                grid[:, :ZED_DISPLAY_W] = vis_board
 
         cv2.putText(grid, "c=capture  q=quit  |  RGB (left)  Normals (right)",
                     (10, ZED_DISPLAY_H - 10), cv2.FONT_HERSHEY_SIMPLEX,
@@ -995,16 +866,6 @@ def main():
             depth_cached      = depth_to_cache
             mask_cached       = mask
 
-            # Record reference board pose for multi-view tracking
-            if aruco_board is not None:
-                if board_pose_recent:
-                    T_board_0 = average_board_poses(board_pose_recent)
-                    R_board_initial = T_board_0[:3, :3].copy()
-                    print(f"  Board reference pose recorded ({len(board_pose_recent)} frames averaged).")
-                else:
-                    print("  WARNING: board not detected at capture time — "
-                          "turntable tracking will not be available until board is visible.")
-
             c_m = color_bgr.copy(); c_m[mask == 0] = 0
             n_m = normals_cached.copy(); n_m[mask == 0] = np.nan
             cache_disp = np.hstack([
@@ -1020,8 +881,7 @@ def main():
     print("\n--- Stage 2: Touch Recording ---")
     print(f"  ARuCO marker ID={GELSIGHT_MARKER_ID} (DICT_4X4_50), "
           f"size={args.marker_size*1000:.0f} mm")
-    _turntable_keys = "  t=turn turntable  " if aruco_board is not None else ""
-    print(f"  Keys: r=start recording  s=stop+save  a=abort  {_turntable_keys}q=quit")
+    print("  Keys: r=start recording  s=stop+save  a=abort  t=new view  q=quit")
 
     # Background thread drains the GelSight buffer so the main loop always
     # gets the latest frame instead of a buffered (lagging) one.
@@ -1128,13 +988,7 @@ def main():
             status_color = (0, 0, 255) if recording else (0, 200, 0)
             cv2.putText(zed_disp, status_text, (10, 22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, status_color, 2)
-            if aruco_board is not None:
-                cv2.putText(zed_disp, f"View: {cumulative_angle_deg:.1f}deg",
-                            (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 0), 1)
-            bottom_hint = "r=record  s=stop  a=abort  q=quit"
-            if aruco_board is not None:
-                bottom_hint += "  t=turn table"
-            cv2.putText(zed_disp, bottom_hint,
+            cv2.putText(zed_disp, "r=record  s=stop  a=abort  t=new view  q=quit",
                         (10, ZED_H - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
             # Cache display: segmented RGB | normals with contact dot
@@ -1179,181 +1033,116 @@ def main():
                 buffer = []
                 print(f"  [Touch #{touch_idx}] Recording started ...")
 
-            elif key == ord('t') and not recording and aruco_board is not None:
-                if T_board_0 is None:
-                    print("  WARNING: no board reference pose — press 'c' on a frame where "
-                          "the board is visible first.")
-                else:
-                    # ── Turntable tracking phase ──────────────────────────────
-                    # Show live ZED + board axes; user rotates table then presses 'c'.
-                    print("  [Turntable] Rotate the turntable, then press 'c' to capture "
-                          "new view.  Esc to cancel.")
-                    TRACK_WIN = ("Turntable: rotate table, then c=capture new view  |  "
-                                 "RGB (left)  Normals (right)")
-                    cv2.namedWindow(TRACK_WIN)
-                    board_pose_buf_t = []   # last 5 board poses for averaging
-                    right_bgr_t = None
-                    turntable_done = False
-                    try:
-                        while not turntable_done:
-                            if cam.grab(rt) != sl.ERROR_CODE.SUCCESS:
-                                continue
-                            cam.retrieve_image(image_sl, sl.VIEW.LEFT)
-                            cam.retrieve_measure(normals_sl, sl.MEASURE.NORMALS)
-                            cam.retrieve_measure(depth_sl, sl.MEASURE.DEPTH)
-                            if args.geometry_mode != "zed":
-                                cam.retrieve_image(image_r_sl, sl.VIEW.RIGHT)
-                                right_bgr_t = image_r_sl.get_data()[:, :, :3].copy()
-                            color_live_t = image_sl.get_data()[:, :, :3].copy()
-                            normals_np_t = normals_sl.get_data().copy()
-                            depth_raw_t  = depth_sl.get_data().copy()
-                            depth_m_t    = (depth_raw_t.squeeze()
-                                            if depth_raw_t.ndim == 3 else depth_raw_t)
+            elif key == ord('t') and not recording:
+                # ── New-view capture: re-run SAM (+ optional FS) at current turntable angle
+                print("  [New view] Rotate the turntable, then press 'c' to capture.  "
+                      "Esc to cancel.")
+                TRACK_WIN = "New view: c=capture  Esc=cancel  |  RGB (left)  Normals (right)"
+                cv2.namedWindow(TRACK_WIN)
+                right_bgr_t = None
+                turntable_done = False
+                try:
+                    while not turntable_done:
+                        if cam.grab(rt) != sl.ERROR_CODE.SUCCESS:
+                            continue
+                        cam.retrieve_image(image_sl, sl.VIEW.LEFT)
+                        cam.retrieve_measure(normals_sl, sl.MEASURE.NORMALS)
+                        cam.retrieve_measure(depth_sl, sl.MEASURE.DEPTH)
+                        if args.geometry_mode != "zed":
+                            cam.retrieve_image(image_r_sl, sl.VIEW.RIGHT)
+                            right_bgr_t = image_r_sl.get_data()[:, :, :3].copy()
+                        color_live_t = image_sl.get_data()[:, :, :3].copy()
+                        normals_np_t = normals_sl.get_data().copy()
+                        depth_raw_t  = depth_sl.get_data().copy()
+                        depth_m_t    = (depth_raw_t.squeeze()
+                                        if depth_raw_t.ndim == 3 else depth_raw_t)
 
-                            brd_corners_t, brd_rvec_t, brd_tvec_t = detect_board_pose_multi(
-                                color_live_t, board_detector, aruco_board,
-                                camera_matrix, dist_coeffs)
-                            if brd_rvec_t is not None:
-                                board_pose_buf_t.append(
-                                    board_pose_to_T(brd_rvec_t, brd_tvec_t))
-                                if len(board_pose_buf_t) > 5:
-                                    board_pose_buf_t.pop(0)
+                        c_d_t = cv2.resize(color_live_t, (ZED_DISPLAY_W, ZED_DISPLAY_H))
+                        n_d_t = cv2.resize(normals_to_colormap(normals_np_t),
+                                           (ZED_DISPLAY_W, ZED_DISPLAY_H))
+                        track_grid = np.hstack([c_d_t, n_d_t])
+                        cv2.putText(track_grid, "c=capture  Esc=cancel",
+                                    (10, ZED_DISPLAY_H - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+                        cv2.imshow(TRACK_WIN, track_grid)
 
-                            c_d_t = cv2.resize(color_live_t, (ZED_DISPLAY_W, ZED_DISPLAY_H))
-                            n_d_t = cv2.resize(normals_to_colormap(normals_np_t),
-                                               (ZED_DISPLAY_W, ZED_DISPLAY_H))
-                            if brd_rvec_t is not None:
-                                cm_d_t = np.array(
-                                    [[intr["fx"] * ZED_DISPLAY_W / ZED_W, 0,
-                                      intr["cx"] * ZED_DISPLAY_W / ZED_W],
-                                     [0, intr["fy"] * ZED_DISPLAY_H / ZED_H,
-                                      intr["cy"] * ZED_DISPLAY_H / ZED_H],
-                                     [0, 0, 1]], dtype=np.float64)
-                                cv2.drawFrameAxes(c_d_t, cm_d_t, dist_coeffs,
-                                                  brd_rvec_t, brd_tvec_t,
-                                                  board_marker_size * 0.5)
-                            track_grid = np.hstack([c_d_t, n_d_t])
-                            brd_vis_txt = ("Board: visible" if brd_rvec_t is not None
-                                           else "Board: NOT visible")
-                            brd_vis_col = ((0, 255, 0) if brd_rvec_t is not None
-                                           else (0, 0, 255))
-                            cv2.putText(track_grid, brd_vis_txt, (10, 30),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, brd_vis_col, 2)
-                            cv2.putText(track_grid, "c=capture  Esc=cancel",
-                                        (10, ZED_DISPLAY_H - 10),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
-                            cv2.imshow(TRACK_WIN, track_grid)
-
-                            key_t = cv2.waitKey(1) & 0xFF
-                            if key_t == 27:  # Esc
-                                print("  [Turntable] Cancelled.")
-                                break
-                            elif key_t == ord('c'):
-                                if not board_pose_buf_t:
-                                    print("  [Turntable] Board not visible — "
-                                          "ensure markers are in frame first.")
-                                    continue
-                                T_board_cur = average_board_poses(board_pose_buf_t)
-
-                                # FS inference if enabled (mirrors Stage 1 'c' logic)
-                                normals_for_sel_t = normals_np_t
-                                fs_depth_t = None
-                                fs_normals_t = None
-                                if args.geometry_mode != "zed" and right_bgr_t is not None:
-                                    banner_t = track_grid.copy()
-                                    cv2.putText(banner_t,
-                                                f"Running {args.geometry_mode}…",
-                                                (10, ZED_DISPLAY_H // 2),
-                                                cv2.FONT_HERSHEY_SIMPLEX,
-                                                0.7, (0, 200, 255), 2)
-                                    cv2.imshow(TRACK_WIN, banner_t)
-                                    cv2.waitKey(1)
-                                    print(f"  Running {args.geometry_mode} for depth/normals...")
-                                    left_rgb_t  = cv2.cvtColor(color_live_t,
-                                                                cv2.COLOR_BGR2RGB)
-                                    right_rgb_t = cv2.cvtColor(right_bgr_t,
-                                                                cv2.COLOR_BGR2RGB)
-                                    _, fs_dl_t, fs_xyz_t = run_inference(
-                                        fs_model, args.geometry_mode,
-                                        left_rgb_t, right_rgb_t,
-                                        intr, fs_baseline, args.fs_scale,
-                                        args.fs_valid_iters, z_near=0.1, z_far=5.0)
-                                    if fs_dl_t.shape != (ZED_H, ZED_W):
-                                        fs_depth_t = cv2.resize(
-                                            fs_dl_t, (ZED_W, ZED_H),
-                                            interpolation=cv2.INTER_LINEAR)
-                                        fs_n_lr = normals_from_xyz(fs_xyz_t)
-                                        fs_normals_t = cv2.resize(
-                                            fs_n_lr, (ZED_W, ZED_H),
-                                            interpolation=cv2.INTER_LINEAR)
-                                        nrms = np.linalg.norm(
-                                            fs_normals_t, axis=2, keepdims=True)
-                                        fs_normals_t = np.where(
-                                            nrms > 1e-8,
-                                            fs_normals_t / nrms, 0.0).astype(np.float32)
-                                    else:
-                                        fs_depth_t = fs_dl_t
-                                        fs_normals_t = normals_from_xyz(fs_xyz_t)
-                                    fs_normals_t[~np.isfinite(fs_depth_t)] = np.nan
-                                    normals_for_sel_t = fs_normals_t
-                                    print("  FS geometry ready.")
-
-                                # SAM segmentation for the new view
-                                new_mask = run_object_selection(
-                                    color_live_t, normals_for_sel_t, predictor)
-                                if new_mask is None:
-                                    print("  Object selection cancelled — try again.")
-                                    continue  # let user press 'c' again
-
-                                # Compute camera-frame step rotation and correction
-                                R_cur_cam  = T_board_cur[:3, :3]
-                                R_prev_cam = T_board_0[:3, :3]
-                                # Step rotation in camera frame: R_step_cam = R_cur @ R_prev^T
-                                R_step_cam = R_cur_cam @ R_prev_cam.T
-                                step_angle_deg = float(np.degrees(np.arccos(
-                                    np.clip((np.trace(R_step_cam) - 1) / 2.0, -1.0, 1.0))))
-                                # Correction = R_board_initial @ R_cur^T (maps cur-frame → initial-frame)
-                                R_cumulative = R_board_initial @ R_cur_cam.T
-                                cumulative_angle_deg = float(np.degrees(np.arccos(
-                                    np.clip((np.trace(R_cumulative) - 1) / 2.0,
-                                            -1.0, 1.0))))
-                                T_board_0 = T_board_cur
-                                print(f"  [Turntable] Step: {step_angle_deg:.1f}deg  "
-                                      f"cumulative: {cumulative_angle_deg:.1f}deg")
-
-                                # Choose normals/depth (FS or ZED)
-                                if args.geometry_mode != "zed" and fs_depth_t is not None:
-                                    invalid_t = ((new_mask == 0)
-                                                 | ~np.isfinite(fs_depth_t))
-                                    fs_normals_t[invalid_t] = np.nan
-                                    fs_depth_t[invalid_t] = np.nan
-                                    normals_raw_t = fs_normals_t
-                                    depth_new_t   = fs_depth_t
+                        key_t = cv2.waitKey(1) & 0xFF
+                        if key_t == 27:  # Esc
+                            print("  [New view] Cancelled.")
+                            break
+                        elif key_t == ord('c'):
+                            # FS inference if enabled (mirrors Stage 1 'c' logic)
+                            normals_for_sel_t = normals_np_t
+                            fs_depth_t = None
+                            fs_normals_t = None
+                            if args.geometry_mode != "zed" and right_bgr_t is not None:
+                                banner_t = track_grid.copy()
+                                cv2.putText(banner_t,
+                                            f"Running {args.geometry_mode}…",
+                                            (10, ZED_DISPLAY_H // 2),
+                                            cv2.FONT_HERSHEY_SIMPLEX,
+                                            0.7, (0, 200, 255), 2)
+                                cv2.imshow(TRACK_WIN, banner_t)
+                                cv2.waitKey(1)
+                                print(f"  Running {args.geometry_mode} for depth/normals...")
+                                left_rgb_t  = cv2.cvtColor(color_live_t, cv2.COLOR_BGR2RGB)
+                                right_rgb_t = cv2.cvtColor(right_bgr_t, cv2.COLOR_BGR2RGB)
+                                _, fs_dl_t, fs_xyz_t = run_inference(
+                                    fs_model, args.geometry_mode,
+                                    left_rgb_t, right_rgb_t,
+                                    intr, fs_baseline, args.fs_scale,
+                                    args.fs_valid_iters, z_near=0.1, z_far=5.0)
+                                if fs_dl_t.shape != (ZED_H, ZED_W):
+                                    fs_depth_t = cv2.resize(
+                                        fs_dl_t, (ZED_W, ZED_H),
+                                        interpolation=cv2.INTER_LINEAR)
+                                    fs_n_lr = normals_from_xyz(fs_xyz_t)
+                                    fs_normals_t = cv2.resize(
+                                        fs_n_lr, (ZED_W, ZED_H),
+                                        interpolation=cv2.INTER_LINEAR)
+                                    nrms = np.linalg.norm(
+                                        fs_normals_t, axis=2, keepdims=True)
+                                    fs_normals_t = np.where(
+                                        nrms > 1e-8,
+                                        fs_normals_t / nrms, 0.0).astype(np.float32)
                                 else:
-                                    normals_raw_t = normals_np_t
-                                    depth_new_t   = depth_m_t
+                                    fs_depth_t = fs_dl_t
+                                    fs_normals_t = normals_from_xyz(fs_xyz_t)
+                                fs_normals_t[~np.isfinite(fs_depth_t)] = np.nan
+                                normals_for_sel_t = fs_normals_t
+                                print("  FS geometry ready.")
 
-                                # Rotate normals back to initial reference frame
-                                normals_rotated = rotate_normals_to_initial_frame(
-                                    normals_raw_t, R_cumulative)
-                                normals_cached   = normals_rotated
-                                depth_cached     = depth_new_t
-                                mask_cached      = new_mask
-                                color_bgr_cached = color_live_t
+                            # SAM segmentation for the new view
+                            new_mask = run_object_selection(
+                                color_live_t, normals_for_sel_t, predictor)
+                            if new_mask is None:
+                                print("  Object selection cancelled — try again.")
+                                continue  # let user press 'c' again
 
-                                c_m = color_live_t.copy(); c_m[new_mask == 0] = 0
-                                n_m = normals_rotated.copy(); n_m[new_mask == 0] = np.nan
-                                cache_disp_base = np.hstack(
-                                    [c_m, normals_to_colormap(n_m)])
+                            # Update cache in current camera frame (no rotation)
+                            if args.geometry_mode != "zed" and fs_depth_t is not None:
+                                invalid_t = (new_mask == 0) | ~np.isfinite(fs_depth_t)
+                                fs_normals_t[invalid_t] = np.nan
+                                fs_depth_t[invalid_t] = np.nan
+                                normals_cached   = fs_normals_t
+                                depth_cached     = fs_depth_t
+                            else:
+                                normals_cached   = normals_np_t
+                                depth_cached     = depth_m_t
+                            mask_cached      = new_mask
+                            color_bgr_cached = color_live_t
 
-                                normal_prev = color_prev = height_prev = None
-                                contact_mask_prev = None
-                                last_px_py = None
-                                print(f"  [Turntable] Cache updated. "
-                                      f"View: {cumulative_angle_deg:.1f}deg from initial.")
-                                turntable_done = True
-                    finally:
-                        cv2.destroyWindow(TRACK_WIN)
+                            c_m = color_live_t.copy(); c_m[new_mask == 0] = 0
+                            n_m = normals_cached.copy(); n_m[new_mask == 0] = np.nan
+                            cache_disp_base = np.hstack([c_m, normals_to_colormap(n_m)])
+
+                            normal_prev = color_prev = height_prev = None
+                            contact_mask_prev = None
+                            last_px_py = None
+                            print("  [New view] Cache updated.")
+                            turntable_done = True
+                finally:
+                    cv2.destroyWindow(TRACK_WIN)
 
             elif key == ord('a') and recording:
                 recording = False
@@ -1473,8 +1262,6 @@ def main():
                         "n_raw_frames": n_buf,
                         "n_resampled_frames": len(resampled),
                         "render_scale": args.render_scale,
-                        "view_angle_deg": cumulative_angle_deg,
-                        "R_cumulative": R_cumulative.tolist(),
                     }, f, indent=2)
 
                 print(f"  Saved touch #{touch_idx}: "
