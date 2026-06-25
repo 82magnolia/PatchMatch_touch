@@ -213,7 +213,7 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
 def reprocess(session_dir, output_dir, seg_threshold, min_gap_frames,
               peak_ratio, num_frames, render_mask_type, mask_temperature,
               render_mask_thres, inpaint_method, render_scale_list,
-              dry_run, smooth_sigma=2.0):
+              dry_run, smooth_sigma=2.0, merge_gap=0, boundary_pad=0):
     """Load saved session and re-process with the given parameters."""
     from scipy.ndimage import gaussian_filter1d
 
@@ -279,7 +279,9 @@ def reprocess(session_dir, output_dir, seg_threshold, min_gap_frames,
     smooth_diffs = gaussian_filter1d(diffs_arr, sigma=smooth_sigma)
     segments = segment_contacts(smooth_diffs, seg_threshold,
                                 min_gap_frames=min_gap_frames,
-                                peak_ratio=peak_ratio)
+                                peak_ratio=peak_ratio,
+                                merge_gap=merge_gap,
+                                boundary_pad=boundary_pad)
     n_seg = len(segments)
     print(f"Found {n_seg} contact segment(s) in {len(diffs_arr)} frames.")
 
@@ -351,8 +353,16 @@ def parse_args():
                    help="Diff-from-blank threshold for segment detection (default: 0.015)")
     p.add_argument("--min_gap_frames", type=int, default=10,
                    help="Min idle gap between segments in frames (default: 10)")
-    p.add_argument("--peak_ratio", type=float, default=0.4,
-                   help="Contact boundary sensitivity (default: 0.4)")
+    p.add_argument("--merge_gap", type=int, default=0,
+                   help="Merge consecutive segments whose gap is <= this many frames; "
+                        "use >= 1 to collapse multi-peak contacts into one (default: 0)")
+    p.add_argument("--boundary_pad", type=int, default=0,
+                   help="Extra frames added before cs_idx and after ce_idx of each "
+                        "detected segment (default: 0)")
+    p.add_argument("--peak_ratio", type=float, default=0.2,
+                   help="Contact boundary threshold as a fraction between seg_threshold "
+                        "and the peak: threshold = seg_threshold + (peak - seg_threshold) "
+                        "* peak_ratio (default: 0.2)")
     p.add_argument("--num_frames", type=int, default=None,
                    help="Output frames per contact event (default: 50)")
     p.add_argument("--render_mask_thres", type=float, default=RENDER_MASK_THRES_M,
@@ -382,7 +392,9 @@ def main():
         render_mask_thres=args.render_mask_thres,
         inpaint_method=args.inpaint_method,
         render_scale_list=args.render_scale,
-        dry_run=args.dry_run)
+        dry_run=args.dry_run,
+        merge_gap=args.merge_gap,
+        boundary_pad=args.boundary_pad)
 
 
 if __name__ == "__main__":

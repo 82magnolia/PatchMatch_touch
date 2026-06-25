@@ -82,7 +82,9 @@ def _frame_diff(frame_bgr, blank_bgr):
 PLOT_Y_MAX = 0.1  # fixed y-axis ceiling for the live rolling diff plot
 
 def _render_rolling_plot(diffs, seg_threshold, width=PLOT_W, height=PLOT_H,
-                         window=PLOT_WINDOW, y_max=PLOT_Y_MAX):
+                         window=PLOT_WINDOW, y_max=PLOT_Y_MAX,
+                         min_gap_frames=10, peak_ratio=0.2, merge_gap=0,
+                         boundary_pad=0):
     """Render a rolling waveform of the last `window` diffs with threshold line and segment boundaries."""
     from scipy.ndimage import gaussian_filter1d
     diffs_show = np.array(diffs[-window:], dtype=np.float32)
@@ -111,7 +113,11 @@ def _render_rolling_plot(diffs, seg_threshold, width=PLOT_W, height=PLOT_H,
 
     # Detect and overlay all segment boundaries in the visible window
     if seg_threshold > 0:
-        segments = segment_contacts(smooth_plot, seg_threshold, min_gap_frames=5)
+        segments = segment_contacts(smooth_plot, seg_threshold,
+                                    min_gap_frames=min_gap_frames,
+                                    peak_ratio=peak_ratio,
+                                    merge_gap=merge_gap,
+                                    boundary_pad=boundary_pad)
         n_plot = len(diffs_plot)
         for cs, ce, pk, _ in segments:
             for idx_val, color in [(cs, (0, 255, 0)), (ce, (0, 255, 0)), (pk, (0, 255, 255))]:
@@ -286,7 +292,8 @@ def process_session(gs_buffer, pose_buffer, blank_frame,
                     intr, inpaint_method, render_scale_list,
                     seg_threshold, min_gap_frames,
                     num_frames, render_mask_type, mask_temperature,
-                    save_dir, peak_ratio=0.4, smooth_sigma=2.0):
+                    save_dir, peak_ratio=0.4, smooth_sigma=2.0, merge_gap=0,
+                    boundary_pad=0):
     """Segment the full session and save each contact event.
 
     object_caches: list of (normals, color, mask, depth) dicts, one per view.
@@ -305,7 +312,9 @@ def process_session(gs_buffer, pose_buffer, blank_frame,
 
     segments = segment_contacts(smooth_diffs, seg_threshold,
                                 min_gap_frames=min_gap_frames,
-                                peak_ratio=peak_ratio)
+                                peak_ratio=peak_ratio,
+                                merge_gap=merge_gap,
+                                boundary_pad=boundary_pad)
     print(f"  Found {len(segments)} contact segment(s).")
 
     # Lookup helper: which view covers a given session frame index
@@ -363,8 +372,16 @@ def parse_args():
                         "seg_threshold: threshold = median + alpha (default: 0.01)")
     p.add_argument("--min_gap_frames", type=int, default=10,
                    help="Min idle gap in frames between segments (default: 10)")
-    p.add_argument("--peak_ratio", type=float, default=0.4,
-                   help="Contact boundary peak_ratio (default: 0.4)")
+    p.add_argument("--merge_gap", type=int, default=0,
+                   help="Merge consecutive segments whose gap is <= this many frames; "
+                        "use >= 1 to collapse multi-peak contacts into one (default: 0)")
+    p.add_argument("--boundary_pad", type=int, default=0,
+                   help="Extra frames added before cs_idx and after ce_idx of each "
+                        "detected segment (default: 0)")
+    p.add_argument("--peak_ratio", type=float, default=0.2,
+                   help="Contact boundary threshold as a fraction between seg_threshold "
+                        "and the peak: threshold = seg_threshold + (peak - seg_threshold) "
+                        "* peak_ratio (default: 0.2)")
     p.add_argument("--border_fraction", type=float, default=0.15)
     p.add_argument("--inpaint_method", default="telea",
                    choices=["telea", "ns", "nearest"])
@@ -664,7 +681,11 @@ def main():
             # Rolling diff plot
             thr_display = seg_threshold if seg_threshold is not None else 0.0
             plot_img = _render_rolling_plot(diffs_live, thr_display,
-                                            width=PLOT_W, height=PLOT_H)
+                                            width=PLOT_W, height=PLOT_H,
+                                            min_gap_frames=args.min_gap_frames,
+                                            peak_ratio=args.peak_ratio,
+                                            merge_gap=args.merge_gap,
+                                            boundary_pad=args.boundary_pad)
             if calibrating:
                 remaining = args.calib_frames - len(diffs_live)
                 cv2.putText(plot_img, f"Computing seg_threshold... ({remaining} frames left)",
@@ -832,7 +853,9 @@ def main():
         render_mask_type=args.render_mask_type,
         mask_temperature=args.mask_temperature,
         save_dir=args.save_dir,
-        peak_ratio=args.peak_ratio)
+        peak_ratio=args.peak_ratio,
+        merge_gap=args.merge_gap,
+        boundary_pad=args.boundary_pad)
 
     print(f"\nDone. {saved} touch(es) saved to: {args.save_dir}")
 
