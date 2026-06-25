@@ -375,7 +375,7 @@ def parse_args():
     p.add_argument("--merge_gap", type=int, default=0,
                    help="Merge consecutive segments whose gap is <= this many frames; "
                         "use >= 1 to collapse multi-peak contacts into one (default: 0)")
-    p.add_argument("--boundary_pad", type=int, default=3,
+    p.add_argument("--boundary_pad", type=int, default=10,
                    help="Extra frames added before cs_idx and after ce_idx of each "
                         "detected segment (default: 0)")
     p.add_argument("--peak_ratio", type=float, default=0.01,
@@ -607,6 +607,8 @@ def main():
     seg_threshold = args.seg_threshold  # None → auto-calibrate
     calibrating   = seg_threshold is None
 
+    ortho_mid_panels = []  # updated on every fresh ARuCO detection
+
     # VideoWriter opened immediately; written frame by frame during Stage 2
     session_mp4_path = os.path.join(args.save_dir, "session_gs.mp4")
     session_writer = cv2.VideoWriter(
@@ -653,7 +655,7 @@ def main():
                 last_tvec.copy() if last_tvec is not None else None,
             ))
 
-            # ZED display
+            # ZED display + live ortho projection (on every fresh ARuCO detection)
             vis = color_live.copy()
             if rvec is not None:
                 cv2.drawFrameAxes(vis, camera_matrix, dist_coeffs,
@@ -661,6 +663,29 @@ def main():
                 px_py = compute_contact_pixel(rvec, tvec, intr)
                 if px_py is not None:
                     cv2.circle(vis, px_py, 8, (0, 0, 255), -1)
+                aligned_rvec = _rotate_rvec_z(rvec, R_z)
+                res = ortho_project_raw(
+                    normals_cached, color_bgr_cached, mask_cached,
+                    depth_cached, intr, args.inpaint_method,
+                    rvec=aligned_rvec, tvec=tvec)
+                if res is not None:
+                    ortho_mid_panels = [
+                        _label_panel(res[0], "normal"),
+                        _label_panel(res[2], "color"),
+                    ]
+                    for scale in args.render_scale:
+                        if np.isclose(scale, 1.0):
+                            continue
+                        sr = ortho_project_raw(
+                            normals_cached, color_bgr_cached, mask_cached,
+                            depth_cached, intr, args.inpaint_method,
+                            rvec=aligned_rvec, tvec=tvec,
+                            render_scale=scale)
+                        if sr is not None:
+                            ortho_mid_panels.append(
+                                _label_panel(sr[0], f"\xd7{scale:.2g} normal"))
+                            ortho_mid_panels.append(
+                                _label_panel(sr[2], f"\xd7{scale:.2g} color"))
             else:
                 cv2.putText(vis, "Marker ID=6 not found",
                             (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
@@ -715,7 +740,7 @@ def main():
                 top_panels.append(_label_panel(
                     cv2.resize(cache_disp, (ZED_W, ZED_H // 2)), "Object cache"))
             top_row = _hstack_padded(top_panels)
-            mid_row = _hstack_padded([gs_disp])
+            mid_row = _hstack_padded([gs_disp] + ortho_mid_panels)
             dashboard = _vstack_padded([top_row, mid_row, plot_img])
             cv2.imshow(DASHBOARD_WIN, dashboard)
 
@@ -810,6 +835,7 @@ def main():
                             depth_cached = dc_t
 
                             print(f"  [New view] Cache updated (view {current_view_idx}).")
+                            ortho_mid_panels = []
                             done_t = True
                 finally:
                     cv2.destroyWindow(TRACK_WIN)
