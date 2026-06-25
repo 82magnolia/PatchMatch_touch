@@ -379,8 +379,8 @@ def parse_args():
                         "* peak_ratio (default: 0.2)")
     p.add_argument("--num_frames", type=int, default=None,
                    help="Output frames per contact event (default: 50)")
-    p.add_argument("--render_mask_thres", type=float, default=RENDER_MASK_THRES_M,
-                   help=f"Height threshold for render mask (default: {RENDER_MASK_THRES_M})")
+    p.add_argument("--render_mask_thres", type=float, default=-0.005,
+                   help="Height threshold in metres for contact mask (default: -0.005)")
     p.add_argument("--render_mask_type", choices=["hard", "soft"], default="hard")
     p.add_argument("--mask_temperature", type=float, default=0.002)
     p.add_argument("--inpaint_method", default="telea",

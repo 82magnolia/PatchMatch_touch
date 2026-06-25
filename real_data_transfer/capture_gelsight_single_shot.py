@@ -130,7 +130,7 @@ def _save_segment(touch_idx, gs_buffer, pose_buffer, blank_frame,
                   intr, inpaint_method, render_scale_list,
                   seg_cs, seg_ce, seg_peak, seg_trim_threshold,
                   num_frames, render_mask_type, mask_temperature,
-                  save_dir, view_idx):
+                  render_mask_thres, save_dir, view_idx):
     """Process one detected segment and save all outputs.
 
     Returns True on success, False if ortho projection fails.
@@ -191,7 +191,7 @@ def _save_segment(touch_idx, gs_buffer, pose_buffer, blank_frame,
         rm_frames = make_render_mask_video(
             hmap_0, vdr_0, mc_0, sz_0, cs_tvec,
             pose_contact, num_frames,
-            render_mask_thres=RENDER_MASK_THRES_M,
+            render_mask_thres=render_mask_thres,
             render_mask_type=render_mask_type,
             mask_temperature=mask_temperature)
     else:
@@ -289,8 +289,8 @@ def process_session(gs_buffer, pose_buffer, blank_frame,
                     intr, inpaint_method, render_scale_list,
                     seg_threshold, min_gap_frames,
                     num_frames, render_mask_type, mask_temperature,
-                    save_dir, peak_ratio=0.4, smooth_sigma=2.0, merge_gap=0,
-                    boundary_pad=0):
+                    render_mask_thres, save_dir, peak_ratio=0.4, smooth_sigma=2.0,
+                    merge_gap=0, boundary_pad=0):
     """Segment the full session and save each contact event.
 
     object_caches: list of (normals, color, mask, depth) dicts, one per view.
@@ -334,7 +334,7 @@ def process_session(gs_buffer, pose_buffer, blank_frame,
             intr, inpaint_method, render_scale_list,
             cs, ce, peak, trim_thr,
             num_frames, render_mask_type, mask_temperature,
-            save_dir, view_idx=vid)
+            render_mask_thres, save_dir, view_idx=vid)
         if ok:
             saved += 1
             print("saved.")
@@ -384,6 +384,8 @@ def parse_args():
                    choices=["telea", "ns", "nearest"])
     p.add_argument("--render_scale", type=float, nargs="+", default=[1.0])
     p.add_argument("--render_mask_type", choices=["hard", "soft"], default="hard")
+    p.add_argument("--render_mask_thres", type=float, default=-0.005,
+                   help="Height threshold in metres for contact mask (default: -0.005)")
     p.add_argument("--mask_temperature", type=float, default=0.002)
     p.add_argument("--save_dir", default="log/gelsight_captures")
     p.add_argument("--geometry_mode",
@@ -885,6 +887,7 @@ def main():
         num_frames=args.num_frames,
         render_mask_type=args.render_mask_type,
         mask_temperature=args.mask_temperature,
+        render_mask_thres=args.render_mask_thres,
         save_dir=args.save_dir,
         peak_ratio=args.peak_ratio,
         merge_gap=args.merge_gap,
