@@ -356,10 +356,10 @@ def parse_args():
     p.add_argument("--merge_gap", type=int, default=0,
                    help="Merge consecutive segments whose gap is <= this many frames; "
                         "use >= 1 to collapse multi-peak contacts into one (default: 0)")
-    p.add_argument("--boundary_pad", type=int, default=0,
+    p.add_argument("--boundary_pad", type=int, default=3,
                    help="Extra frames added before cs_idx and after ce_idx of each "
                         "detected segment (default: 0)")
-    p.add_argument("--peak_ratio", type=float, default=0.2,
+    p.add_argument("--peak_ratio", type=float, default=0.01,
                    help="Contact boundary threshold as a fraction between seg_threshold "
                         "and the peak: threshold = seg_threshold + (peak - seg_threshold) "
                         "* peak_ratio (default: 0.2)")
