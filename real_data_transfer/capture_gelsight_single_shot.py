@@ -335,8 +335,16 @@ def parse_args():
     p.add_argument("--marker_size", type=float, default=0.037)
     p.add_argument("--num_frames", type=int, default=50,
                    help="Output frames per contact event (default: 50)")
-    p.add_argument("--seg_threshold", type=float, default=0.015,
-                   help="Diff-from-blank threshold for segment detection (default: 0.015)")
+    p.add_argument("--seg_threshold", type=float, default=None,
+                   help="Diff-from-blank threshold for segment detection. "
+                        "If omitted, computed automatically from the first "
+                        "--calib_frames frames as median + --calib_alpha.")
+    p.add_argument("--calib_frames", type=int, default=15,
+                   help="Number of no-touch frames at Stage 2 start used to "
+                        "auto-compute seg_threshold (default: 30)")
+    p.add_argument("--calib_alpha", type=float, default=0.01,
+                   help="Margin added to the calibration median to set "
+                        "seg_threshold: threshold = median + alpha (default: 0.01)")
     p.add_argument("--min_gap_frames", type=int, default=10,
                    help="Min idle gap in frames between segments (default: 10)")
     p.add_argument("--peak_ratio", type=float, default=0.4,
@@ -558,6 +566,9 @@ def main():
     diffs_live  = []
     last_rvec   = last_tvec = None
 
+    seg_threshold = args.seg_threshold  # None → auto-calibrate
+    calibrating   = seg_threshold is None
+
     # VideoWriter opened immediately; written frame by frame during Stage 2
     session_mp4_path = os.path.join(args.save_dir, "session_gs.mp4")
     session_writer = cv2.VideoWriter(
@@ -586,6 +597,15 @@ def main():
 
             d = _frame_diff(gs_frame, blank_frame)
             diffs_live.append(d)
+
+            # Auto-calibrate seg_threshold from the first N no-touch frames
+            if calibrating and len(diffs_live) >= args.calib_frames:
+                seg_threshold = float(np.median(diffs_live[:args.calib_frames])) \
+                    + args.calib_alpha
+                calibrating = False
+                print(f"  seg_threshold auto-set to {seg_threshold:.4f} "
+                      f"(median={seg_threshold - args.calib_alpha:.4f} "
+                      f"+ alpha={args.calib_alpha})")
 
             # ARuCO detection
             rvec, tvec = detect_gelsight_marker(
@@ -623,12 +643,20 @@ def main():
             gs_disp = _label_panel(gs_frame.copy(), "GelSight live")
 
             # Rolling diff plot
-            plot_img = _render_rolling_plot(diffs_live, args.seg_threshold,
+            thr_display = seg_threshold if seg_threshold is not None else 0.0
+            plot_img = _render_rolling_plot(diffs_live, thr_display,
                                             width=PLOT_W, height=PLOT_H)
-            n_seg_str = ""
+            if calibrating:
+                remaining = args.calib_frames - len(diffs_live)
+                cv2.putText(plot_img, f"Computing seg_threshold... ({remaining} frames left)",
+                            (10, PLOT_H // 2), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6, (0, 0, 255), 2)
+                thr_label = "threshold=calibrating"
+            else:
+                thr_label = f"threshold={thr_display:.4f}"
             plot_img = _label_panel(plot_img,
-                                    f"Diff-from-blank  threshold={args.seg_threshold:.3f}"
-                                    f"  view={current_view_idx}{n_seg_str}")
+                                    f"Diff-from-blank  {thr_label}"
+                                    f"  view={current_view_idx}")
 
             # Cache panel (segmented object)
             cache_disp = None
@@ -779,7 +807,7 @@ def main():
         gs_buffer, pose_buffer, blank_frame,
         object_caches, view_boundaries,
         intr, args.inpaint_method, args.render_scale,
-        seg_threshold=args.seg_threshold,
+        seg_threshold=seg_threshold if seg_threshold is not None else args.calib_alpha,
         min_gap_frames=args.min_gap_frames,
         num_frames=args.num_frames,
         render_mask_type=args.render_mask_type,
