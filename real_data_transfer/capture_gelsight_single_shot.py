@@ -83,7 +83,8 @@ PLOT_Y_MAX = 0.1  # fixed y-axis ceiling for the live rolling diff plot
 
 def _render_rolling_plot(diffs, seg_threshold, width=PLOT_W, height=PLOT_H,
                          window=PLOT_WINDOW, y_max=PLOT_Y_MAX):
-    """Render a rolling waveform of the last `window` diffs with threshold line."""
+    """Render a rolling waveform of the last `window` diffs with threshold line and segment boundaries."""
+    from scipy.ndimage import gaussian_filter1d
     diffs_show = np.array(diffs[-window:], dtype=np.float32)
     n = len(diffs_show)
     if n < 2:
@@ -91,17 +92,31 @@ def _render_rolling_plot(diffs, seg_threshold, width=PLOT_W, height=PLOT_H,
         ty = int((1.0 - min(seg_threshold, y_max) / y_max) * (height - 1))
         cv2.line(img, (0, ty), (width - 1, ty), (0, 0, 255), 1)
         return img
-    # pad to fixed width with zeros on left if shorter
+    # Pad to fixed width with zeros on left if shorter
+    pad_offset = max(0, width - n)
     if n < width:
-        pad = np.zeros(width - n, dtype=np.float32)
+        pad = np.zeros(pad_offset, dtype=np.float32)
         diffs_plot = np.concatenate([pad, diffs_show])
     else:
         diffs_plot = diffs_show[-width:]
-    smooth_plot = diffs_plot  # raw diffs for live display
-    return _render_diff_plot(
+        pad_offset = 0
+    smooth_plot = gaussian_filter1d(diffs_plot, sigma=2.0)
+
+    # Draw curves + threshold line (no segment markers yet)
+    img = _render_diff_plot(
         diffs_plot, smooth_plot,
         cs_idx=None, ce_idx=None, peak_idx=None,
         threshold=seg_threshold, width=width, height=height, y_max=y_max)
+
+    # Detect and overlay all segment boundaries in the visible window
+    if seg_threshold > 0:
+        segments = segment_contacts(smooth_plot, seg_threshold, min_gap_frames=5)
+        n_plot = len(diffs_plot)
+        for cs, ce, pk, _ in segments:
+            for idx_val, color in [(cs, (0, 255, 0)), (ce, (0, 255, 0)), (pk, (0, 255, 255))]:
+                x = int(idx_val / (n_plot - 1) * (width - 1))
+                cv2.line(img, (x, 0), (x, height - 1), color, 1)
+    return img
 
 
 # ── Per-segment save ──────────────────────────────────────────────────────────

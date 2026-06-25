@@ -342,20 +342,22 @@ def segment_contacts(smooth_diffs, seg_threshold, min_gap_frames=10,
     """Find contact events in a continuous smooth diff-from-blank trace.
 
     Returns list of (cs_idx, ce_idx, peak_idx, trim_threshold) for each event.
-    Overlapping windows are resolved by keeping whichever was found first.
+    Each cs search is bounded to start after the previous segment's ce, so
+    windows never overlap and no post-hoc filtering is needed.
     """
     from scipy.signal import find_peaks
 
     peaks, _ = find_peaks(smooth_diffs, height=seg_threshold,
                           distance=max(1, min_gap_frames))
     results = []
+    prev_ce = -1
     for peak_idx in peaks:
         peak_idx = int(peak_idx)
         peak_val = float(smooth_diffs[peak_idx])
         threshold = peak_val * peak_ratio
 
-        cs_idx = max(0, peak_idx - 1)
-        for i in range(peak_idx):
+        cs_idx = max(prev_ce + 1, peak_idx - 1)
+        for i in range(prev_ce + 1, peak_idx):
             if smooth_diffs[i] < threshold:
                 right = smooth_diffs[i + 1: i + 1 + n_neighbors]
                 if len(right) == n_neighbors and np.all(right > threshold):
@@ -369,13 +371,9 @@ def segment_contacts(smooth_diffs, seg_threshold, min_gap_frames=10,
                     ce_idx = j
 
         results.append((cs_idx, ce_idx, peak_idx, threshold))
+        prev_ce = ce_idx
 
-    # Remove overlapping windows (keep first)
-    merged = []
-    for seg in results:
-        if not merged or seg[0] > merged[-1][1]:
-            merged.append(seg)
-    return merged
+    return results
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────
