@@ -25,7 +25,6 @@ import sys
 import os
 import json
 import argparse
-import threading
 import numpy as np
 import cv2
 import torch
@@ -38,16 +37,14 @@ from _gelsight_processing import (
     write_video, make_render_mask_video, trim_and_resample,
     segment_contacts, _render_diff_plot, _format_scale,
     GELSIGHT_W, GELSIGHT_H, VIDEO_FPS, MASK_OPEN_PX,
-    RENDER_MASK_THRES_M, HEIGHT_CUTOFF_M, HEIGHT_MASK_THRES_M,
-    ARUCO_TO_CONTACT_M,
+    RENDER_MASK_THRES_M,
 )
 from capture_gelsight import (
     build_aruco_detector, detect_gelsight_marker, compute_contact_pixel,
     GelSightCapture, read_gelsight_frame,
     run_object_selection,
-    _label_panel, _blank_panel, _panel_or_blank,
-    _pad_to, _hstack_padded, _vstack_padded,
-    GELSIGHT_MARKER_ID, HOLDER_HEIGHT_M, GEL_THICKNESS_M,
+    _label_panel, _hstack_padded, _vstack_padded,
+    GELSIGHT_MARKER_ID,
     ZED_DISPLAY_W, ZED_DISPLAY_H, ZED_W, ZED_H,
 )
 from visualize_zed_normal_sim import build_camera, overlay_banner, DEPTH_MODES
@@ -864,6 +861,16 @@ def main():
                         diffs=diffs_arr)
     with open(os.path.join(args.save_dir, "session_views.json"), "w") as f:
         json.dump(view_boundaries, f, indent=2)
+    with open(os.path.join(args.save_dir, "session_meta.json"), "w") as f:
+        json.dump({
+            "seg_threshold": float(seg_threshold) if seg_threshold is not None else None,
+            "calib_alpha": args.calib_alpha,
+            "calib_frames": args.calib_frames,
+            "min_gap_frames": args.min_gap_frames,
+            "peak_ratio": args.peak_ratio,
+            "merge_gap": args.merge_gap,
+            "boundary_pad": args.boundary_pad,
+        }, f, indent=2)
     print(f"  session_gs.mp4  session_poses.npz  session_diffs.npz  "
           f"session_views.json  ({current_view_idx + 1} view(s))")
 

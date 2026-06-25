@@ -275,6 +275,19 @@ def reprocess(session_dir, output_dir, seg_threshold, min_gap_frames,
                 view_idx = vb["view_idx"]
         return view_idx
 
+    # Load session meta to recover the calibrated seg_threshold when the
+    # caller did not supply an explicit override.
+    meta_path = os.path.join(session_dir, "session_meta.json")
+    if seg_threshold is None and os.path.exists(meta_path):
+        with open(meta_path) as f:
+            session_meta = json.load(f)
+        seg_threshold = session_meta.get("seg_threshold")
+        if seg_threshold is not None:
+            print(f"  Using seg_threshold={seg_threshold:.4f} from session_meta.json")
+    if seg_threshold is None:
+        sys.exit("seg_threshold could not be determined. "
+                 "Pass --seg_threshold explicitly or re-run capture to generate session_meta.json.")
+
     # ── Segment ────────────────────────────────────────────────────────────
     smooth_diffs = gaussian_filter1d(diffs_arr, sigma=smooth_sigma)
     segments = segment_contacts(smooth_diffs, seg_threshold,
@@ -349,8 +362,9 @@ def parse_args():
                    help="Directory written by capture_gelsight_single_shot.py")
     p.add_argument("--output_dir", default=None,
                    help="Output directory (default: session_dir)")
-    p.add_argument("--seg_threshold", type=float, default=0.015,
-                   help="Diff-from-blank threshold for segment detection (default: 0.015)")
+    p.add_argument("--seg_threshold", type=float, default=None,
+                   help="Diff-from-blank threshold for segment detection. "
+                        "Defaults to the value saved in session_meta.json from capture.")
     p.add_argument("--min_gap_frames", type=int, default=10,
                    help="Min idle gap between segments in frames (default: 10)")
     p.add_argument("--merge_gap", type=int, default=0,
