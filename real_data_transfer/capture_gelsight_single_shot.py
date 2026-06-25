@@ -92,10 +92,11 @@ def _render_rolling_plot(diffs, seg_threshold, width=PLOT_W, height=PLOT_H,
         ty = int((1.0 - min(seg_threshold, y_max) / y_max) * (height - 1))
         cv2.line(img, (0, ty), (width - 1, ty), (0, 0, 255), 1)
         return img
-    # Pad to fixed width with zeros on left if shorter
+    # Pad to fixed width on left if shorter; use the first real value to avoid
+    # creating an artificial step that segment_contacts would detect as a contact.
     pad_offset = max(0, width - n)
     if n < width:
-        pad = np.zeros(pad_offset, dtype=np.float32)
+        pad = np.full(pad_offset, diffs_show[0], dtype=np.float32)
         diffs_plot = np.concatenate([pad, diffs_show])
     else:
         diffs_plot = diffs_show[-width:]
@@ -564,6 +565,11 @@ def main():
     print("  Keys: t=new turntable view  q=stop+process")
 
     gs_capture = GelSightCapture(gs_cap, args.border_fraction)
+    # Wait for the background thread to deliver its first frame before entering
+    # the loop — otherwise the very first read() returns None → zero frame →
+    # artificially large diff against the blank.
+    while gs_capture.read() is None:
+        pass
     R_z = _make_Rz(90)
 
     # Object caches and view tracking
@@ -603,8 +609,6 @@ def main():
 
             # GelSight grab
             gs_frame = gs_capture.read()
-            if gs_frame is None:
-                gs_frame = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
 
             # Buffer + write
             gs_buffer.append(gs_frame.copy())
