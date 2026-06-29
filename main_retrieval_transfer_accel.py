@@ -78,7 +78,7 @@ def load_static_image(folder, idx, modality, scale):
     Used for visualization only.
     """
     if scale is not None:
-        fname = f"{idx}_scale{scale}_{modality}.jpg"
+        fname = f"{idx}_scale{scale:g}_{modality}.jpg"
     else:
         fname = f"{idx}_{modality}.jpg"
     path = osp.join(folder, fname)
@@ -104,7 +104,7 @@ def load_static_raw(folder, idx, modality, scale):
 
     base = modality[len("raw_"):]          # e.g. "raw_normal" → "normal"
     if scale is not None:
-        fname = f"{idx}_scale{scale}_{base}.npz"
+        fname = f"{idx}_scale{scale:g}_{base}.npz"
     else:
         fname = f"{idx}_{base}.npz"
     path = osp.join(folder, fname)
@@ -521,9 +521,9 @@ def main():
     parser.add_argument("--video_type", required=True,
                         choices=["shadow", "sim"],
                         help="Touch video variant to transfer.")
-    parser.add_argument("--scale", default=None, type=int,
-                        help="Scale suffix in mm for static images (e.g. 25). "
-                             "Omit to use base-resolution files.")
+    parser.add_argument("--scale", default=None, type=float,
+                        help="Scale suffix for static images (e.g. 100 for Taxim, 0.5 for GelSight). "
+                             "Omit to use base-resolution files. Tag formatted with :g (100.0→'100', 0.5→'0.5').")
     parser.add_argument("--use_mask", action="store_true",
                         help="Composite transferred frames with the query mask video. "
                              "Requires {idx}_mask.mp4 in --query_dir.")
