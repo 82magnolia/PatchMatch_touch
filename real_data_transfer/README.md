@@ -890,3 +890,67 @@ After integration the mesh is shown in an interactive Open3D window; close it to
 - Start with the default `--voxel_size 0.002` (2 mm). For small objects or fine surface texture, try `0.001` (1 mm) — memory and compute scale roughly as voxel_size⁻³.
 - Turntable captures work best with ≥ 8 evenly-spaced angular positions (45° steps) to avoid holes on the back face.
 - If the mesh has floating fragments, open it in MeshLab and use *Filters → Cleaning → Remove Isolated Pieces* to discard small disconnected components.
+
+---
+
+## Capturing for `real_gt_retrieval` (PatchMatch pipeline)
+
+`transfer_pipeline.py --retrieval_mode real_gt_retrieval` expects a flat session directory where:
+
+- **Even-indexed** touches (0, 2, 4, …) are the **reference** locations
+- **Odd-indexed** touches (1, 3, 5, …) are the **query** locations
+- Each odd/even pair shares the same contact point: (0, 1), (2, 3), (4, 5), …
+
+The auto-generated TSV maps each odd query to its even reference (`1→0`, `3→2`, `5→4`).
+
+### Convention
+
+Touch index is assigned in save order, starting from 0 and incrementing by 1. To produce the correct pairing, capture alternately: **reference first, then query**, for each location.
+
+### Using `capture_gelsight.py` (manual `r`/`s` per touch)
+
+Press the sensor at a contact location twice in succession, saving each as a separate touch:
+
+1. Position sensor → press `r` → press at location A → press `s` → saved as **idx 0** (reference)
+2. Reposition sensor at the same location → press `r` → press at location A → press `s` → saved as **idx 1** (query)
+3. Move to location B → repeat: idx 2 (ref), idx 3 (query), …
+
+```bash
+python real_data_transfer/capture_gelsight.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --render_scale 0.5 1 2 \
+    --save_dir log/gelsight_captures/session_01
+```
+
+### Using `capture_gelsight_single_shot.py` (continuous recording)
+
+Touch the same location twice in sequence during the continuous recording. Post-hoc segmentation assigns consecutive indices, so a ref/query pair at location A produces idx 0 and idx 1:
+
+1. Start Stage 2 (leave 15 calibration frames with no contact)
+2. Press at location A → lift → press at location A again → lift → continue to location B → repeat
+3. Press `q` to stop; segmentation assigns idx 0 (ref), 1 (query), 2 (ref), 3 (query), …
+
+```bash
+python real_data_transfer/capture_gelsight_single_shot.py \
+    --sam_checkpoint log/sam_vit_b_01ec64.pth \
+    --render_scale 0.5 1 2 \
+    --min_gap_frames 10 \
+    --save_dir log/gelsight_captures/session_01
+```
+
+### Running the pipeline
+
+```bash
+python transfer_pipeline.py \
+    --ref_dir  log/gelsight_captures/session_01 \
+    --query_dir log/gelsight_captures/session_01 \
+    --scale 0.5 1 2 \
+    --retrieval_mode real_gt_retrieval \
+    --retrieval_modality normal \
+    --transfer_modality raw_normal \
+    --use_keyframe --use_accel --use_downsample_em \
+    --checkpoint log/rebot_checkpoints/best.pth --residual \
+    --save_dir log/pipeline/session_01_gt
+```
+
+`transfer_pipeline.py` auto-generates `log/pipeline/session_01_gt/odd_to_even.tsv` from the session directory, then runs retrieval → PatchMatch → ReBotNet in sequence.
