@@ -26,21 +26,44 @@ python demo.py --img_a data/ObjectFolder_touch/36/4_scale_50_normal.jpg --img_b 
 
 `transfer_pipeline.py` runs the full three-stage pipeline (retrieval → PatchMatch transfer → optional ReBotNet refinement) for a flat directory of N reference touches and M query touches.
 
-**i) Identity retrieval — Taxim single object**
+Four `--retrieval_mode` options are available:
 
-Uses a pre-specified identity TSV (query idx = ref idx), generated automatically when `--tsv` is omitted in `tsv` mode.
+| Mode | Description |
+|---|---|
+| `sim_gt_retrieval` | Auto-generates an identity TSV (query idx = ref idx). For Taxim synthetic data where reference and query are matched pairs. |
+| `real_gt_retrieval` | Auto-generates an odd→even TSV (odd idx = query, even idx = ref, e.g. 1→0, 3→2). For real GelSight captures stored in a single directory. |
+| `dinov2` | DINOv2 feature retrieval across all reference touches. Supports multi-modality and multi-scale feature concatenation. |
+| `tsv` | Explicit TSV file via `--tsv`. |
+
+**i) Taxim synthetic data — ground-truth identity retrieval (`sim_gt_retrieval`)**
+
+Auto-generates an identity TSV so each query is matched to the same-index reference.
 
 ```bash
 python transfer_pipeline.py \
     --ref_dir Taxim/results/gen_contact_full/52 \
     --query_dir Taxim/results/gen_contact_full_query/52 \
     --scale 100 \
-    --retrieval_mode tsv \
+    --retrieval_mode sim_gt_retrieval \
     --use_keyframe --use_accel --use_downsample_em \
     --save_dir log/pipeline/52
 ```
 
-**ii) Multi-modality DINOv2 retrieval — Taxim with ReBotNet**
+**ii) Real GelSight data — ground-truth paired retrieval (`real_gt_retrieval`)**
+
+Even-indexed captures are treated as reference, odd-indexed as query. Auto-generates an odd→even TSV (1→0, 3→2, …). Both `--ref_dir` and `--query_dir` point to the same session directory.
+
+```bash
+python transfer_pipeline.py \
+    --ref_dir log/gelsight_captures/session_01 \
+    --query_dir log/gelsight_captures/session_01 \
+    --scale 1 \
+    --retrieval_mode real_gt_retrieval \
+    --use_keyframe --use_accel --use_downsample_em \
+    --save_dir log/pipeline/session_01_gt
+```
+
+**iii) Multi-modality DINOv2 retrieval — Taxim with ReBotNet**
 
 Concatenates normal + curvature DINOv2 features for retrieval, then runs PatchMatch transfer and neural refinement.
 
@@ -57,7 +80,7 @@ python transfer_pipeline.py \
     --save_dir log/pipeline/52_dinov2
 ```
 
-**iii) Real GelSight data — multi-scale DINOv2 + residual ReBotNet**
+**iv) Real GelSight data — multi-scale DINOv2 + residual ReBotNet**
 
 Retrieval uses features from three render scales (0.5×, 1×, 2×) concatenated; ReBotNet runs in residual mode.
 

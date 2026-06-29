@@ -71,22 +71,53 @@ def _run(cmd, label):
     subprocess.run([str(c) for c in cmd], check=True)
 
 
-def _auto_identity_tsv(ref_dir, scale, modality, save_path):
-    """Scan ref_dir for touch indices and write an identity TSV (query idx = ref idx)."""
+def _discover_or_exit(ref_dir, scale, modality):
     from retrieve_touch import discover_files
     entries = discover_files(ref_dir, modality, scale)
     if not entries:
         scale_str = f"_scale{scale:g}_" if scale is not None else "_"
-        sys.exit(
+        raise SystemExit(
             f"[auto-TSV] No files matching '{{idx}}{scale_str}{modality}.jpg' "
             f"found in {ref_dir}"
         )
+    return entries
+
+
+def _auto_identity_tsv(ref_dir, scale, modality, save_path):
+    """Scan ref_dir for touch indices and write an identity TSV (query idx = ref idx)."""
+    entries = _discover_or_exit(ref_dir, scale, modality)
     os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
     with open(save_path, "w") as f:
         f.write("query\tref\n")
         for idx, _ in entries:
             f.write(f"{idx}\t{idx}\n")
     print(f"[auto-TSV] Wrote identity mapping ({len(entries)} entries) → {save_path}")
+    return save_path
+
+
+def _auto_odd_to_even_tsv(ref_dir, scale, modality, save_path):
+    """Scan ref_dir, split indices into even (ref) and odd (query), write odd→even TSV."""
+    entries = _discover_or_exit(ref_dir, scale, modality)
+    all_idxs = [idx for idx, _ in entries]
+    even_idxs = set(idx for idx in all_idxs if idx % 2 == 0)
+    odd_idxs  = sorted(idx for idx in all_idxs if idx % 2 == 1)
+    if not even_idxs:
+        raise SystemExit("[auto-TSV] No even-indexed touches found in ref_dir (need even=ref, odd=query).")
+    if not odd_idxs:
+        raise SystemExit("[auto-TSV] No odd-indexed touches found in ref_dir (need even=ref, odd=query).")
+
+    rows = []
+    for q in odd_idxs:
+        if q - 1 not in even_idxs:
+            raise SystemExit(f"[auto-TSV] Odd index {q} has no paired even index {q - 1} in {ref_dir}.")
+        rows.append((q, q - 1))
+
+    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+    with open(save_path, "w") as f:
+        f.write("query\tref\n")
+        for q, r in rows:
+            f.write(f"{q}\t{r}\n")
+    print(f"[auto-TSV] Wrote odd→even mapping ({len(rows)} pairs) → {save_path}")
     return save_path
 
 
@@ -120,11 +151,18 @@ def main():
     g_ret.add_argument("--retrieval_modality", nargs="+", default=["normal"],
                        choices=["color", "normal", "curvature", "height", "shapeindex"],
                        help="Modality(ies) for DINOv2 feature extraction (default: normal).")
-    g_ret.add_argument("--retrieval_mode", default="dinov2", choices=["dinov2", "tsv"],
-                       help="'dinov2' (default) or 'tsv' (identity/pre-specified mapping).")
+    g_ret.add_argument("--retrieval_mode", default="dinov2",
+                       choices=["dinov2", "tsv", "sim_gt_retrieval", "real_gt_retrieval"],
+                       help=(
+                           "'dinov2' (default) — DINOv2 feature retrieval; "
+                           "'tsv' — explicit TSV file via --tsv; "
+                           "'sim_gt_retrieval' — auto identity TSV (query idx = ref idx), "
+                           "for Taxim synthetic data; "
+                           "'real_gt_retrieval' — auto odd→even TSV (odd=query, even=ref), "
+                           "for real GelSight captures in a single directory."
+                       ))
     g_ret.add_argument("--tsv", default=None,
-                       help="Path to retrieval TSV (tsv mode). Auto-generated as "
-                            "identity mapping if omitted.")
+                       help="Path to retrieval TSV ('tsv' mode only).")
     g_ret.add_argument("--top_k", type=int, default=5,
                        help="Top-K retrievals per query (dinov2 mode, default: 5).")
     g_ret.add_argument("--dino_model", default="dinov2_vits14",
@@ -193,13 +231,25 @@ def main():
 
     # ── Stage 1: Retrieval ────────────────────────────────────────────────────
     if not args.skip_retrieval:
-        # Resolve TSV path for tsv mode
+        scale0 = args.scale[0] if args.scale else None
         tsv_path = args.tsv
-        if args.retrieval_mode == "tsv" and tsv_path is None:
+        retrieval_mode_actual = args.retrieval_mode  # what retrieve_touch.py sees
+
+        if args.retrieval_mode == "sim_gt_retrieval":
+            retrieval_mode_actual = "tsv"
             tsv_path = os.path.join(save_dir, "identity.tsv")
             _auto_identity_tsv(
                 ref_dir=args.ref_dir,
-                scale=args.scale[0] if args.scale else None,
+                scale=scale0,
+                modality=args.retrieval_modality[0],
+                save_path=tsv_path,
+            )
+        elif args.retrieval_mode == "real_gt_retrieval":
+            retrieval_mode_actual = "tsv"
+            tsv_path = os.path.join(save_dir, "odd_to_even.tsv")
+            _auto_odd_to_even_tsv(
+                ref_dir=args.ref_dir,
+                scale=scale0,
                 modality=args.retrieval_modality[0],
                 save_path=tsv_path,
             )
@@ -209,13 +259,13 @@ def main():
             "--ref_dir", args.ref_dir,
             "--query_dir", args.query_dir,
             "--modality", *args.retrieval_modality,
-            "--retrieval_mode", args.retrieval_mode,
+            "--retrieval_mode", retrieval_mode_actual,
             "--save_dir", retrieval_dir,
             "--no_figures",
         ]
         if args.scale is not None:
             cmd += ["--scale"] + [f"{s:g}" for s in args.scale]
-        if args.retrieval_mode == "dinov2":
+        if retrieval_mode_actual == "dinov2":
             cmd += [
                 "--top_k", str(args.top_k),
                 "--dino_model", args.dino_model,
