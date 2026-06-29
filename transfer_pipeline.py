@@ -279,8 +279,12 @@ def _auto_odd_to_even_tsv(ref_dir, scale, modality, save_path):
     rows = []
     for q in odd_idxs:
         if q - 1 not in even_idxs:
-            raise SystemExit(f"[auto-TSV] Odd index {q} has no paired even index {q - 1} in {ref_dir}.")
+            print(f"[auto-TSV] Warning: odd index {q} has no paired even index {q - 1} — skipping pair.")
+            continue
         rows.append((q, q - 1))
+
+    if not rows:
+        raise SystemExit("[auto-TSV] No valid odd→even pairs found in ref_dir after filtering.")
 
     os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
     with open(save_path, "w") as f:
