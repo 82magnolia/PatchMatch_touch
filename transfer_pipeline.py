@@ -392,6 +392,9 @@ def main():
                    help="Skip Stage 4 grid visualization.")
     p.add_argument("--skip_eval", action="store_true",
                    help="Skip metric evaluation (MSE/PSNR/SSIM/LPIPS).")
+    p.add_argument("--save_nnf_figures", action="store_true",
+                   help="Save per-query NNF diagnostic figures in the transfer dir "
+                        "(disabled by default).")
 
     args = p.parse_args()
 
@@ -471,8 +474,9 @@ def main():
             "--em_iters_subseq", str(args.em_iters_subseq),
             "--patch_size",    str(args.patch_size),
             "--downsample_res", str(args.downsample_res),
-            "--no_nnf_figures",
         ]
+        if not args.save_nnf_figures:
+            cmd.append("--no_nnf_figures")
         if transfer_scale is not None:
             cmd += ["--scale", f"{transfer_scale:g}"]
         if args.use_keyframe:
