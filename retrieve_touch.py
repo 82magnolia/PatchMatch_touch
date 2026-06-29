@@ -56,7 +56,8 @@ def discover_files(folder, modality, scale):
       - `{idx}_{modality}.jpg`               when scale is None
     """
     if scale is not None:
-        pattern = re.compile(rf"^(\d+)_scale{scale}_{re.escape(modality)}\.jpg$")
+        scale_tag = re.escape(f"{scale:g}")
+        pattern = re.compile(rf"^(\d+)_scale{scale_tag}_{re.escape(modality)}\.jpg$")
     else:
         pattern = re.compile(rf"^(\d+)_{re.escape(modality)}\.jpg$")
 
@@ -332,9 +333,12 @@ def main():
                         help="Modality(ies) to use for indexing. If multiple are given, "
                              "DINOv2 features are extracted independently per modality and "
                              "concatenated. The first modality is used for visualization.")
-    parser.add_argument("--scale", default=None, type=int,
-                        help="Scale suffix in mm (e.g. 25 for _scale25_). "
-                             "Omit to use base-resolution files.")
+    parser.add_argument("--scale", default=None, type=float, nargs='+',
+                        help="Scale suffix(es) (e.g. 25 for Taxim _scale25_ files, or 0.5 2 for "
+                             "GelSight render_scale outputs). Omit to use base-resolution files. "
+                             "Multiple values cause DINOv2 features to be extracted per scale and "
+                             "concatenated before retrieval. Tag formatting matches _format_scale "
+                             "(Python :g), so 25.0→'25', 0.5→'0.5'.")
     parser.add_argument("--retrieval_mode", default="dinov2", choices=["dinov2", "tsv"],
                         help="Retrieval mode: 'dinov2' runs feature extraction; "
                              "'tsv' loads pre-specified results from --tsv.")
@@ -362,44 +366,47 @@ def main():
     if args.retrieval_mode == "tsv" and args.tsv is None:
         parser.error("--tsv is required when --retrieval_mode tsv is set.")
 
+    scales = args.scale if args.scale is not None else [None]
+
     os.makedirs(args.save_dir, exist_ok=True)
 
-    def _discover_all_modalities(folder, modalities, scale):
-        """Discover files for each modality; return (by_mod, common_idxs).
+    def _discover_all_modalities(folder, modalities, scales):
+        """Discover files for each (modality, scale) pair; return (by_mod_scale, common_idxs).
 
-        by_mod:       dict {modality -> {idx: path}}
-        common_idxs:  sorted list of contact-point indices present in all modalities.
+        by_mod_scale:  dict {(modality, scale) -> {idx: path}}
+        common_idxs:   sorted list of contact-point indices present in all (mod, scale) combos.
         """
-        by_mod = {}
+        by_mod_scale = {}
         for mod in modalities:
-            entries = discover_files(folder, mod, scale)
-            if not entries:
-                scale_str = f"_scale{scale}_" if scale else "_"
-                raise FileNotFoundError(
-                    f"No files matching '{{}}{scale_str}{mod}.jpg' found in {folder}"
-                )
-            by_mod[mod] = {idx: p for idx, p in entries}
-        common_idxs = sorted(set.intersection(*[set(d) for d in by_mod.values()]))
-        return by_mod, common_idxs
+            for scale in scales:
+                entries = discover_files(folder, mod, scale)
+                if not entries:
+                    scale_str = f"_scale{scale}_" if scale else "_"
+                    raise FileNotFoundError(
+                        f"No files matching '{{}}{scale_str}{mod}.jpg' found in {folder}"
+                    )
+                by_mod_scale[(mod, scale)] = {idx: p for idx, p in entries}
+        common_idxs = sorted(set.intersection(*[set(d) for d in by_mod_scale.values()]))
+        return by_mod_scale, common_idxs
 
-    def _build_entries_by_mod(by_mod, common_idxs, modalities):
-        """Build {modality -> [(idx, path), ...]} aligned to common_idxs."""
-        return {mod: [(idx, by_mod[mod][idx]) for idx in common_idxs]
+    def _build_entries_by_mod(by_mod_scale, common_idxs, modalities, scale):
+        """Build {modality -> [(idx, path), ...]} for one scale, aligned to common_idxs."""
+        return {mod: [(idx, by_mod_scale[(mod, scale)][idx]) for idx in common_idxs]
                 for mod in modalities}
 
     # -----------------------------------------------------------------------
     # Discover files for all modalities (both modes need them for figures)
     # -----------------------------------------------------------------------
     print(f"Discovering reference files ({', '.join(args.modality)}) in: {args.ref_dir}")
-    ref_by_mod, common_ref_idxs = _discover_all_modalities(
-        args.ref_dir, args.modality, args.scale)
-    ref_entries_by_mod = _build_entries_by_mod(ref_by_mod, common_ref_idxs, args.modality)
+    ref_by_mod_scale, common_ref_idxs = _discover_all_modalities(
+        args.ref_dir, args.modality, scales)
+    ref_entries_by_mod = _build_entries_by_mod(ref_by_mod_scale, common_ref_idxs, args.modality, scales[0])
     print(f"  Found {len(common_ref_idxs)} reference entries.")
 
     print(f"Discovering query files ({', '.join(args.modality)}) in: {args.query_dir}")
-    query_by_mod, common_query_idxs = _discover_all_modalities(
-        args.query_dir, args.modality, args.scale)
-    query_entries_by_mod = _build_entries_by_mod(query_by_mod, common_query_idxs, args.modality)
+    query_by_mod_scale, common_query_idxs = _discover_all_modalities(
+        args.query_dir, args.modality, scales)
+    query_entries_by_mod = _build_entries_by_mod(query_by_mod_scale, common_query_idxs, args.modality, scales[0])
     print(f"  Found {len(common_query_idxs)} query entries.")
 
     # Canonical (single-modality) entry lists used for save_results and index lookups
@@ -415,19 +422,21 @@ def main():
         print(f"Loading DINOv2 model '{args.dino_model}' on {device}...")
         model, transform = load_dino_model(args.dino_model, device)
 
-        # Extract features per modality, concatenate, re-normalise
+        # Extract features per (modality, scale), concatenate, re-normalise
         ref_feats_list, query_feats_list = [], []
         for mod in args.modality:
-            ref_paths_mod   = [ref_by_mod[mod][idx]   for idx in common_ref_idxs]
-            query_paths_mod = [query_by_mod[mod][idx] for idx in common_query_idxs]
-            print(f"Extracting reference features ({mod})...")
-            ref_feats_list.append(
-                extract_features(model, transform, ref_paths_mod, device,
-                                 mask_mode=args.mask_mode))
-            print(f"Extracting query features ({mod})...")
-            query_feats_list.append(
-                extract_features(model, transform, query_paths_mod, device,
-                                 mask_mode=args.mask_mode))
+            for scale in scales:
+                ref_paths_mod   = [ref_by_mod_scale[(mod, scale)][idx]   for idx in common_ref_idxs]
+                query_paths_mod = [query_by_mod_scale[(mod, scale)][idx] for idx in common_query_idxs]
+                scale_str = f", scale={scale}" if scale is not None else ""
+                print(f"Extracting reference features ({mod}{scale_str})...")
+                ref_feats_list.append(
+                    extract_features(model, transform, ref_paths_mod, device,
+                                     mask_mode=args.mask_mode))
+                print(f"Extracting query features ({mod}{scale_str})...")
+                query_feats_list.append(
+                    extract_features(model, transform, query_paths_mod, device,
+                                     mask_mode=args.mask_mode))
 
         ref_feats   = F.normalize(torch.cat(ref_feats_list,   dim=-1), dim=-1)
         query_feats = F.normalize(torch.cat(query_feats_list, dim=-1), dim=-1)
