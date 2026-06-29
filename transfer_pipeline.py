@@ -56,6 +56,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
@@ -81,6 +83,79 @@ def _discover_or_exit(ref_dir, scale, modality):
             f"found in {ref_dir}"
         )
     return entries
+
+
+def _make_viz(transferred_path, query_path, ref_path, enhanced_path,
+              query_normal_path, ref_normal_path, out_path, fps=5.0):
+    """Create a 2×3 grid video.
+
+    Layout:
+      | Query Normal   | GT Query    | Ref Normal  |
+      | PM Transferred | Enhanced    | Reference   |
+    """
+    import cv2
+    sys.path.insert(0, str(PROJECT_ROOT / "rebot_net"))
+    from trainer import _read_video_frames  # lazy import — avoids torch at startup
+
+    def _load_video(path):
+        if path and os.path.exists(path):
+            frames = _read_video_frames(path)
+            return frames or None
+        return None
+
+    def _load_still(path, n, h, w):
+        if path and os.path.exists(path):
+            img = cv2.imread(path)
+            if img is not None:
+                img = cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), (w, h))
+                return [img.astype(np.float32) / 255.0] * n
+        return None
+
+    xfer = _load_video(transferred_path)
+    if not xfer:
+        print(f"  [viz] Cannot read {transferred_path} — skipping.")
+        return
+
+    n = len(xfer)
+    h, w = xfer[0].shape[:2]
+    blank = [np.zeros((h, w, 3), dtype=np.float32)] * n
+
+    query    = _load_video(query_path)    or blank
+    ref      = _load_video(ref_path)      or blank
+    enhanced = _load_video(enhanced_path) or blank
+    q_normal = _load_still(query_normal_path, n, h, w) or blank
+    r_normal = _load_still(ref_normal_path,   n, h, w) or blank
+
+    def _label(path, name):
+        return name if path and os.path.exists(path) else f"{name} (N/A)"
+
+    panels = [
+        (q_normal, _label(query_normal_path, "Query Normal")),
+        (query,    _label(query_path,        "GT Query")),
+        (r_normal, _label(ref_normal_path,   "Ref Normal")),
+        (xfer,     "PM Transferred"),
+        (enhanced, _label(enhanced_path,     "Enhanced")),
+        (ref,      _label(ref_path,          "Reference")),
+    ]
+
+    n_frames = min(len(p) for p, _ in panels)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale, thickness, pad = 0.7, 2, 4
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(out_path, fourcc, fps, (w * 3, h * 2))
+    for i in range(n_frames):
+        cells = []
+        for frames, label in panels:
+            cell = (np.clip(frames[i], 0, 1) * 255).astype(np.uint8)
+            cell = cv2.cvtColor(cell, cv2.COLOR_RGB2BGR)
+            (tw, th), _ = cv2.getTextSize(label, font, font_scale, thickness)
+            cv2.rectangle(cell, (pad, pad), (pad + tw + pad, pad + th + pad), (0, 0, 0), -1)
+            cv2.putText(cell, label, (pad * 2, pad + th), font, font_scale, (255, 255, 255), thickness)
+            cells.append(cell)
+        out.write(np.vstack([np.hstack(cells[:3]), np.hstack(cells[3:])]))
+    out.release()
+    print(f"  [viz] {os.path.basename(out_path)}")
 
 
 def _auto_identity_tsv(ref_dir, scale, modality, save_path):
@@ -216,6 +291,8 @@ def main():
     p.add_argument("--skip_retrieval", action="store_true")
     p.add_argument("--skip_transfer", action="store_true")
     p.add_argument("--skip_refine", action="store_true")
+    p.add_argument("--skip_viz", action="store_true",
+                   help="Skip Stage 4 grid visualization.")
 
     args = p.parse_args()
 
@@ -341,6 +418,54 @@ def main():
                 if args.residual:
                     cmd.append("--residual")
                 _run(cmd, f"Stage 3: Refine {os.path.basename(vid_path)}")
+
+    # ── Stage 4: Grid Visualization ──────────────────────────────────────────────
+    if not args.skip_viz:
+        import pickle
+
+        viz_dir = os.path.join(save_dir, "viz")
+        os.makedirs(viz_dir, exist_ok=True)
+
+        # Load retrieval pkl to map query_idx → top-1 ref_idx
+        query_to_ref = {}
+        if os.path.exists(retrieval_pkl):
+            with open(retrieval_pkl, "rb") as f:
+                for row in pickle.load(f):
+                    query_to_ref[row["query_idx"]] = row["topk_ref_indices"][0]
+
+        scale0 = args.scale[0] if args.scale else None
+
+        def _normal_path(folder, idx):
+            if scale0 is not None:
+                return os.path.join(folder, f"{idx}_scale{scale0:g}_normal.jpg")
+            return os.path.join(folder, f"{idx}_normal.jpg")
+
+        transferred_videos = sorted(
+            glob.glob(os.path.join(transfer_dir, "*_transferred_em.mp4"))
+        )
+        if not transferred_videos:
+            print("[Stage 4] No *_transferred_em.mp4 found — skipping visualization.")
+        else:
+            print(f"\n[Stage 4] Creating {len(transferred_videos)} grid visualization(s)...")
+            for xfer_path in transferred_videos:
+                stem = os.path.basename(xfer_path).replace("_transferred_em.mp4", "")
+                try:
+                    query_idx = int(stem)
+                except ValueError:
+                    query_idx = None
+                ref_idx = query_to_ref.get(query_idx)
+
+                _make_viz(
+                    transferred_path=xfer_path,
+                    query_path=os.path.join(transfer_dir, f"{stem}_query_{args.video_type}.mp4"),
+                    ref_path=os.path.join(transfer_dir,   f"{stem}_ref_{args.video_type}.mp4"),
+                    enhanced_path=os.path.join(enhanced_dir, f"{stem}_transferred_em_enhanced.mp4"),
+                    query_normal_path=_normal_path(args.query_dir, query_idx) if query_idx is not None else None,
+                    ref_normal_path=_normal_path(args.ref_dir, ref_idx) if ref_idx is not None else None,
+                    out_path=os.path.join(viz_dir, f"{stem}_grid.mp4"),
+                )
+    else:
+        print("[Stage 4] Skipped (--skip_viz).")
 
     print(f"\nDone. All outputs under: {save_dir}")
 
