@@ -158,6 +158,101 @@ def _make_viz(transferred_path, query_path, ref_path, enhanced_path,
     print(f"  [viz] {os.path.basename(out_path)}")
 
 
+def _evaluate_videos(pred_dir, query_dir, video_type, pred_glob, query_stem_fn,
+                     out_pkl):
+    """Compute MSE/PSNR/SSIM/LPIPS for a set of predicted videos vs GT query videos.
+
+    pred_glob      — glob pattern under pred_dir for predicted MP4s
+    query_stem_fn  — callable(stem) → query video filename stem
+    out_pkl        — where to save metrics.pkl
+
+    Saves {per_touch: {query_idx: metrics}, average: metrics} — same format as
+    main_retrieval_transfer_accel.py --eval, readable by parse_metrics.py.
+    """
+    import cv2
+    import pickle
+    import torch
+    import lpips
+    from skimage.metrics import mean_squared_error as compute_mse
+    from skimage.metrics import peak_signal_noise_ratio as compute_psnr
+    from skimage.metrics import structural_similarity as compute_ssim
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    loss_fn = lpips.LPIPS(net="alex").to(device)
+
+    def _read(path):
+        cap = cv2.VideoCapture(path)
+        frames = []
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0)
+        cap.release()
+        return frames
+
+    pred_paths = sorted(glob.glob(os.path.join(pred_dir, pred_glob)))
+    if not pred_paths:
+        print(f"  [eval] No videos matching '{pred_glob}' in {pred_dir} — skipping.")
+        return
+
+    METRIC_KEYS = ["MSE", "PSNR", "SSIM", "LPIPS"]
+    per_touch = {}
+
+    for pred_path in pred_paths:
+        stem = os.path.basename(pred_path)
+        # strip everything after the first underscore-delimited numeric prefix
+        parts = stem.split("_")
+        try:
+            query_idx = int(parts[0])
+        except ValueError:
+            print(f"  [eval] Cannot parse query_idx from '{stem}' — skipping.")
+            continue
+
+        q_stem = query_stem_fn(query_idx)
+        q_path = os.path.join(query_dir, q_stem)
+        if not os.path.exists(q_path):
+            print(f"  [eval] GT not found: {q_path} — skipping.")
+            continue
+
+        pred_frames = _read(pred_path)
+        gt_frames   = _read(q_path)
+        if not pred_frames or not gt_frames:
+            continue
+
+        n = min(len(pred_frames), len(gt_frames))
+        mse_sum = psnr_sum = ssim_sum = lpips_sum = 0.0
+        for i in range(n):
+            gt, pred = gt_frames[i], pred_frames[i]
+            if gt.shape != pred.shape:
+                pred = cv2.resize(pred, (gt.shape[1], gt.shape[0]))
+            mse = compute_mse(gt, pred)
+            mse_sum  += mse
+            psnr_sum += compute_psnr(gt, pred, data_range=1.0) if mse > 0 else 100.0
+            ssim_sum += compute_ssim(gt, pred, data_range=1.0, channel_axis=-1)
+            gt_t   = torch.from_numpy(gt).permute(2, 0, 1).unsqueeze(0).to(device) * 2 - 1
+            pred_t = torch.from_numpy(pred).permute(2, 0, 1).unsqueeze(0).to(device) * 2 - 1
+            with torch.no_grad():
+                lpips_sum += loss_fn(gt_t, pred_t).item()
+
+        per_touch[query_idx] = {k: v / n for k, v in zip(
+            METRIC_KEYS, [mse_sum, psnr_sum, ssim_sum, lpips_sum])}
+        m = per_touch[query_idx]
+        print(f"  [eval] idx={query_idx}  MSE={m['MSE']:.5f}  PSNR={m['PSNR']:.2f}"
+              f"  SSIM={m['SSIM']:.4f}  LPIPS={m['LPIPS']:.4f}")
+
+    if not per_touch:
+        return
+
+    avg = {k: sum(m[k] for m in per_touch.values()) / len(per_touch) for k in METRIC_KEYS}
+    os.makedirs(os.path.dirname(out_pkl) or ".", exist_ok=True)
+    with open(out_pkl, "wb") as f:
+        pickle.dump({"per_touch": per_touch, "average": avg}, f)
+    print(f"  [eval] Saved metrics ({len(per_touch)} entries) → {out_pkl}")
+    print(f"  [eval] Average — MSE={avg['MSE']:.5f}  PSNR={avg['PSNR']:.2f}"
+          f"  SSIM={avg['SSIM']:.4f}  LPIPS={avg['LPIPS']:.4f}")
+
+
 def _auto_identity_tsv(ref_dir, scale, modality, save_path):
     """Scan ref_dir for touch indices and write an identity TSV (query idx = ref idx)."""
     entries = _discover_or_exit(ref_dir, scale, modality)
@@ -274,8 +369,6 @@ def main():
                       help="Composite with query render_mask video.")
     g_tr.add_argument("--use_ref_static_mask", action="store_true",
                       help="Keep background pixels unchanged (zero ref_static regions).")
-    g_tr.add_argument("--eval", action="store_true",
-                      help="Compute PSNR/SSIM/LPIPS against the query video.")
 
     # ── Stage 3: Refine ───────────────────────────────────────────────────────
     g_ref = p.add_argument_group("Stage 3 — ReBotNet Refinement")
@@ -293,6 +386,8 @@ def main():
     p.add_argument("--skip_refine", action="store_true")
     p.add_argument("--skip_viz", action="store_true",
                    help="Skip Stage 4 grid visualization.")
+    p.add_argument("--skip_eval", action="store_true",
+                   help="Skip metric evaluation (MSE/PSNR/SSIM/LPIPS).")
 
     args = p.parse_args()
 
@@ -386,7 +481,7 @@ def main():
             cmd.append("--use_ref_static_mask")
         if args.use_downsample_em:
             cmd.append("--use_downsample_em")
-        if args.eval:
+        if not args.skip_eval:
             cmd.append("--eval")
         _run(cmd, "Stage 2: PatchMatch Transfer")
     else:
@@ -466,6 +561,22 @@ def main():
                 )
     else:
         print("[Stage 4] Skipped (--skip_viz).")
+
+    # ── Stage 5: Evaluate Enhanced Output ────────────────────────────────────
+    if not args.skip_eval and args.checkpoint is not None and not args.skip_refine:
+        print(f"\n[Stage 5] Computing enhanced-output metrics...")
+        _evaluate_videos(
+            pred_dir=enhanced_dir,
+            query_dir=args.query_dir,
+            video_type=args.video_type,
+            pred_glob="*_transferred_em_enhanced.mp4",
+            query_stem_fn=lambda idx: f"{idx}_{args.video_type}.mp4",
+            out_pkl=os.path.join(enhanced_dir, "metrics.pkl"),
+        )
+    elif args.skip_eval:
+        print("[Stage 5] Skipped (--skip_eval).")
+    else:
+        print("[Stage 5] Skipped (no Stage 3 output to evaluate).")
 
     print(f"\nDone. All outputs under: {save_dir}")
 
