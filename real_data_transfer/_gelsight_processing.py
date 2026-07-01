@@ -178,6 +178,10 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
     normal_bgr = normals_to_colormap(normals_filled)
     normal_bgr[mask_crop == 0] = 0
     raw_norm = normals_filled[:, :, :3].copy()
+    # Re-normalize: bilinear remap and inpainting can break unit length
+    norms = np.linalg.norm(raw_norm, axis=-1, keepdims=True)
+    valid_px = (norms[..., 0] > 1e-6) & (mask_crop > 0)
+    raw_norm[valid_px] /= norms[valid_px]
     raw_norm[mask_crop == 0] = 0.0
 
     contact_mask = (height_map < HEIGHT_MASK_THRES_M) & valid_depth_remap & (mask_crop > 0)
