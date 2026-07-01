@@ -373,6 +373,15 @@ def main():
                       help="Composite with query render_mask video.")
     g_tr.add_argument("--use_ref_static_mask", action="store_true",
                       help="Keep background pixels unchanged (zero ref_static regions).")
+    g_tr.add_argument("--init_scale", type=float, default=None,
+                      help="Additional scale suffix used to compute a high-resolution seed NNF "
+                           "between static images only, warm-starting the first EM PatchMatch "
+                           "call. Requires --scale and --init_scale_convention.")
+    g_tr.add_argument("--init_scale_convention", default=None,
+                      choices=["render_scale", "obj_scale_factor"],
+                      help="How to relate --init_scale back to --scale's field of view: "
+                           "'render_scale' for real GelSight captures, 'obj_scale_factor' for "
+                           "Taxim synthetic data. Required when --init_scale is set.")
 
     # ── Stage 3: Refine ───────────────────────────────────────────────────────
     g_ref = p.add_argument_group("Stage 3 — ReBotNet Refinement")
@@ -397,6 +406,12 @@ def main():
                         "(disabled by default).")
 
     args = p.parse_args()
+
+    if args.init_scale is not None:
+        if not args.scale:
+            p.error("--init_scale requires --scale to also be set.")
+        if args.init_scale_convention is None:
+            p.error("--init_scale requires --init_scale_convention to be set.")
 
     # Derived output paths
     save_dir      = os.path.abspath(args.save_dir)
@@ -479,6 +494,9 @@ def main():
             cmd.append("--no_nnf_figures")
         if transfer_scale is not None:
             cmd += ["--scale", f"{transfer_scale:g}"]
+        if args.init_scale is not None:
+            cmd += ["--init_scale", f"{args.init_scale:g}",
+                    "--init_scale_convention", args.init_scale_convention]
         if args.use_keyframe:
             cmd.append("--use_keyframe")
         if args.use_accel:

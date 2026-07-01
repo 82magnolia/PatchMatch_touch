@@ -127,6 +127,61 @@ def build_combined_static(folder, idx, modalities, scale):
     return np.concatenate(imgs, axis=-1).copy(order="C")
 
 
+def compute_scale_ratio(base_scale, init_scale, convention):
+    """Ratio of physical footprint (init canvas / base canvas).
+
+    'render_scale' (GelSight real capture): physical FOV is proportional to
+    the scale value, so ratio = init_scale / base_scale.
+    'obj_scale_factor' (Taxim): physical FOV is fixed regardless of scale and
+    a larger scale renders finer detail (i.e. covers less of the object per
+    pixel), so ratio = base_scale / init_scale.
+    """
+    if convention == "render_scale":
+        return init_scale / base_scale
+    return base_scale / init_scale  # "obj_scale_factor"
+
+
+def compute_init_nnf(query_dir, ref_dir, query_idx, ref_idx, modalities,
+                      base_scale, init_scale, convention, patch_size, iters):
+    """Compute a high-resolution seed NNF between static images only.
+
+    Loads the --init_scale static variant of the query/ref images, relates it
+    back to the base (--scale) resolution's field of view via the physical
+    ratio implied by `convention`, and returns (nnf, pm): a full (H, W, 2)
+    int32 NNF in the base resolution's coordinate space (ready to pass as
+    init_nnf) and the PatchMatchSingle instance used to compute it (for
+    diagnostic figures).
+    """
+    q_hi = build_combined_static(query_dir, query_idx, modalities, init_scale)
+    r_hi = build_combined_static(ref_dir, ref_idx, modalities, init_scale)
+    if q_hi.shape != r_hi.shape:
+        raise ValueError("init-scale query/ref static shape mismatch: "
+                          f"{q_hi.shape} vs {r_hi.shape}")
+    H, W = q_hi.shape[:2]
+    r = compute_scale_ratio(base_scale, init_scale, convention)
+    if r < 1.0:
+        raise ValueError(
+            f"--init_scale must cover at least as much physical area as --scale "
+            f"(got ratio {r:.4f} < 1.0 for convention={convention!r}); a smaller "
+            f"physical footprint can't seed the full base field of view.")
+    max_radius = int(max(H, W))
+
+    if abs(r - 1.0) < 1e-6:
+        q_rs, r_rs = q_hi, r_hi
+    else:
+        # init canvas covers MORE physical area than base -> base FOV is a
+        # center crop of the init canvas; crop then upsample to full res so
+        # the resulting NNF is directly usable with no coordinate offset.
+        ch, cw = max(1, round(H / r)), max(1, round(W / r))
+        y0, x0 = (H - ch) // 2, (W - cw) // 2
+        q_rs = cv2.resize(q_hi[y0:y0 + ch, x0:x0 + cw], (W, H), interpolation=cv2.INTER_LINEAR)
+        r_rs = cv2.resize(r_hi[y0:y0 + ch, x0:x0 + cw], (W, H), interpolation=cv2.INTER_LINEAR)
+
+    pm = PatchMatchSingle(q_rs.copy(order="C"), r_rs.copy(order="C"), patch_size=patch_size)
+    pm.propagate(iters=iters, rand_search_radius=max_radius)
+    return pm.nnf.astype(np.int32), pm
+
+
 # ---------------------------------------------------------------------------
 # NNF figure
 # ---------------------------------------------------------------------------
@@ -152,11 +207,15 @@ def _make_nnf_warped(pm, ref_color_grid):
 
 
 def make_nnf_figure(query_idx, ref_idx, query_dir, ref_dir, modalities, scale,
-                    pm, ref_shape, save_dir):
+                    pm, ref_shape, save_dir, tag=None):
     """Save a (M+1) × 2 diagnostic figure for one query entry.
 
     Rows 0..M-1 : [Query modality_i]  [Ref modality_i]
     Row M       : [NNF colormap]       [NNF warped]
+
+    `tag`, if given, is appended to both the output filename and the figure
+    title (e.g. "init" for the high-res init-scale seed NNF), so it doesn't
+    collide with the base-resolution figure.
     """
     M      = len(modalities)
     n_rows = M + 1
@@ -197,11 +256,14 @@ def make_nnf_figure(query_idx, ref_idx, query_dir, ref_dir, modalities, scale,
                     ha="right", va="center", rotation=90, fontsize=9)
         ax.axis("off")
 
-    fig.suptitle(f"Query #{query_idx} → Ref #{ref_idx} — NNF ({', '.join(modalities)})",
-                 fontsize=10)
+    title = f"Query #{query_idx} → Ref #{ref_idx} — NNF ({', '.join(modalities)})"
+    if tag is not None:
+        title += f" [{tag}]"
+    fig.suptitle(title, fontsize=10)
     plt.tight_layout()
 
-    out_path = osp.join(save_dir, f"{query_idx}_nnf.png")
+    fname = f"{query_idx}_nnf.png" if tag is None else f"{query_idx}_{tag}_nnf.png"
+    out_path = osp.join(save_dir, fname)
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return out_path
@@ -242,7 +304,8 @@ def compute_contact_mask(ref_frame, base_frame, threshold,
 def em_transfer_frame_fullres(query_static, ref_static, ref_frame, init_estimate,
                       em_iters, patch_size, pm_iters,
                       ref_contact_mask=None, ref_static_mask=None,
-                      init_nnf=None, use_accel=False, downsample=1):
+                      init_nnf=None, use_accel=False, downsample=1,
+                      force_full_first_step=False):
     """EM-style single-frame transfer with all EM iterations at full resolution.
 
     When no prior NNF exists and downsample > 1, computes a one-shot low-res
@@ -277,7 +340,14 @@ def em_transfer_frame_fullres(query_static, ref_static, ref_frame, init_estimate
         query_combined = np.concatenate([query_static, estimate], axis=-1).copy(order="C")
         ref_combined   = np.concatenate([ref_static,   ref_frame], axis=-1).copy(order="C")
         
-        if current_nnf is None or not use_accel:
+        if em_step == 0 and force_full_first_step and current_nnf is not None:
+            # Seeded from a high-res static NNF: use it as a warm start but
+            # still run a genuine full-resolution search, not the reduced
+            # inter-frame warm-start iters/radius.
+            current_iters = pm_iters
+            current_radius = max_radius
+            pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=current_nnf)
+        elif current_nnf is None or not use_accel:
             current_iters = pm_iters
             current_radius = max_radius
             pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=None)
@@ -288,7 +358,7 @@ def em_transfer_frame_fullres(query_static, ref_static, ref_frame, init_estimate
             pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=current_nnf) # Pass the initial NNF
 
         pm.propagate(iters=current_iters, rand_search_radius=current_radius)
-        
+
         # Save the updated NNF for the next EM step
         if use_accel:
             current_nnf = pm.nnf
@@ -310,7 +380,8 @@ def em_transfer_frame_fullres(query_static, ref_static, ref_frame, init_estimate
 def em_transfer_frame_downsample(query_static, ref_static, ref_frame, init_estimate,
                       em_iters, patch_size, pm_iters,
                       ref_contact_mask=None, ref_static_mask=None,
-                      init_nnf=None, use_accel=False, downsample=1):
+                      init_nnf=None, use_accel=False, downsample=1,
+                      force_full_first_step=False):
     """EM-style single-frame transfer."""
     
     init_orig = init_estimate.copy()
@@ -329,13 +400,23 @@ def em_transfer_frame_downsample(query_static, ref_static, ref_frame, init_estim
         s_mask_low = cv2.resize(ref_static_mask, (W_d, H_d), interpolation=cv2.INTER_NEAREST)[..., None] if ref_static_mask is not None else None
 
         current_nnf = init_nnf
+        if force_full_first_step and current_nnf is not None:
+            # The seed NNF is computed at full (H, W) resolution; rescale it
+            # down to (H_d, W_d) to match this loop's downsampled images.
+            current_nnf = cv2.resize(current_nnf.astype(np.float32), (W_d, H_d),
+                                     interpolation=cv2.INTER_NEAREST) / downsample
+            current_nnf = current_nnf.astype(np.int32)
         pm_low = None
 
         for em_step in range(em_iters):
             q_comb = np.concatenate([query_low, estimate_low], axis=-1).copy(order="C")
             r_comb = np.concatenate([static_low, ref_frame_low], axis=-1).copy(order="C")
-            
-            if current_nnf is None or not use_accel:
+
+            if em_step == 0 and force_full_first_step and current_nnf is not None:
+                cur_iters = pm_iters
+                cur_radius = int(max(W_d, H_d))
+                pm_low = PatchMatchSingle(q_comb, r_comb, patch_size=patch_size, init_nnf=current_nnf)
+            elif current_nnf is None or not use_accel:
                 cur_iters = pm_iters
                 cur_radius = int(max(W_d, H_d))
                 pm_low = PatchMatchSingle(q_comb, r_comb, patch_size=patch_size, init_nnf=None)
@@ -381,8 +462,12 @@ def em_transfer_frame_downsample(query_static, ref_static, ref_frame, init_estim
         for em_step in range(em_iters):
             query_combined = np.concatenate([query_static, estimate], axis=-1).copy(order="C")
             ref_combined   = np.concatenate([ref_static,   ref_frame], axis=-1).copy(order="C")
-            
-            if current_nnf is None or not use_accel:
+
+            if em_step == 0 and force_full_first_step and current_nnf is not None:
+                current_iters = pm_iters
+                current_radius = max_radius
+                pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=current_nnf)
+            elif current_nnf is None or not use_accel:
                 current_iters = pm_iters
                 current_radius = max_radius
                 pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=None)
@@ -398,10 +483,10 @@ def em_transfer_frame_downsample(query_static, ref_static, ref_frame, init_estim
             valid = np.ones((H, W, 1), dtype=np.float32)
             if ref_contact_mask is not None: valid *= ref_contact_mask
             if ref_static_mask is not None: valid *= ref_static_mask
-                
+
             valid_q = (np.atleast_3d(pm.reconstruct_avg(valid, patch_size=1))[..., :1] > 0.5).astype(np.float32)
             estimate = valid_q * estimate + (1.0 - valid_q) * init_orig
-            
+
         return estimate, pm, valid_q, pm  # NOTE: here we don't use downsampling during PatchMatch, so pm_low == pm_high == pm
 
 def static_transfer_frame(query_static, ref_static, ref_frame, init_estimate,
@@ -524,6 +609,20 @@ def main():
     parser.add_argument("--scale", default=None, type=float,
                         help="Scale suffix for static images (e.g. 100 for Taxim, 0.5 for GelSight). "
                              "Omit to use base-resolution files. Tag formatted with :g (100.0→'100', 0.5→'0.5').")
+    parser.add_argument("--init_scale", default=None, type=float,
+                        help="Additional scale suffix used to compute a high-resolution seed NNF "
+                             "between the static images only, used to warm-start the very first "
+                             "EM PatchMatch call (anchor frame in --use_keyframe mode, or frame 0 "
+                             "in sequential mode) instead of a random NNF. Requires --scale and "
+                             "--init_scale_convention to also be set.")
+    parser.add_argument("--init_scale_convention", default=None,
+                        choices=["render_scale", "obj_scale_factor"],
+                        help="How to interpret --scale/--init_scale to compute the physical-size "
+                             "ratio between them. 'render_scale' (GelSight real capture): physical "
+                             "FOV is proportional to the scale value, so ratio = init_scale/scale. "
+                             "'obj_scale_factor' (Taxim): physical FOV is fixed and a larger scale "
+                             "renders finer detail, so ratio = scale/init_scale. Required when "
+                             "--init_scale is set.")
     parser.add_argument("--use_mask", action="store_true",
                         help="Composite transferred frames with the query mask video. "
                              "Requires {idx}_mask.mp4 in --query_dir.")
@@ -580,6 +679,13 @@ def main():
                              "(em_transfer_frame_fullres). Only used when --em is set.")
     args = parser.parse_args()
 
+    if args.init_scale is not None:
+        if args.scale is None:
+            parser.error("--init_scale requires --scale to also be set "
+                         "(need a base scale to compute a physical-size ratio against).")
+        if args.init_scale_convention is None:
+            parser.error("--init_scale requires --init_scale_convention to be set.")
+
     os.makedirs(args.save_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -630,6 +736,15 @@ def main():
             print(f"  Skipping: shape mismatch "
                   f"query={query_static.shape} ref={ref_static.shape}")
             continue
+
+        # -- Optionally compute a high-res seed NNF for the very first EM call ----
+        init_nnf_seed = None
+        init_pm = None
+        if args.init_scale is not None:
+            init_nnf_seed, init_pm = compute_init_nnf(
+                args.query_dir, args.ref_dir, query_idx, ref_idx, args.modality,
+                args.scale, args.init_scale, args.init_scale_convention,
+                args.patch_size, args.iters)
 
         # -- Compute NNF (standard) or defer to EM loop below ----------------
         if not args.em:
@@ -694,7 +809,7 @@ def main():
 
             # Helper function to process a single frame inside the loop
             em_fn = em_transfer_frame_downsample if args.use_downsample_em else em_transfer_frame_fullres
-            def process_frame(i, current_em_iters, pass_nnf, init_frame):
+            def process_frame(i, current_em_iters, pass_nnf, init_frame, force_full_first_step=False):
                 output, last_pm, valid_q, pm_fig = em_fn(
                     query_static, ref_static, ref_frames[i], init_frame,
                     current_em_iters, args.patch_size, args.iters,
@@ -702,7 +817,8 @@ def main():
                     ref_static_mask=ref_static_mask,
                     init_nnf=pass_nnf,
                     use_accel=args.use_accel,
-                    downsample=args.downsample_res)
+                    downsample=args.downsample_res,
+                    force_full_first_step=force_full_first_step)
 
                 # Apply render mask if provided
                 if mask_frames is not None:
@@ -717,8 +833,9 @@ def main():
             anchor_pm, anchor_fig_pm = process_frame(
                 i=anchor_idx,
                 current_em_iters=args.em_iters,
-                pass_nnf=None,
-                init_frame=base_frame)
+                pass_nnf=init_nnf_seed,
+                init_frame=base_frame,
+                force_full_first_step=(init_nnf_seed is not None))
 
             fig_pm = anchor_fig_pm  # full-res PM for NNF figure
 
@@ -751,7 +868,7 @@ def main():
         else:
             if args.em:
                 fig_pm = None
-                prev_nnf = None  # <-- Add a variable to pass NNF between frames
+                prev_nnf = init_nnf_seed  # <-- Add a variable to pass NNF between frames
                 for i, ref_frame in enumerate(tqdm(ref_frames, desc="Transferring frames", leave=False)):
                     init = ref_frames[0] if i == 0 else transferred[-1]
                     ref_contact_mask = None
@@ -760,14 +877,15 @@ def main():
                             ref_frame, base_frame, args.ref_contact_threshold,
                             args.ref_contact_blur_sigma, args.ref_contact_morph_radius)
                         ref_contact_masks.append(ref_contact_mask)
-                    
+
                     # Full EM iterations for the first frame, fewer for subsequent frames
                     if args.em_iters_subseq == -1 or i == 0:
                         current_em_iters = args.em_iters
                     else:
                         current_em_iters = args.em_iters_subseq
+                    force_full_first_step = (i == 0 and init_nnf_seed is not None)
                     # Pass prev_nnf
-                    if args.use_accel is False:
+                    if args.use_accel is False and not force_full_first_step:
                         prev_nnf = None
                     em_fn = em_transfer_frame_downsample if args.use_downsample_em else em_transfer_frame_fullres
                     output, last_pm, valid_q, pm_fig = em_fn(
@@ -777,7 +895,8 @@ def main():
                         ref_static_mask=ref_static_mask,
                         init_nnf=prev_nnf,
                         use_accel=args.use_accel,
-                        downsample=args.downsample_res)
+                        downsample=args.downsample_res,
+                        force_full_first_step=force_full_first_step)
                     prev_nnf = last_pm.nnf
                     if valid_q is not None:
                         valid_q_frames.append(valid_q)
@@ -817,6 +936,16 @@ def main():
                 save_dir=args.save_dir,
             )
             print(f"  Saved NNF figure: {fig_path}")
+
+            if init_pm is not None:
+                init_fig_path = make_nnf_figure(
+                    query_idx=query_idx, ref_idx=ref_idx,
+                    query_dir=args.query_dir, ref_dir=args.ref_dir,
+                    modalities=args.modality, scale=args.init_scale,
+                    pm=init_pm, ref_shape=ref_static.shape,
+                    save_dir=args.save_dir, tag="init",
+                )
+                print(f"  Saved init-scale NNF figure: {init_fig_path}")
 
         # -- Save individual keyframe images ----------------------------------
         # Ensure anchor_idx exists
