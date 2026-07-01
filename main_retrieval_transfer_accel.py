@@ -569,8 +569,6 @@ def main():
                         help="Skip saving per-query NNF diagnostic figures.")
     parser.add_argument("--use_keyframe", action="store_true",
                              help="Use keyframe to propagate the NNF forwards and backwards from it")
-    parser.add_argument("--use_video_concate", default=None, type=int,
-                             help="concatenate video")
     parser.add_argument("--only_normal", action="store_true",
                              help="Patchmatch propagation with only normal")
     parser.add_argument("--downsample_res", default=1, type=int,
@@ -750,106 +748,6 @@ def main():
                     pass_nnf=pass_nnf,
                     init_frame=transferred[i + 1])
                 prev_nnf = last_pm.nnf
-        elif args.use_video_concate:
-            fig_pm = None
-            prev_nnf = None
-            
-            # If -1, treat the entire video as a single chunk. If positive, process in chunks of that size.
-            chunk_size = len(ref_frames) if args.use_video_concate == -1 else args.use_video_concate
-            
-            for start_idx in tqdm(range(0, len(ref_frames), chunk_size), desc="Transferring chunks", leave=False):
-                end_idx = min(start_idx + chunk_size, len(ref_frames))
-                chunk_frames = ref_frames[start_idx:end_idx]
-                
-                # Calculate NNF for em transfer (using the first frame of the chunk as the representative)
-                current_ref_frame = chunk_frames[0]
-                init = ref_frames[0] if start_idx == 0 else transferred[-1]
-                
-                ref_contact_mask = None
-                if args.use_ref_contact_mask:
-                    ref_contact_mask = compute_contact_mask(
-                        current_ref_frame, base_frame, args.ref_contact_threshold,
-                        args.ref_contact_blur_sigma, args.ref_contact_morph_radius)
-                
-                if args.em_iters_subseq == -1 or start_idx == 0:
-                    current_em_iters = args.em_iters
-                else:
-                    current_em_iters = args.em_iters_subseq
-                
-                pass_nnf = prev_nnf if args.use_accel else None
-                
-                if args.em:
-                    # Generate the NNF map for the current chunk
-                    if args.only_normal:
-                        _, pm, _ = static_transfer_frame(
-                            query_static, ref_static, current_ref_frame, init,
-                            current_em_iters, args.patch_size, args.iters,
-                            ref_contact_mask=ref_contact_mask,
-                            ref_static_mask=ref_static_mask,
-                            init_nnf=pass_nnf,
-                            use_accel=args.use_accel)
-                    else:
-                        em_fn = em_transfer_frame_downsample if args.use_downsample_em else em_transfer_frame_fullres
-                        _, pm_low, _, pm = em_fn(
-                            query_static, ref_static, current_ref_frame, init,
-                            current_em_iters, args.patch_size, args.iters,
-                            ref_contact_mask=ref_contact_mask,
-                            ref_static_mask=ref_static_mask,
-                            init_nnf=pass_nnf,
-                            use_accel=args.use_accel,
-                            downsample=args.downsample_res)
-
-                # If EM is disabled, the code reuses the `pm` object initialized outside this loop.
-                if start_idx == 0:
-                    fig_pm = pm
-                # Use pm_low.nnf for warm-starting next downsample call (pm.nnf is full-res)
-                prev_nnf = pm_low.nnf if args.use_downsample_em else pm.nnf
-                
-                # Concatenate frames and masks
-                concat_ref = np.concatenate(chunk_frames, axis=-1)
-                
-                chunk_valids = []
-                for j in range(len(chunk_frames)):
-                    frame = chunk_frames[j]
-                    valid = np.ones((frame.shape[0], frame.shape[1], 1), dtype=np.float32)
-                    
-                    if args.use_ref_contact_mask:
-                        c_mask = compute_contact_mask(
-                            frame, base_frame, args.ref_contact_threshold,
-                            args.ref_contact_blur_sigma, args.ref_contact_morph_radius)
-                        ref_contact_masks.append(c_mask)
-                        valid = valid * c_mask
-                        
-                    if ref_static_mask is not None:
-                        valid = valid * ref_static_mask
-                        
-                    chunk_valids.append(valid)
-                
-                concat_valid = np.concatenate(chunk_valids, axis=-1)
-                
-                # Reconstruct entirely via PatchMatch
-                concat_out = pm.reconstruct_avg(concat_ref, patch_size=1)
-                concat_valid_q = pm.reconstruct_avg(concat_valid, patch_size=1)
-                
-                # Split back and blend frame by frame
-                out_frames = np.split(concat_out, len(chunk_frames), axis=-1)
-                valid_q_frames_chunk = np.split(concat_valid_q, len(chunk_frames), axis=-1)
-                
-                for j, (out_f, valid_q_f) in enumerate(zip(out_frames, valid_q_frames_chunk)):
-                    global_i = start_idx + j
-                    
-                    valid_q = (np.atleast_3d(valid_q_f) > 0.5).astype(np.float32)
-                    valid_q_frames.append(valid_q)
-                    
-                    # Composite with the query background
-                    final_out = valid_q * out_f + (1.0 - valid_q) * base_frame
-                    
-                    # Composite with the mask video if provided
-                    if mask_frames is not None:
-                        mask = mask_frames[global_i] if global_i < len(mask_frames) else mask_frames[-1]
-                        final_out = mask * final_out + (1.0 - mask) * base_frame
-                        
-                    transferred.append(final_out)
         else:
             if args.em:
                 fig_pm = None
