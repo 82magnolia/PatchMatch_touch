@@ -697,7 +697,7 @@ def main():
             # Helper function to process a single frame inside the loop
             em_fn = em_transfer_frame_downsample if args.use_downsample_em else em_transfer_frame_fullres
             def process_frame(i, current_em_iters, pass_nnf, init_frame):
-                output, last_pm, valid_q, _ = em_fn(
+                output, last_pm, valid_q, pm_fig = em_fn(
                     query_static, ref_static, ref_frames[i], init_frame,
                     current_em_iters, args.patch_size, args.iters,
                     ref_contact_mask=ref_contact_masks[i],
@@ -705,24 +705,24 @@ def main():
                     init_nnf=pass_nnf,
                     use_accel=args.use_accel,
                     downsample=args.downsample_res)
-                
+
                 # Apply render mask if provided
                 if mask_frames is not None:
                     mask = mask_frames[i] if i < len(mask_frames) else mask_frames[-1]
                     output = mask * output + (1.0 - mask) * base_frame
-                    
+
                 transferred[i] = output
                 valid_q_frames[i] = valid_q
-                return last_pm
+                return last_pm, pm_fig
 
             # Process Anchor Frame (Full Search)
-            anchor_pm = process_frame(
-                i=anchor_idx, 
-                current_em_iters=args.em_iters, 
-                pass_nnf=None, 
+            anchor_pm, anchor_fig_pm = process_frame(
+                i=anchor_idx,
+                current_em_iters=args.em_iters,
+                pass_nnf=None,
                 init_frame=base_frame)
-            
-            fig_pm = anchor_pm  # Save best NNF for the visualization figure
+
+            fig_pm = anchor_fig_pm  # full-res PM for NNF figure
 
             # Forward Propagation (Anchor -> End)
             prev_nnf = anchor_pm.nnf
@@ -732,10 +732,10 @@ def main():
                 current_em_iters = args.em_iters_subseq
             for i in tqdm(range(anchor_idx + 1, len(ref_frames)), desc="Forward Pass", leave=False):
                 pass_nnf = prev_nnf if args.use_accel else None
-                last_pm = process_frame(
-                    i=i, 
-                    current_em_iters=current_em_iters, 
-                    pass_nnf=pass_nnf, 
+                last_pm, _ = process_frame(
+                    i=i,
+                    current_em_iters=current_em_iters,
+                    pass_nnf=pass_nnf,
                     init_frame=transferred[i - 1])
                 prev_nnf = last_pm.nnf
 
@@ -744,10 +744,10 @@ def main():
             for i in tqdm(range(anchor_idx - 1, -1, -1), desc="Backward Pass", leave=False):
                 pass_nnf = prev_nnf if args.use_accel else None
                 # init_frame uses the temporally adjacent frame we just processed (i + 1)
-                last_pm = process_frame(
-                    i=i, 
-                    current_em_iters=current_em_iters, 
-                    pass_nnf=pass_nnf, 
+                last_pm, _ = process_frame(
+                    i=i,
+                    current_em_iters=current_em_iters,
+                    pass_nnf=pass_nnf,
                     init_frame=transferred[i + 1])
                 prev_nnf = last_pm.nnf
         elif args.use_video_concate:
@@ -798,11 +798,12 @@ def main():
                             init_nnf=pass_nnf,
                             use_accel=args.use_accel,
                             downsample=args.downsample_res)
-                
+
                 # If EM is disabled, the code reuses the `pm` object initialized outside this loop.
                 if start_idx == 0:
                     fig_pm = pm
-                prev_nnf = pm.nnf
+                # Use pm_low.nnf for warm-starting next downsample call (pm.nnf is full-res)
+                prev_nnf = pm_low.nnf if args.use_downsample_em else pm.nnf
                 
                 # Concatenate frames and masks
                 concat_ref = np.concatenate(chunk_frames, axis=-1)
@@ -871,7 +872,7 @@ def main():
                     if args.use_accel is False:
                         prev_nnf = None
                     em_fn = em_transfer_frame_downsample if args.use_downsample_em else em_transfer_frame_fullres
-                    output, last_pm, valid_q, _ = em_fn(
+                    output, last_pm, valid_q, pm_fig = em_fn(
                         query_static, ref_static, ref_frame, init,
                         current_em_iters, args.patch_size, args.iters,
                         ref_contact_mask=ref_contact_mask,
@@ -883,7 +884,7 @@ def main():
                     if valid_q is not None:
                         valid_q_frames.append(valid_q)
                     if i == 0:
-                        fig_pm = last_pm  # pm from frame-0 final EM iter for figure
+                        fig_pm = pm_fig  # full-res PM for NNF figure
                     if mask_frames is not None:
                         mask = mask_frames[i] if i < len(mask_frames) else mask_frames[-1]
                         output = mask * output + (1.0 - mask) * base_frame
