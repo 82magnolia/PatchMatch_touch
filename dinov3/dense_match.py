@@ -92,9 +92,25 @@ def _stratify_points(pts: torch.Tensor, threshold: float) -> np.ndarray:
     return np.where(keep)[0]
 
 
+def _nonzero_at_points(pil_image, points_rc):
+    """Boolean (N,) array: True where the pixel at each (row, col) point in
+    pil_image is non-zero (i.e. not background/invalid, per the all-zero-pixel
+    convention used elsewhere in the pipeline, e.g. ref_static_mask).
+    """
+    arr = np.asarray(pil_image)  # H x W x 3 uint8
+    h, w = arr.shape[:2]
+    rows = np.clip(points_rc[:, 0].round().astype(int), 0, h - 1)
+    cols = np.clip(points_rc[:, 1].round().astype(int), 0, w - 1)
+    return np.any(arr[rows, cols] != 0, axis=-1)
+
+
 def _find_sparse_matches(image_left, image_right, model, n_layers, device,
                          num_points, stratify_threshold):
     """DINOv3 patch matching: for each patch in image_left, find its best match in image_right.
+
+    Candidate matches whose source or target point lands on an all-zero
+    (background/invalid) pixel are dropped before stratification/sampling, so
+    the downstream geometric fit isn't corrupted by background matches.
 
     Returns (pts_l, pts_r): (row, col) points in each image's original pixel space.
     """
@@ -123,6 +139,15 @@ def _find_sparse_matches(image_left, image_right, model, n_layers, device,
 
     scale_l = image_left.height / IMAGE_SIZE
     scale_r = image_right.height / IMAGE_SIZE
+
+    valid = (_nonzero_at_points(image_left, (locs_l * scale_l).numpy())
+             & _nonzero_at_points(image_right, (locs_r * scale_r).numpy()))
+    if not np.any(valid):
+        raise RuntimeError(
+            "All DINOv3 matches land on all-zero (background) pixels in "
+            "image_left/image_right; no valid foreground correspondence found.")
+    valid_t = torch.from_numpy(valid)
+    locs_l, locs_r = locs_l[valid_t], locs_r[valid_t]
 
     keep = _stratify_points(locs_l * scale_l, stratify_threshold ** 2)
     if len(keep) > num_points:

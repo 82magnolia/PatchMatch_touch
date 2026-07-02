@@ -38,7 +38,13 @@ if __name__ == "__main__":
     parser.add_argument("--override_hw", default=None, type=int, nargs=2, metavar=("H", "W"))
     parser.add_argument("--contact_theta", default=0.0, type=float)
     parser.add_argument("--rand_contact_theta", action="store_true",
-                        help="Sample a random contact_theta from [0, 2*pi] for each contact point")
+                        help="Sample a random contact_theta perturbation around --contact_theta "
+                             "(magnitude bounded by --rand_contact_theta_mag) for each contact point")
+    parser.add_argument("--rand_contact_theta_mag", default=np.pi, type=float,
+                        help="Maximum magnitude (radians) of the random contact_theta perturbation "
+                             "around --contact_theta when --rand_contact_theta is set. Default is "
+                             "pi, i.e. the perturbation covers the full [0, 2*pi) range regardless "
+                             "of --contact_theta.")
     parser.add_argument("--save_dir", default="../results/gen_contact", type=str)
     args = parser.parse_args()
 
@@ -88,7 +94,9 @@ if __name__ == "__main__":
 
     # Per-contact-point loop
     for idx, contact_point in enumerate(tqdm(contact_points, desc="Contact points")):
-        contact_theta = np.random.uniform(0, 2 * np.pi) if args.rand_contact_theta else args.contact_theta
+        contact_theta = (args.contact_theta +
+                        np.random.uniform(-args.rand_contact_theta_mag, args.rand_contact_theta_mag)) \
+            if args.rand_contact_theta else args.contact_theta
         sim_video = None
         shadow_video = None
         mask_video = None
