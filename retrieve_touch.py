@@ -1,17 +1,18 @@
 """
-Top-K touch retrieval — DINOv2 or pre-specified TSV.
+Top-K touch retrieval — DINOv3 or pre-specified TSV.
 
 Two retrieval modes selected via --retrieval_mode:
 
-  dinov2 (default):
-    Builds a DINOv2 feature database for the reference entries and retrieves
+  dinov3 (default):
+    Builds a DINOv3 feature database for the reference entries and retrieves
     the top-K most similar ones for each query.
 
     python retrieve_touch.py \
         --ref_dir Taxim/results/gen_contact \
         --query_dir Taxim/results/gen_contact \
         --modality normal --scale 25 --top_k 5 \
-        --retrieval_mode dinov2
+        --retrieval_mode dinov3 \
+        --dinov3_weights dinov3/pretrained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
 
   tsv:
     Loads pre-specified retrieval results from a TSV file (--tsv). The TSV
@@ -102,13 +103,19 @@ def load_tsv(tsv_path):
 
 
 # ---------------------------------------------------------------------------
-# DINOv2 model
+# DINOv3 model
 # ---------------------------------------------------------------------------
 
-def load_dino_model(model_name, device):
-    """Load a DINOv2 model from torch hub and return (model, transform)."""
-    model = torch.hub.load("facebookresearch/dinov2", model_name)
-    model.eval().to(device)
+def load_dino_model(model_name, weights_path, device):
+    """Load a DINOv3 model from the local hub and return (model, transform).
+
+    Reuses dinov3/dense_match.py's local torch.hub loading (gated weights,
+    cached by (model_name, weights_path)) — the same model-loading path used
+    by the DINOv3 correspondence/transfer scripts.
+    """
+    from dinov3.dense_match import _load_model
+    model, _ = _load_model(model_name, weights_path)
+    model.to(device)
 
     transform = transforms.Compose([
         transforms.ToPILImage(),
@@ -125,17 +132,17 @@ def load_dino_model(model_name, device):
 # Feature extraction
 # ---------------------------------------------------------------------------
 
-def compute_patch_mask(img_rgb, mask_mode, patch_size=14, img_size=224):
-    """Compute a (num_patches,) boolean mask for DINOv2's forward_features.
+def compute_patch_mask(img_rgb, mask_mode, patch_size=16, img_size=224):
+    """Compute a (num_patches,) boolean mask for DINOv3's forward_features.
 
     Pixels matching mask_mode are aggregated to patch level (any-pixel rule).
-    True = masked patch (replaced by DINOv2's learned mask token).
+    True = masked patch (replaced by DINOv3's learned mask token).
     Returns None when mask_mode is 'none'.
 
     Args:
         img_rgb:    H×W×3 uint8 RGB array
         mask_mode:  'black_pixels' | 'white_pixels' | 'none'
-        patch_size: ViT patch size in pixels (14 for all DINOv2 variants)
+        patch_size: ViT patch size in pixels (16 for all DINOv3 variants)
         img_size:   model input resolution (224)
     """
     if mask_mode == "none":
@@ -151,19 +158,19 @@ def compute_patch_mask(img_rgb, mask_mode, patch_size=14, img_size=224):
                               interpolation=cv2.INTER_NEAREST)
 
     # Aggregate to patch grid: a patch is masked if any pixel inside it is masked
-    n = img_size // patch_size   # 16 for 224/14
+    n = img_size // patch_size   # 14 for 224/16
     patch_mask = mask_resized.reshape(n, patch_size, n, patch_size).any(axis=(1, 3))
     return torch.from_numpy(patch_mask.flatten())   # (n*n,) bool
 
 
 def extract_features(model, transform, paths, device, batch_size=32, mask_mode="none"):
-    """Extract DINOv2 CLS-token features for a list of image paths.
+    """Extract DINOv3 CLS-token features for a list of image paths.
 
     Args:
         mask_mode: 'black_pixels' | 'white_pixels' | 'none'
                    When set, a patch-level boolean mask is derived from each image
                    and passed to model.forward_features(..., masks=masks) so that
-                   DINOv2 replaces the flagged patch tokens with its learned mask
+                   DINOv3 replaces the flagged patch tokens with its learned mask
                    token before computing features.
 
     Returns:
@@ -322,7 +329,7 @@ def make_figure(query_idx, query_paths_by_mod, ref_entries_by_mod, topk_ref_list
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Top-K touch retrieval using DINOv2 features or a pre-specified TSV."
+        description="Top-K touch retrieval using DINOv3 features or a pre-specified TSV."
     )
     parser.add_argument("--ref_dir", required=True, type=str,
                         help="Path to reference touch outputs folder.")
@@ -331,29 +338,32 @@ def main():
     parser.add_argument("--modality", required=True, nargs='+',
                         choices=["color", "normal", "curvature", "height", "shapeindex"],
                         help="Modality(ies) to use for indexing. If multiple are given, "
-                             "DINOv2 features are extracted independently per modality and "
+                             "DINOv3 features are extracted independently per modality and "
                              "concatenated. The first modality is used for visualization.")
     parser.add_argument("--scale", default=None, type=float, nargs='+',
                         help="Scale suffix(es) (e.g. 25 for Taxim _scale25_ files, or 0.5 2 for "
                              "GelSight render_scale outputs). Omit to use base-resolution files. "
-                             "Multiple values cause DINOv2 features to be extracted per scale and "
+                             "Multiple values cause DINOv3 features to be extracted per scale and "
                              "concatenated before retrieval. Tag formatting matches _format_scale "
                              "(Python :g), so 25.0→'25', 0.5→'0.5'.")
-    parser.add_argument("--retrieval_mode", default="dinov2", choices=["dinov2", "tsv"],
-                        help="Retrieval mode: 'dinov2' runs feature extraction; "
+    parser.add_argument("--retrieval_mode", default="dinov3", choices=["dinov3", "tsv"],
+                        help="Retrieval mode: 'dinov3' runs feature extraction; "
                              "'tsv' loads pre-specified results from --tsv.")
-    # dinov2-mode args
+    # dinov3-mode args
     parser.add_argument("--top_k", default=5, type=int,
-                        help="Number of top retrievals per query (dinov2 mode).")
+                        help="Number of top retrievals per query (dinov3 mode).")
     parser.add_argument("--mask_mode", default="none",
                         choices=["black_pixels", "white_pixels", "none"],
-                        help="Pixels to mask during DINOv2 feature extraction. "
-                             "Matching patches are replaced with DINOv2's learned "
+                        help="Pixels to mask during DINOv3 feature extraction. "
+                             "Matching patches are replaced with DINOv3's learned "
                              "mask token. Default: none.")
-    parser.add_argument("--dino_model", default="dinov2_vits14",
-                        choices=["dinov2_vits14", "dinov2_vitb14",
-                                 "dinov2_vitl14", "dinov2_vitg14"],
-                        help="DINOv2 model variant (dinov2 mode).")
+    parser.add_argument("--dino_model", default="dinov3_vitb16",
+                        choices=["dinov3_vits16", "dinov3_vits16plus",
+                                 "dinov3_vitb16", "dinov3_vitl16"],
+                        help="DINOv3 model variant (dinov3 mode, default: dinov3_vitb16).")
+    parser.add_argument("--dinov3_weights", default=None, type=str,
+                        help="Path to gated DINOv3 .pth weights. Required when "
+                             "--retrieval_mode dinov3 is set.")
     # tsv-mode args
     parser.add_argument("--tsv", default=None, type=str,
                         help="Path to retrieval TSV file (tsv mode).")
@@ -365,6 +375,9 @@ def main():
 
     if args.retrieval_mode == "tsv" and args.tsv is None:
         parser.error("--tsv is required when --retrieval_mode tsv is set.")
+
+    if args.retrieval_mode == "dinov3" and not args.dinov3_weights:
+        parser.error("--dinov3_weights is required when --retrieval_mode dinov3 is set.")
 
     scales = args.scale if args.scale is not None else [None]
 
@@ -417,10 +430,10 @@ def main():
     # -----------------------------------------------------------------------
     # Branch on retrieval mode
     # -----------------------------------------------------------------------
-    if args.retrieval_mode == "dinov2":
+    if args.retrieval_mode == "dinov3":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Loading DINOv2 model '{args.dino_model}' on {device}...")
-        model, transform = load_dino_model(args.dino_model, device)
+        print(f"Loading DINOv3 model '{args.dino_model}' on {device}...")
+        model, transform = load_dino_model(args.dino_model, args.dinov3_weights, device)
 
         # Extract features per (modality, scale), concatenate, re-normalise
         ref_feats_list, query_feats_list = [], []
@@ -487,7 +500,7 @@ def main():
         ref_entries=ref_entries,
         topk_idxs=topk_idxs_list,
         save_dir=args.save_dir,
-        topk_sims=topk_sims_list if args.retrieval_mode == "dinov2" else None,
+        topk_sims=topk_sims_list if args.retrieval_mode == "dinov3" else None,
     )
 
     # -----------------------------------------------------------------------

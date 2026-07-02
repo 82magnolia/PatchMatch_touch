@@ -34,21 +34,23 @@ Examples:
       --scale 100 --retrieval_mode tsv \\
       --save_dir log/pipeline/52
 
-  # Taxim — DINOv2 multi-modality retrieval + ReBotNet
+  # Taxim — DINOv3 multi-modality retrieval + ReBotNet
   python transfer_pipeline.py \\
       --ref_dir Taxim/results/gen_contact_full/52 \\
       --query_dir Taxim/results/gen_contact_full_query/52 \\
-      --scale 100 --retrieval_mode dinov2 \\
+      --scale 100 --retrieval_mode dinov3 \\
       --retrieval_modality normal curvature \\
+      --dino_weights dinov3/pretrained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth \\
       --use_keyframe --use_accel --use_downsample_em \\
       --checkpoint log/rebot_checkpoints/best.pth \\
-      --save_dir log/pipeline/52_dinov2
+      --save_dir log/pipeline/52_dinov3
 
-  # Real GelSight — multi-scale DINOv2 + residual ReBotNet
+  # Real GelSight — multi-scale DINOv3 + residual ReBotNet
   python transfer_pipeline.py \\
       --ref_dir log/gelsight_captures/session_01 \\
       --query_dir log/gelsight_captures/session_01 \\
-      --scale 0.5 1 2 --retrieval_mode dinov2 \\
+      --scale 0.5 1 2 --retrieval_mode dinov3 \\
+      --dino_weights dinov3/pretrained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth \\
       --use_keyframe --use_accel --use_downsample_em \\
       --checkpoint log/rebot_checkpoints/best.pth --residual \\
       --save_dir log/pipeline/session_01
@@ -338,11 +340,11 @@ def main():
     g_ret = p.add_argument_group("Stage 1 — Retrieval")
     g_ret.add_argument("--retrieval_modality", nargs="+", default=["normal"],
                        choices=["color", "normal", "curvature", "height", "shapeindex"],
-                       help="Modality(ies) for DINOv2 feature extraction (default: normal).")
-    g_ret.add_argument("--retrieval_mode", default="dinov2",
-                       choices=["dinov2", "tsv", "sim_gt_retrieval", "real_gt_retrieval"],
+                       help="Modality(ies) for DINOv3 feature extraction (default: normal).")
+    g_ret.add_argument("--retrieval_mode", default="dinov3",
+                       choices=["dinov3", "tsv", "sim_gt_retrieval", "real_gt_retrieval"],
                        help=(
-                           "'dinov2' (default) — DINOv2 feature retrieval; "
+                           "'dinov3' (default) — DINOv3 feature retrieval; "
                            "'tsv' — explicit TSV file via --tsv; "
                            "'sim_gt_retrieval' — auto identity TSV (query idx = ref idx), "
                            "for Taxim synthetic data; "
@@ -352,14 +354,19 @@ def main():
     g_ret.add_argument("--tsv", default=None,
                        help="Path to retrieval TSV ('tsv' mode only).")
     g_ret.add_argument("--top_k", type=int, default=5,
-                       help="Top-K retrievals per query (dinov2 mode, default: 5).")
-    g_ret.add_argument("--dino_model", default="dinov2_vits14",
-                       choices=["dinov2_vits14", "dinov2_vitb14",
-                                "dinov2_vitl14", "dinov2_vitg14"],
-                       help="DINOv2 variant (default: dinov2_vits14).")
+                       help="Top-K retrievals per query (dinov3 mode, default: 5).")
+    g_ret.add_argument("--dino_model", default="dinov3_vitb16",
+                       choices=["dinov3_vits16", "dinov3_vits16plus",
+                                "dinov3_vitb16", "dinov3_vitl16"],
+                       help="DINOv3 variant (dinov3 mode, default: dinov3_vitb16).")
+    g_ret.add_argument("--dino_weights", default=None,
+                       help="Path to gated DINOv3 .pth weights. Required when "
+                            "--retrieval_mode dinov3 is set. Separate from Stage 2's "
+                            "--dinov3_weights so retrieval and transfer can use different "
+                            "model sizes.")
     g_ret.add_argument("--mask_mode", default="none",
                        choices=["black_pixels", "white_pixels", "none"],
-                       help="Patch masking mode for DINOv2 (default: none).")
+                       help="Patch masking mode for DINOv3 (default: none).")
 
     # ── Stage 2: Transfer ─────────────────────────────────────────────────────
     g_tr = p.add_argument_group("Stage 2 — PatchMatch Transfer")
@@ -493,6 +500,9 @@ def main():
         if args.dinov3_match_scale is not None and args.dinov3_match_scale_convention is None:
             p.error("--dinov3_match_scale requires --dinov3_match_scale_convention to be set.")
 
+    if args.retrieval_mode == "dinov3" and not args.dino_weights:
+        p.error("--retrieval_mode dinov3 requires --dino_weights to be set.")
+
     transfer_suffix = "_em" if args.transfer_backend == "patchmatch" else ""
 
     # Derived output paths
@@ -541,10 +551,11 @@ def main():
         ]
         if args.scale is not None:
             cmd += ["--scale"] + [f"{s:g}" for s in args.scale]
-        if retrieval_mode_actual == "dinov2":
+        if retrieval_mode_actual == "dinov3":
             cmd += [
                 "--top_k", str(args.top_k),
                 "--dino_model", args.dino_model,
+                "--dinov3_weights", args.dino_weights,
                 "--mask_mode", args.mask_mode,
             ]
         else:

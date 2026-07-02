@@ -32,7 +32,7 @@ Four `--retrieval_mode` options are available:
 |---|---|
 | `sim_gt_retrieval` | Auto-generates an identity TSV (query idx = ref idx). For Taxim synthetic data where reference and query are matched pairs. |
 | `real_gt_retrieval` | Auto-generates an odd→even TSV (odd idx = query, even idx = ref, e.g. 1→0, 3→2). For real GelSight captures stored in a single directory. |
-| `dinov2` | DINOv2 feature retrieval across all reference touches. Supports multi-modality and multi-scale feature concatenation. |
+| `dinov3` | DINOv3 feature retrieval across all reference touches. Supports multi-modality and multi-scale feature concatenation. Requires `--dino_weights` (gated `.pth` checkpoint). |
 | `tsv` | Explicit TSV file via `--tsv`. |
 
 **i) Taxim synthetic data — ground-truth identity retrieval (`sim_gt_retrieval`)**
@@ -63,24 +63,25 @@ python transfer_pipeline.py \
     --save_dir log/pipeline/session_01_gt
 ```
 
-**iii) Multi-modality DINOv2 retrieval — Taxim with ReBotNet**
+**iii) Multi-modality DINOv3 retrieval — Taxim with ReBotNet**
 
-Concatenates normal + curvature DINOv2 features for retrieval, then runs PatchMatch transfer and neural refinement.
+Concatenates normal + curvature DINOv3 features for retrieval, then runs PatchMatch transfer and neural refinement.
 
 ```bash
 python transfer_pipeline.py \
     --ref_dir Taxim/results/gen_contact_full/52 \
     --query_dir Taxim/results/gen_contact_full_query/52 \
     --scale 100 \
-    --retrieval_mode dinov2 \
+    --retrieval_mode dinov3 \
     --retrieval_modality normal curvature \
+    --dino_weights dinov3/pretrained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth \
     --transfer_modality raw_normal \
     --use_keyframe --use_accel --use_downsample_em \
     --checkpoint log/rebot_checkpoints/best.pth \
-    --save_dir log/pipeline/52_dinov2
+    --save_dir log/pipeline/52_dinov3
 ```
 
-**iv) Real GelSight data — multi-scale DINOv2 + residual ReBotNet**
+**iv) Real GelSight data — multi-scale DINOv3 + residual ReBotNet**
 
 Retrieval uses features from three render scales (0.5×, 1×, 2×) concatenated; ReBotNet runs in residual mode.
 
@@ -89,8 +90,9 @@ python transfer_pipeline.py \
     --ref_dir log/gelsight_captures/session_01 \
     --query_dir log/gelsight_captures/session_01 \
     --scale 0.5 1 2 \
-    --retrieval_mode dinov2 \
+    --retrieval_mode dinov3 \
     --retrieval_modality normal \
+    --dino_weights dinov3/pretrained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth \
     --transfer_modality raw_normal \
     --use_keyframe --use_accel --use_downsample_em \
     --checkpoint log/rebot_checkpoints/best.pth --residual \
