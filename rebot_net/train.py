@@ -82,8 +82,9 @@ def parse_args():
     p.add_argument('--wandb_run_name', default=None)
     p.add_argument('--wandb_offline', action='store_true')
     p.add_argument('--residual', action='store_true',
-                   help="Train in residual space: subtract blank (ref frame 0) from LQ and GT; "
-                        "model predicts refined residuals, added back to blank for absolute output")
+                   help="Train in residual space: subtract blank (frame 0 of the transferred "
+                        "video) from LQ and GT; model predicts refined residuals, added back "
+                        "to blank for absolute output")
     return p.parse_args()
 
 

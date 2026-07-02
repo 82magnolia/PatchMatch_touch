@@ -124,17 +124,6 @@ def enhance_video(model, frames_rgb, device, blank_tensor=None):
     return enhanced, residual_vis
 
 
-def _load_blank_from_ref(ref_path):
-    """Return frame 0 of the reference video as a (3,H,W) float32 CPU tensor."""
-    cap = cv2.VideoCapture(ref_path)
-    ret, frame = cap.read()
-    cap.release()
-    if not ret:
-        raise RuntimeError(f"Failed to read blank frame from {ref_path}")
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    return torch.from_numpy(frame_rgb.astype(np.float32) / 255.0).permute(2, 0, 1)
-
-
 def process_single_video(model, input_path, save_dir, device, save_gt=False,
                          residual=False):
     frames_uint8, fps = _read_video(input_path)
@@ -144,15 +133,11 @@ def process_single_video(model, input_path, save_dir, device, save_gt=False,
 
     blank_tensor = None
     if residual:
-        src_dir = os.path.dirname(input_path)
-        stem = os.path.splitext(os.path.basename(input_path))[0]
-        base = _strip_transferred_suffix(stem)
-        ref_path = os.path.join(src_dir, f"{base}_ref_shadow.mp4")
-        if not os.path.exists(ref_path):
-            raise FileNotFoundError(
-                f"--residual requires the blank reference frame at {ref_path}, "
-                f"but it was not found.")
-        blank_tensor = _load_blank_from_ref(ref_path)
+        # Blank is frame 0 of the transferred video itself: always available
+        # at real deployment (unlike the query's own touch video, which only
+        # exists for paired train/eval data) and already in query coordinate
+        # space (unlike the raw reference video).
+        blank_tensor = _to_tensor(frames_uint8[0])
 
     print(f"  Enhancing {input_path}  ({len(frames_uint8)} frames @ {fps:.1f} fps) ...",
           flush=True)
@@ -216,9 +201,9 @@ def parse_args():
     p.add_argument('--save_gt', action='store_true',
                    help="Also copy the ground-truth query and reference videos alongside enhanced output")
     p.add_argument('--residual', action='store_true',
-                   help="Residual mode: subtract blank (frame 0 of ref_shadow.mp4) from input, "
-                        "predict refined residual, add blank back for absolute output. "
-                        "Also saves *_pred_residual.mp4 visualization.")
+                   help="Residual mode: subtract blank (frame 0 of the input transferred "
+                        "video) before inference, predict refined residual, add blank back "
+                        "for absolute output. Also saves *_pred_residual.mp4 visualization.")
     return p.parse_args()
 
 

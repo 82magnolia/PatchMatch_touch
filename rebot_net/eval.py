@@ -55,7 +55,7 @@ def parse_args():
                    help="Also copy the ground-truth query and reference videos alongside enhanced output")
     p.add_argument('--residual', action='store_true',
                    help="Evaluate in residual space: LQ and GT are (video - blank), "
-                        "blank from frame 0 of ref_shadow.mp4. "
+                        "blank from frame 0 of the transferred video. "
                         "Metrics are computed on absolute reconstructions.")
     return p.parse_args()
 

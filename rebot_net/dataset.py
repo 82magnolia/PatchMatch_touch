@@ -18,13 +18,13 @@ def _to_tensor(frame):
     return torch.from_numpy(frame.astype(np.float32) / 255.0).permute(2, 0, 1)
 
 
-def _load_blank(ref_path):
-    """Load frame 0 of the reference video as the no-contact blank frame."""
-    cap = cv2.VideoCapture(ref_path)
+def _load_blank(video_path):
+    """Load frame 0 of a video as the no-contact blank frame."""
+    cap = cv2.VideoCapture(video_path)
     ret, frame = cap.read()
     cap.release()
     if not ret:
-        raise RuntimeError(f"Failed to read blank frame from {ref_path}")
+        raise RuntimeError(f"Failed to read blank frame from {video_path}")
     return _to_tensor(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
 
@@ -36,15 +36,19 @@ class TactileTransferDataset(data.Dataset):
 
     When residual=True, inputs and targets are expressed as contact residuals:
         residual[t] = video[t] - blank
-    where blank is frame 0 of the reference video ({pair_idx}_ref_shadow.mp4).
+    where blank is frame 0 of the transferred video itself
+    ({pair_idx}_transferred_em.mp4) — always available at real deployment
+    (unlike the query's own touch video, which only exists for paired
+    train/eval data) and already in query coordinate space (unlike the raw
+    reference video, which lives in reference coordinate space).
     The returned dict includes a 'blank' key for reconstruction.
 
     Directory layout expected:
         transfer_dir/
             {obj_id}/
-                {pair_idx}_transferred_em.mp4   # network input
+                {pair_idx}_transferred_em.mp4   # network input, blank source
                 {pair_idx}_query_shadow.mp4      # ground truth
-                {pair_idx}_ref_shadow.mp4        # reference (blank source)
+                {pair_idx}_ref_shadow.mp4        # reference (viz only)
     """
 
     NUM_PAIRS = 8
@@ -65,10 +69,6 @@ class TactileTransferDataset(data.Dataset):
                 vid_path = os.path.join(obj_dir, f"{pair_idx}_transferred_em.mp4")
                 if not os.path.exists(vid_path):
                     continue
-                if residual:
-                    ref_path = os.path.join(obj_dir, f"{pair_idx}_ref_shadow.mp4")
-                    if not os.path.exists(ref_path):
-                        continue
                 cap = cv2.VideoCapture(vid_path)
                 n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 cap.release()
@@ -107,8 +107,7 @@ class TactileTransferDataset(data.Dataset):
         gt = _to_tensor(frame_gt)
 
         if self.residual:
-            ref_path = os.path.join(obj_dir, f"{pair_idx}_ref_shadow.mp4")
-            blank = _load_blank(ref_path)
+            blank = _load_blank(lq_path)
             lq = lq - blank.unsqueeze(0)   # (2, 3, H, W)
             gt = gt - blank
             return {'lq': lq, 'gt': gt, 'blank': blank, 'meta': (obj_id, pair_idx, t)}
@@ -132,8 +131,7 @@ class TactileTransferDataset(data.Dataset):
 
         blank = None
         if self.residual:
-            ref_path = os.path.join(obj_dir, f"{pair_idx}_ref_shadow.mp4")
-            blank = _load_blank(ref_path)
+            blank = _load_blank(lq_path)
 
         cap_lq = cv2.VideoCapture(lq_path)
         cap_gt = cv2.VideoCapture(gt_path)
