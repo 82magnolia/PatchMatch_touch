@@ -1,9 +1,12 @@
 """
-End-to-end tactile transfer pipeline: retrieve → PatchMatch → (optional) ReBotNet.
+End-to-end tactile transfer pipeline: retrieve → transfer → (optional) ReBotNet.
 
 Given a flat directory of N reference touches and M query touch locations, runs:
   1. retrieve_touch.py      — finds top-K reference matches per query
-  2. main_retrieval_transfer_accel.py — warps reference videos to query layout via PatchMatch
+  2. Stage 2 transfer, backend selected via --transfer_backend:
+       'patchmatch' (default) — main_retrieval_transfer_accel.py, PatchMatch/EM loop
+       'dinov3_feat_match'    — main_retrieval_transfer_feat_match.py, DINOv3-only
+                                 correspondence, no PatchMatch/CUDA dependency
   3. rebot_net/infer.py     — (optional) neural refinement of transferred videos
 
 Works with both Taxim-generated data and real GelSight captures.
@@ -13,12 +16,14 @@ Output layout under --save_dir:
   retrieval/
     results.pkl
   transfer/
-    {query_idx}_transferred_em.mp4
+    {query_idx}_transferred_em.mp4    ('patchmatch' backend)
+    {query_idx}_transferred.mp4       ('dinov3_feat_match' backend)
     {query_idx}_ref_{video_type}.mp4
     {query_idx}_query_{video_type}.mp4
     ...
   enhanced/
-    {query_idx}_transferred_em_enhanced.mp4
+    {query_idx}_transferred_em_enhanced.mp4  ('patchmatch' backend)
+    {query_idx}_transferred_enhanced.mp4     ('dinov3_feat_match' backend)
 
 Examples:
 
@@ -47,6 +52,15 @@ Examples:
       --use_keyframe --use_accel --use_downsample_em \\
       --checkpoint log/rebot_checkpoints/best.pth --residual \\
       --save_dir log/pipeline/session_01
+
+  # Real GelSight — DINOv3 feature-match transfer backend (no PatchMatch/CUDA)
+  python transfer_pipeline.py \\
+      --ref_dir log/gelsight_captures/session_01 \\
+      --query_dir log/gelsight_captures/session_01 \\
+      --scale 1 --retrieval_mode real_gt_retrieval \\
+      --transfer_backend dinov3_feat_match \\
+      --dinov3_weights dinov3/pretrained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth \\
+      --save_dir log/pipeline/session_01_dinov3
 """
 
 import argparse
@@ -395,11 +409,40 @@ def main():
     g_tr.add_argument("--dinov3_model", default="dinov3_vitb16",
                       choices=["dinov3_vits16", "dinov3_vits16plus",
                                "dinov3_vitb16", "dinov3_vitl16"],
-                      help="DINOv3 model variant for --init_dinov3_match_scale "
-                           "(default: dinov3_vitb16).")
+                      help="DINOv3 model variant, used by --init_dinov3_match_scale (patchmatch "
+                           "backend) and --transfer_backend dinov3_feat_match (default: dinov3_vitb16).")
     g_tr.add_argument("--dinov3_weights", default=None,
                       help="Path to gated DINOv3 .pth weights. Required when "
-                           "--init_dinov3_match_scale is set.")
+                           "--init_dinov3_match_scale is set, or when "
+                           "--transfer_backend dinov3_feat_match is used.")
+    g_tr.add_argument("--transfer_backend", default="patchmatch",
+                      choices=["patchmatch", "dinov3_feat_match"],
+                      help="Stage 2 backend: 'patchmatch' (default) runs main_retrieval_transfer_accel.py "
+                           "with the EM/PatchMatch loop; 'dinov3_feat_match' runs "
+                           "main_retrieval_transfer_feat_match.py, a DINOv3-only correspondence pipeline "
+                           "with no PatchMatch/CUDA dependency.")
+    g_tr.add_argument("--dinov3_match_scale", type=float, default=None,
+                      help="dinov3_feat_match backend only: optional higher-res scale for DINOv3 "
+                           "matching, aligned back to --scale's field of view. Requires "
+                           "--dinov3_match_scale_convention.")
+    g_tr.add_argument("--dinov3_match_scale_convention", default=None,
+                      choices=["render_scale", "obj_scale_factor"],
+                      help="Required when --dinov3_match_scale is set.")
+    g_tr.add_argument("--dinov3_num_points", type=int, default=100,
+                      help="dinov3_feat_match backend only: max sparse DINOv3 keypoints (default: 100).")
+    g_tr.add_argument("--dinov3_stratify_threshold", type=float, default=20.0,
+                      help="dinov3_feat_match backend only: spatial stratification threshold in px "
+                           "(default: 20.0).")
+    g_tr.add_argument("--dinov3_reproj_threshold", type=float, default=3.0,
+                      help="dinov3_feat_match backend only: RANSAC reprojection threshold in px, "
+                           "used to fit/select inliers for --dinov3_transform_type (default: 3.0).")
+    g_tr.add_argument("--dinov3_transform_type", default="rbf_homography",
+                      choices=["affine", "homography", "rbf_affine", "rbf_homography"],
+                      help="dinov3_feat_match backend only: geometric warp fitted from the DINOv3 "
+                           "sparse matches -- 'affine'/'homography' fit a single global RANSAC-robust "
+                           "transform; 'rbf_affine'/'rbf_homography' use that RANSAC fit only for "
+                           "inlier selection, then interpolate a non-rigid thin-plate-spline warp "
+                           "(default: rbf_homography).")
 
     # ── Stage 3: Refine ───────────────────────────────────────────────────────
     g_ref = p.add_argument_group("Stage 3 — ReBotNet Refinement")
@@ -443,6 +486,14 @@ def main():
                     "--init_dinov3_match_scale_convention to be set.")
         if not args.dinov3_weights:
             p.error("--init_dinov3_match_scale requires --dinov3_weights to be set.")
+
+    if args.transfer_backend == "dinov3_feat_match":
+        if not args.dinov3_weights:
+            p.error("--transfer_backend dinov3_feat_match requires --dinov3_weights.")
+        if args.dinov3_match_scale is not None and args.dinov3_match_scale_convention is None:
+            p.error("--dinov3_match_scale requires --dinov3_match_scale_convention to be set.")
+
+    transfer_suffix = "_em" if args.transfer_backend == "patchmatch" else ""
 
     # Derived output paths
     save_dir      = os.path.abspath(args.save_dir)
@@ -502,50 +553,81 @@ def main():
     else:
         print("[Stage 1] Skipped (--skip_retrieval).")
 
-    # ── Stage 2: PatchMatch Transfer ──────────────────────────────────────────
+    # ── Stage 2: Transfer ──────────────────────────────────────────────────────
     if not args.skip_transfer:
         transfer_scale = args.scale[0] if args.scale else None
 
-        cmd = [
-            sys.executable, PROJECT_ROOT / "main_retrieval_transfer_accel.py",
-            "--query_dir", args.query_dir,
-            "--ref_dir",   args.ref_dir,
-            "--retrieval_pkl", retrieval_pkl,
-            "--modality",  *args.transfer_modality,
-            "--video_type", args.video_type,
-            "--save_dir",  transfer_dir,
-            "--em",
-            "--iters",         str(args.pm_iters),
-            "--em_iters",      str(args.em_iters),
-            "--em_iters_subseq", str(args.em_iters_subseq),
-            "--patch_size",    str(args.patch_size),
-            "--downsample_res", str(args.downsample_res),
-        ]
-        if not args.save_nnf_figures:
-            cmd.append("--no_nnf_figures")
-        if transfer_scale is not None:
-            cmd += ["--scale", f"{transfer_scale:g}"]
-        if args.init_scale is not None:
-            cmd += ["--init_scale", f"{args.init_scale:g}",
-                    "--init_scale_convention", args.init_scale_convention]
-        if args.init_dinov3_match_scale is not None:
-            cmd += ["--init_dinov3_match_scale", f"{args.init_dinov3_match_scale:g}",
-                    "--init_dinov3_match_scale_convention", args.init_dinov3_match_scale_convention,
-                    "--dinov3_model", args.dinov3_model,
-                    "--dinov3_weights", args.dinov3_weights]
-        if args.use_keyframe:
-            cmd.append("--use_keyframe")
-        if args.use_accel:
-            cmd.append("--use_accel")
-        if args.use_mask:
-            cmd.append("--use_mask")
-        if args.use_ref_static_mask:
-            cmd.append("--use_ref_static_mask")
-        if args.use_downsample_em:
-            cmd.append("--use_downsample_em")
-        if not args.skip_eval:
-            cmd.append("--eval")
-        _run(cmd, "Stage 2: PatchMatch Transfer")
+        if args.transfer_backend == "patchmatch":
+            cmd = [
+                sys.executable, PROJECT_ROOT / "main_retrieval_transfer_accel.py",
+                "--query_dir", args.query_dir,
+                "--ref_dir",   args.ref_dir,
+                "--retrieval_pkl", retrieval_pkl,
+                "--modality",  *args.transfer_modality,
+                "--video_type", args.video_type,
+                "--save_dir",  transfer_dir,
+                "--em",
+                "--iters",         str(args.pm_iters),
+                "--em_iters",      str(args.em_iters),
+                "--em_iters_subseq", str(args.em_iters_subseq),
+                "--patch_size",    str(args.patch_size),
+                "--downsample_res", str(args.downsample_res),
+            ]
+            if not args.save_nnf_figures:
+                cmd.append("--no_nnf_figures")
+            if transfer_scale is not None:
+                cmd += ["--scale", f"{transfer_scale:g}"]
+            if args.init_scale is not None:
+                cmd += ["--init_scale", f"{args.init_scale:g}",
+                        "--init_scale_convention", args.init_scale_convention]
+            if args.init_dinov3_match_scale is not None:
+                cmd += ["--init_dinov3_match_scale", f"{args.init_dinov3_match_scale:g}",
+                        "--init_dinov3_match_scale_convention", args.init_dinov3_match_scale_convention,
+                        "--dinov3_model", args.dinov3_model,
+                        "--dinov3_weights", args.dinov3_weights]
+            if args.use_keyframe:
+                cmd.append("--use_keyframe")
+            if args.use_accel:
+                cmd.append("--use_accel")
+            if args.use_mask:
+                cmd.append("--use_mask")
+            if args.use_ref_static_mask:
+                cmd.append("--use_ref_static_mask")
+            if args.use_downsample_em:
+                cmd.append("--use_downsample_em")
+            if not args.skip_eval:
+                cmd.append("--eval")
+            _run(cmd, "Stage 2: PatchMatch Transfer")
+        else:
+            cmd = [
+                sys.executable, PROJECT_ROOT / "main_retrieval_transfer_feat_match.py",
+                "--query_dir", args.query_dir,
+                "--ref_dir",   args.ref_dir,
+                "--retrieval_pkl", retrieval_pkl,
+                "--modality",  *args.transfer_modality,
+                "--video_type", args.video_type,
+                "--save_dir",  transfer_dir,
+                "--dinov3_model", args.dinov3_model,
+                "--dinov3_weights", args.dinov3_weights,
+                "--dinov3_num_points", str(args.dinov3_num_points),
+                "--dinov3_stratify_threshold", str(args.dinov3_stratify_threshold),
+                "--dinov3_reproj_threshold", str(args.dinov3_reproj_threshold),
+                "--dinov3_transform_type", args.dinov3_transform_type,
+            ]
+            if not args.save_nnf_figures:
+                cmd.append("--no_nnf_figures")
+            if transfer_scale is not None:
+                cmd += ["--scale", f"{transfer_scale:g}"]
+            if args.dinov3_match_scale is not None:
+                cmd += ["--dinov3_match_scale", f"{args.dinov3_match_scale:g}",
+                        "--dinov3_match_scale_convention", args.dinov3_match_scale_convention]
+            if args.use_mask:
+                cmd.append("--use_mask")
+            if args.use_ref_static_mask:
+                cmd.append("--use_ref_static_mask")
+            if not args.skip_eval:
+                cmd.append("--eval")
+            _run(cmd, "Stage 2: DINOv3 Feature-Match Transfer")
     else:
         print("[Stage 2] Skipped (--skip_transfer).")
 
@@ -557,11 +639,12 @@ def main():
             print("[Stage 3] Skipped (--skip_refine).")
     else:
         os.makedirs(enhanced_dir, exist_ok=True)
+        transferred_glob = f"*_transferred{transfer_suffix}.mp4"
         transferred_videos = sorted(
-            glob.glob(os.path.join(transfer_dir, "*_transferred_em.mp4"))
+            glob.glob(os.path.join(transfer_dir, transferred_glob))
         )
         if not transferred_videos:
-            print("[Stage 3] No *_transferred_em.mp4 found in transfer dir — skipping.")
+            print(f"[Stage 3] No {transferred_glob} found in transfer dir — skipping.")
         else:
             print(f"\n[Stage 3] Refining {len(transferred_videos)} video(s) with ReBotNet...")
             for vid_path in transferred_videos:
@@ -597,15 +680,16 @@ def main():
                 return os.path.join(folder, f"{idx}_scale{scale0:g}_normal.jpg")
             return os.path.join(folder, f"{idx}_normal.jpg")
 
+        transferred_glob = f"*_transferred{transfer_suffix}.mp4"
         transferred_videos = sorted(
-            glob.glob(os.path.join(transfer_dir, "*_transferred_em.mp4"))
+            glob.glob(os.path.join(transfer_dir, transferred_glob))
         )
         if not transferred_videos:
-            print("[Stage 4] No *_transferred_em.mp4 found — skipping visualization.")
+            print(f"[Stage 4] No {transferred_glob} found — skipping visualization.")
         else:
             print(f"\n[Stage 4] Creating {len(transferred_videos)} grid visualization(s)...")
             for xfer_path in transferred_videos:
-                stem = os.path.basename(xfer_path).replace("_transferred_em.mp4", "")
+                stem = os.path.basename(xfer_path).replace(f"_transferred{transfer_suffix}.mp4", "")
                 try:
                     query_idx = int(stem)
                 except ValueError:
@@ -616,7 +700,7 @@ def main():
                     transferred_path=xfer_path,
                     query_path=os.path.join(transfer_dir, f"{stem}_query_{args.video_type}.mp4"),
                     ref_path=os.path.join(transfer_dir,   f"{stem}_ref_{args.video_type}.mp4"),
-                    enhanced_path=os.path.join(enhanced_dir, f"{stem}_transferred_em_enhanced.mp4"),
+                    enhanced_path=os.path.join(enhanced_dir, f"{stem}_transferred{transfer_suffix}_enhanced.mp4"),
                     query_normal_path=_normal_path(args.query_dir, query_idx) if query_idx is not None else None,
                     ref_normal_path=_normal_path(args.ref_dir, ref_idx) if ref_idx is not None else None,
                     out_path=os.path.join(viz_dir, f"{stem}_grid.mp4"),
@@ -631,7 +715,7 @@ def main():
             pred_dir=enhanced_dir,
             query_dir=args.query_dir,
             video_type=args.video_type,
-            pred_glob="*_transferred_em_enhanced.mp4",
+            pred_glob=f"*_transferred{transfer_suffix}_enhanced.mp4",
             query_stem_fn=lambda idx: f"{idx}_{args.video_type}.mp4",
             out_pkl=os.path.join(enhanced_dir, "metrics.pkl"),
         )

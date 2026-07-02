@@ -153,4 +153,45 @@ python transfer_pipeline.py \
 
 With `--save_nnf_figures`, this saves `{query_idx}_dinov3_init_nnf.png` instead of `{query_idx}_init_nnf.png`.
 
+**vii) DINOv3-only transfer, no PatchMatch (`main_retrieval_transfer_feat_match.py` / `--transfer_backend dinov3_feat_match`)**
+
+`main_retrieval_transfer_feat_match.py` is a standalone alternative to `main_retrieval_transfer_accel.py` that has no PatchMatch/CUDA dependency at all. Rather than using DINOv3 to *seed* a PatchMatch EM loop, it computes **one** DINOv3 correspondence field per query/ref pair (same matching logic as `--init_dinov3_match_scale`, via `dinov3/dense_match.py`) and applies that single NNF to warp every frame of the touch video directly — no iterative refinement, keyframe propagation, acceleration, or downsampling. It keeps everything else from the main script that isn't PatchMatch-specific: NNF diagnostic figures, contact-mask gating (`--use_ref_contact_mask`, `--use_ref_static_mask`), render-mask compositing (`--use_mask`), and `--eval` metrics.
+
+Because it never touches PatchMatch, running `--help` (or the script itself) doesn't require a CUDA context — useful on machines without a GPU set up for `pycuda`.
+
+Its CLI mirrors the shared pieces of `main_retrieval_transfer_accel.py` (`--query_dir`, `--ref_dir`, `--retrieval_pkl`, `--modality`, `--video_type`, `--scale`, contact-mask flags, `--eval`, `--no_nnf_figures`) plus a DINOv3-specific surface:
+
+- `--dinov3_weights` (**required** — no PatchMatch fallback exists here) and `--dinov3_model`, same as `--init_dinov3_match_scale`.
+- `--dinov3_match_scale` / `--dinov3_match_scale_convention`: optional higher-resolution matching scale, same semantics as `--init_dinov3_match_scale`/`_convention` above — omit to match directly on the `--scale` images.
+- `--dinov3_num_points` (default `100`), `--dinov3_stratify_threshold` (default `20.0`), `--dinov3_reproj_threshold` (default `3.0`): the RBF/matching hyperparameters, exposed here (unlike the seeding flags above) since DINOv3 is the sole correspondence source.
+- `--dinov3_transform_type` (default `rbf_homography`): which geometric warp is fitted from the sparse DINOv3 matches, mirroring `dinov3/app.py`'s four transform options — `affine`/`homography` fit a single global RANSAC-robust transform over all matches (rigid across the whole frame); `rbf_affine`/`rbf_homography` use that same RANSAC fit only to select inliers, then interpolate a non-rigid thin-plate-spline warp through them (handles local deformation, at the cost of being less constrained where matches are sparse).
+
+Run it directly:
+
+```bash
+python main_retrieval_transfer_feat_match.py \
+    --query_dir log/RealData/box_norm_fix \
+    --ref_dir log/RealData/box_norm_fix \
+    --retrieval_pkl log/pipeline_box_residual_dino/retrieval/results.pkl \
+    --modality normal \
+    --video_type shadow \
+    --scale 1 \
+    --dinov3_weights dinov3/pretrained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth \
+    --save_dir log/transfer_feat_match
+```
+
+Or select it from the pipeline via `--transfer_backend dinov3_feat_match`:
+
+```bash
+python transfer_pipeline.py \
+    --ref_dir log/gelsight_captures/session_01 \
+    --query_dir log/gelsight_captures/session_01 \
+    --scale 1 --retrieval_mode real_gt_retrieval \
+    --transfer_backend dinov3_feat_match \
+    --dinov3_weights dinov3/pretrained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth \
+    --save_dir log/pipeline/session_01_dinov3
+```
+
+Output filenames differ slightly from the `patchmatch` backend (no `_em` suffix, since there's no EM loop to disambiguate): `{query_idx}_transferred.mp4` instead of `{query_idx}_transferred_em.mp4`. `transfer_pipeline.py` accounts for this automatically in Stages 3–5 (ReBotNet refine, grid viz, eval) based on `--transfer_backend`.
+
 Outputs are written to `--save_dir/{retrieval,transfer,enhanced}/`. Pass `--skip_refine` to stop after PatchMatch, or `--skip_retrieval` / `--skip_transfer` to resume from a later stage.

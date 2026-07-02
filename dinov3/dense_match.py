@@ -1,10 +1,10 @@
 """Gradio-free DINOv3 dense correspondence matching.
 
-Factored out of app.py's matching logic (sparse patch matching + RANSAC
-homography + thin-plate-spline RBF dense warp) so it can be imported from
-other pipelines (e.g. main_retrieval_transfer_accel.py) without pulling in
-gradio/sklearn, and without triggering app.py's module-level gr.Blocks() UI
-construction.
+Factored out of app.py's matching logic (sparse patch matching + a fitted
+geometric warp -- affine, homography, or thin-plate-spline RBF seeded by
+either) so it can be imported from other pipelines (e.g.
+main_retrieval_transfer_accel.py) without pulling in gradio/sklearn, and
+without triggering app.py's module-level gr.Blocks() UI construction.
 """
 
 import os
@@ -134,24 +134,63 @@ def _find_sparse_matches(image_left, image_right, model, n_layers, device,
     return pts_l, pts_r
 
 
-def _fit_rbf_dense_field(pts_l, pts_r, h2, w2, reproj_threshold):
-    """RANSAC homography (for inlier selection) + thin-plate-spline RBF dense warp.
+TRANSFORM_TYPES = ("affine", "homography", "rbf_affine", "rbf_homography")
+
+
+def _dense_field_from_affine(pts_l_xy, pts_r_xy, h2, w2, reproj_threshold):
+    """RANSAC affine fit; returns the dense inverse (right -> left) field."""
+    M, mask = cv2.estimateAffine2D(
+        pts_l_xy, pts_r_xy, method=cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
+    if M is None or mask is None:
+        raise RuntimeError("Affine RANSAC failed — too few or degenerate matches.")
+    inlier_count = int(mask.sum())
+
+    M_inv = cv2.invertAffineTransform(M)  # right(x, y) -> left(x, y), 2x3
+    grid_col, grid_row = np.meshgrid(np.arange(w2, dtype=np.float64),
+                                     np.arange(h2, dtype=np.float64))
+    src_col = M_inv[0, 0] * grid_col + M_inv[0, 1] * grid_row + M_inv[0, 2]
+    src_row = M_inv[1, 0] * grid_col + M_inv[1, 1] * grid_row + M_inv[1, 2]
+    return src_row, src_col, inlier_count
+
+
+def _dense_field_from_homography(pts_l_xy, pts_r_xy, h2, w2, reproj_threshold):
+    """RANSAC homography fit; returns the dense inverse (right -> left) field."""
+    H_mat, mask = cv2.findHomography(
+        pts_l_xy, pts_r_xy, cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
+    if H_mat is None or mask is None:
+        raise RuntimeError("Homography RANSAC failed — too few or degenerate matches.")
+    inlier_count = int(mask.sum())
+
+    H_inv = np.linalg.inv(H_mat)
+    grid_col, grid_row = np.meshgrid(np.arange(w2, dtype=np.float64),
+                                     np.arange(h2, dtype=np.float64))
+    ones = np.ones_like(grid_col)
+    pts = np.stack([grid_col, grid_row, ones], axis=0).reshape(3, -1)  # [3, h2*w2]
+    src = H_inv @ pts
+    src = src[:2] / src[2:3]
+    src_col = src[0].reshape(h2, w2)
+    src_row = src[1].reshape(h2, w2)
+    return src_row, src_col, inlier_count
+
+
+def _dense_field_from_rbf(pts_l, pts_r, pts_l_xy, pts_r_xy, h2, w2,
+                          transform_type, reproj_threshold):
+    """RANSAC (affine or homography, for inlier selection) + thin-plate-spline
+    RBF dense warp fit on the inliers only.
 
     Returns (src_row, src_col, inlier_count, total): dense (h2, w2) arrays
     mapping each position in the "right" image's grid back to a source
     position in the "left" image, plus the RANSAC inlier count / total match
     count used to fit them.
     """
-    pts_l_xy = pts_l[:, ::-1].astype(np.float32)  # cv2 uses (x, y) = (col, row)
-    pts_r_xy = pts_r[:, ::-1].astype(np.float32)
-
-    H_mat, mask = cv2.findHomography(
-        pts_l_xy, pts_r_xy,
-        cv2.RANSAC,
-        ransacReprojThreshold=reproj_threshold,
-    )
-    if H_mat is None or mask is None:
-        raise RuntimeError("Homography RANSAC (inlier selection for RBF) failed.")
+    if transform_type == "rbf_affine":
+        M_init, mask = cv2.estimateAffine2D(
+            pts_l_xy, pts_r_xy, method=cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
+    else:
+        M_init, mask = cv2.findHomography(
+            pts_l_xy, pts_r_xy, cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
+    if M_init is None or mask is None:
+        raise RuntimeError(f"{transform_type} RANSAC (inlier selection for RBF) failed.")
     inlier_bool = mask.ravel().astype(bool)
     inlier_count = int(inlier_bool.sum())
     if inlier_count < 4:
@@ -175,18 +214,53 @@ def _fit_rbf_dense_field(pts_l, pts_r, h2, w2, reproj_threshold):
     disp = rbf(query_rc)   # [h2*w2, 2] (delta_row, delta_col)
     src_row = (query_rc[:, 0] + disp[:, 0]).reshape(h2, w2)
     src_col = (query_rc[:, 1] + disp[:, 1]).reshape(h2, w2)
+    return src_row, src_col, inlier_count
+
+
+def _fit_dense_field(pts_l, pts_r, h2, w2, transform_type, reproj_threshold):
+    """Fit the requested transform and return the dense (right -> left) field.
+
+    transform_type: one of TRANSFORM_TYPES — "affine", "homography" fit a
+    single global transform over all matches (RANSAC-robust); "rbf_affine",
+    "rbf_homography" use that same RANSAC fit only to select inliers, then
+    interpolate a non-rigid thin-plate-spline warp through them (mirrors
+    app.py's "Affine"/"Homography"/"RBF (Affine init)"/"RBF (Homography init)").
+
+    Returns (src_row, src_col, inlier_count, total).
+    """
+    if transform_type not in TRANSFORM_TYPES:
+        raise ValueError(f"Unknown transform_type: {transform_type!r}; "
+                         f"must be one of {TRANSFORM_TYPES}.")
+
+    pts_l_xy = pts_l[:, ::-1].astype(np.float32)  # cv2 uses (x, y) = (col, row)
+    pts_r_xy = pts_r[:, ::-1].astype(np.float32)
+
+    if transform_type == "affine":
+        src_row, src_col, inlier_count = _dense_field_from_affine(
+            pts_l_xy, pts_r_xy, h2, w2, reproj_threshold)
+    elif transform_type == "homography":
+        src_row, src_col, inlier_count = _dense_field_from_homography(
+            pts_l_xy, pts_r_xy, h2, w2, reproj_threshold)
+    else:
+        src_row, src_col, inlier_count = _dense_field_from_rbf(
+            pts_l, pts_r, pts_l_xy, pts_r_xy, h2, w2, transform_type, reproj_threshold)
+
     return src_row, src_col, inlier_count, len(pts_l)
 
 
 def compute_dinov3_nnf(image_left, image_right, model_name, weights_path,
-                       num_points=100, stratify_threshold=20.0, reproj_threshold=3.0):
-    """Dense correspondence NNF via DINOv3 sparse matching + RBF(Homography init) warp.
+                       num_points=100, stratify_threshold=20.0, reproj_threshold=3.0,
+                       transform_type="rbf_homography"):
+    """Dense correspondence NNF via DINOv3 sparse matching + a fitted geometric warp.
 
     image_left / image_right: float32 (H, W, 3) arrays in [0, 1]. image_right
     defines the output grid (must be the *query* image); image_left is the
     source image sampled into that grid (must be the *reference* image) —
     this matches PatchMatch's NNF convention where
     nnf[query_y, query_x] = (ref_x, ref_y).
+
+    transform_type: one of TRANSFORM_TYPES (default "rbf_homography", matching
+    this module's original behavior).
 
     Returns an (H_right, W_right, 2) int32 NNF, values clipped to image_left's
     bounds.
@@ -201,8 +275,8 @@ def compute_dinov3_nnf(image_left, image_right, model_name, weights_path,
         pil_left, pil_right, model, n_layers, device, num_points, stratify_threshold)
 
     h2, w2 = image_right.shape[:2]
-    src_row, src_col, inlier_count, total = _fit_rbf_dense_field(
-        pts_l, pts_r, h2, w2, reproj_threshold)
+    src_row, src_col, inlier_count, total = _fit_dense_field(
+        pts_l, pts_r, h2, w2, transform_type, reproj_threshold)
 
     nnf = np.zeros((h2, w2, 2), dtype=np.int32)
     nnf[..., 0] = np.clip(np.round(src_col), 0, image_left.shape[1] - 1)
