@@ -341,8 +341,7 @@ def compute_contact_mask(ref_frame, base_frame, threshold,
 def em_transfer_frame_fullres(query_static, ref_static, ref_frame, init_estimate,
                       em_iters, patch_size, pm_iters,
                       ref_contact_mask=None, ref_static_mask=None,
-                      init_nnf=None, use_accel=False, downsample=1,
-                      force_full_first_step=False):
+                      init_nnf=None, use_accel=False, downsample=1):
     """EM-style single-frame transfer with all EM iterations at full resolution.
 
     When no prior NNF exists and downsample > 1, computes a one-shot low-res
@@ -377,14 +376,7 @@ def em_transfer_frame_fullres(query_static, ref_static, ref_frame, init_estimate
         query_combined = np.concatenate([query_static, estimate], axis=-1).copy(order="C")
         ref_combined   = np.concatenate([ref_static,   ref_frame], axis=-1).copy(order="C")
         
-        if em_step == 0 and force_full_first_step and current_nnf is not None:
-            # Seeded from a high-res static NNF: use it as a warm start but
-            # still run a genuine full-resolution search, not the reduced
-            # inter-frame warm-start iters/radius.
-            current_iters = pm_iters
-            current_radius = max_radius
-            pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=current_nnf)
-        elif current_nnf is None or not use_accel:
+        if current_nnf is None or not use_accel:
             current_iters = pm_iters
             current_radius = max_radius
             pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=None)
@@ -417,29 +409,29 @@ def em_transfer_frame_fullres(query_static, ref_static, ref_frame, init_estimate
 def em_transfer_frame_downsample(query_static, ref_static, ref_frame, init_estimate,
                       em_iters, patch_size, pm_iters,
                       ref_contact_mask=None, ref_static_mask=None,
-                      init_nnf=None, use_accel=False, downsample=1,
-                      force_full_first_step=False):
+                      init_nnf=None, use_accel=False, downsample=1):
     """EM-style single-frame transfer."""
-    
+
     init_orig = init_estimate.copy()
     H, W = init_estimate.shape[0], init_estimate.shape[1]
 
     if downsample > 1:
         W_d, H_d = int(W // downsample), int(H // downsample)
-        
+
         query_low = cv2.resize(query_static, (W_d, H_d), interpolation=cv2.INTER_AREA)
         static_low = cv2.resize(ref_static, (W_d, H_d), interpolation=cv2.INTER_AREA)
         ref_frame_low = cv2.resize(ref_frame, (W_d, H_d), interpolation=cv2.INTER_AREA)
         estimate_low = cv2.resize(init_estimate.copy(), (W_d, H_d), interpolation=cv2.INTER_AREA)
         init_orig_low = cv2.resize(init_orig, (W_d, H_d), interpolation=cv2.INTER_AREA)
-        
+
         c_mask_low = cv2.resize(ref_contact_mask, (W_d, H_d), interpolation=cv2.INTER_NEAREST)[..., None] if ref_contact_mask is not None else None
         s_mask_low = cv2.resize(ref_static_mask, (W_d, H_d), interpolation=cv2.INTER_NEAREST)[..., None] if ref_static_mask is not None else None
 
         current_nnf = init_nnf
-        if force_full_first_step and current_nnf is not None:
-            # The seed NNF is computed at full (H, W) resolution; rescale it
-            # down to (H_d, W_d) to match this loop's downsampled images.
+        if current_nnf is not None and current_nnf.shape[:2] != (H_d, W_d):
+            # init_nnf may be full-resolution (e.g. a static-image seed);
+            # rescale it (spatial dims + values) to match this loop's
+            # downsampled images.
             current_nnf = cv2.resize(current_nnf.astype(np.float32), (W_d, H_d),
                                      interpolation=cv2.INTER_NEAREST) / downsample
             current_nnf = current_nnf.astype(np.int32)
@@ -449,11 +441,7 @@ def em_transfer_frame_downsample(query_static, ref_static, ref_frame, init_estim
             q_comb = np.concatenate([query_low, estimate_low], axis=-1).copy(order="C")
             r_comb = np.concatenate([static_low, ref_frame_low], axis=-1).copy(order="C")
 
-            if em_step == 0 and force_full_first_step and current_nnf is not None:
-                cur_iters = pm_iters
-                cur_radius = int(max(W_d, H_d))
-                pm_low = PatchMatchSingle(q_comb, r_comb, patch_size=patch_size, init_nnf=current_nnf)
-            elif current_nnf is None or not use_accel:
+            if current_nnf is None or not use_accel:
                 cur_iters = pm_iters
                 cur_radius = int(max(W_d, H_d))
                 pm_low = PatchMatchSingle(q_comb, r_comb, patch_size=patch_size, init_nnf=None)
@@ -500,11 +488,7 @@ def em_transfer_frame_downsample(query_static, ref_static, ref_frame, init_estim
             query_combined = np.concatenate([query_static, estimate], axis=-1).copy(order="C")
             ref_combined   = np.concatenate([ref_static,   ref_frame], axis=-1).copy(order="C")
 
-            if em_step == 0 and force_full_first_step and current_nnf is not None:
-                current_iters = pm_iters
-                current_radius = max_radius
-                pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=current_nnf)
-            elif current_nnf is None or not use_accel:
+            if current_nnf is None or not use_accel:
                 current_iters = pm_iters
                 current_radius = max_radius
                 pm = PatchMatchSingle(query_combined, ref_combined, patch_size=patch_size, init_nnf=None)
@@ -887,7 +871,7 @@ def main():
 
             # Helper function to process a single frame inside the loop
             em_fn = em_transfer_frame_downsample if args.use_downsample_em else em_transfer_frame_fullres
-            def process_frame(i, current_em_iters, pass_nnf, init_frame, force_full_first_step=False):
+            def process_frame(i, current_em_iters, pass_nnf, init_frame):
                 output, last_pm, valid_q, pm_fig = em_fn(
                     query_static, ref_static, ref_frames[i], init_frame,
                     current_em_iters, args.patch_size, args.iters,
@@ -895,8 +879,7 @@ def main():
                     ref_static_mask=ref_static_mask,
                     init_nnf=pass_nnf,
                     use_accel=args.use_accel,
-                    downsample=args.downsample_res,
-                    force_full_first_step=force_full_first_step)
+                    downsample=args.downsample_res)
 
                 # Apply render mask if provided
                 if mask_frames is not None:
@@ -912,8 +895,7 @@ def main():
                 i=anchor_idx,
                 current_em_iters=args.em_iters,
                 pass_nnf=init_nnf_seed,
-                init_frame=base_frame,
-                force_full_first_step=(init_nnf_seed is not None))
+                init_frame=base_frame)
 
             fig_pm = anchor_fig_pm  # full-res PM for NNF figure
 
@@ -961,9 +943,8 @@ def main():
                         current_em_iters = args.em_iters
                     else:
                         current_em_iters = args.em_iters_subseq
-                    force_full_first_step = (i == 0 and init_nnf_seed is not None)
                     # Pass prev_nnf
-                    if args.use_accel is False and not force_full_first_step:
+                    if args.use_accel is False:
                         prev_nnf = None
                     em_fn = em_transfer_frame_downsample if args.use_downsample_em else em_transfer_frame_fullres
                     output, last_pm, valid_q, pm_fig = em_fn(
@@ -973,8 +954,7 @@ def main():
                         ref_static_mask=ref_static_mask,
                         init_nnf=prev_nnf,
                         use_accel=args.use_accel,
-                        downsample=args.downsample_res,
-                        force_full_first_step=force_full_first_step)
+                        downsample=args.downsample_res)
                     prev_nnf = last_pm.nnf
                     if valid_q is not None:
                         valid_q_frames.append(valid_q)
