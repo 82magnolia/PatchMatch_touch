@@ -150,6 +150,9 @@ class simulator(object):
         # raw calibration data
         rawData = osp.join(data_folder, "dataPack.npz")
         data_file = np.load(rawData,allow_pickle=True)
+        self.psp_h = psp.h
+        self.psp_w = psp.w
+        
         self.f0 = data_file['f0']
 
         # Optionally resize original frame
@@ -407,7 +410,10 @@ class simulator(object):
             cy = orig_cy
             cz = orig_cz
             contact = np.array([cx, cy, cz])
-            sim_vertices = (sim_vertices - contact) @ contact_rot_mtx.T
+            if "contact_rot_mtx" not in locals():
+                contact_rot_mtx = np.eye(3)
+
+        sim_vertices = (sim_vertices - contact) @ contact_rot_mtx.T
 
         if contact_jitter_rot_mtx is not None:
             sim_vertices = sim_vertices @ contact_jitter_rot_mtx.T
@@ -853,11 +859,12 @@ if __name__ == "__main__":
     parser.add_argument('-sim_type', default = 'pcd', help='type of simulator to use')
     parser.add_argument('-override_hw', default = None, type=int, help='Size of image to generate which will be overridden from default', nargs=2)
     parser.add_argument('-save_folder', default = None, type=str, help='Name of folder to use for saving results')
+    parser.add_argument('-data_folder', default = None, type=str, help='Name of the folder where calibrated data is stored')
     args = parser.parse_args()
 
-    data_folder = osp.join(osp.join( "..", "calibs"))
+    data_folder = osp.join(args.data_folder) if args.data_folder is not None else osp.join('..', 'calibs')
     filePath = osp.join('..', 'data', 'objects') if args.obj_path is None else args.obj_path
-    gelpad_model_path = osp.join( '..', 'calibs', 'gelmap5.npy')
+    gelpad_model_path = osp.join(data_folder, "gelmap5.npy")
 
     if args.contact_point is None:
         contact_point = None
