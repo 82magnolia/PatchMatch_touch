@@ -322,34 +322,6 @@ def make_nnf_figure(query_idx, ref_idx, query_dir, ref_dir, modalities, scale,
 
 
 # ---------------------------------------------------------------------------
-# Contact mask
-# ---------------------------------------------------------------------------
-
-def compute_contact_mask(ref_frame, base_frame, threshold,
-                         blur_sigma=3.0, morph_radius=5):
-    """Robust binary mask of pixels where contact has occurred.
-
-    Pipeline:
-      1. Compute per-pixel L2 difference magnitude.
-      2. Gaussian blur to suppress JPEG block artifacts.
-      3. Threshold the blurred magnitude.
-      4. Morphological open  (removes isolated noise blobs).
-      5. Morphological close (fills holes inside the contact region).
-
-    Returns float32 (H, W, 1).
-    """
-    diff = np.abs(ref_frame - base_frame)
-    magnitude = np.linalg.norm(diff, axis=-1).astype(np.float32)  # (H, W)
-    blurred = cv2.GaussianBlur(magnitude, (0, 0), blur_sigma)
-    binary = (blurred > threshold).astype(np.uint8)
-    k = morph_radius * 2 + 1
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN,  kernel)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    return binary[..., np.newaxis].astype(np.float32)
-
-
-# ---------------------------------------------------------------------------
 # Video frame evaluation function
 # ---------------------------------------------------------------------------
 def evaluate_video_metrics(frames_gt, frames_pred, lpips_model, device):
@@ -451,30 +423,8 @@ def main():
                              "matches. 'rbf_affine'/'rbf_homography' use that same RANSAC fit "
                              "only to select inliers, then interpolate a non-rigid thin-plate-"
                              "spline warp through them (default: rbf_homography).")
-    parser.add_argument("--use_mask", action="store_true",
-                        help="Composite transferred frames with the query mask video. "
-                             "Requires {idx}_mask.mp4 in --query_dir.")
     parser.add_argument("--save_dir", default="./log/transfer_feat_match", type=str,
                         help="Output directory for transferred videos.")
-    parser.add_argument("--use_ref_contact_mask", action="store_true",
-                        help="Gate reconstruction to contact regions detected in the "
-                             "reference video. Non-contact pixels are kept as the "
-                             "pre-contact base frame.")
-    parser.add_argument("--ref_contact_threshold", default=0.05, type=float,
-                        help="Threshold on blurred ||ref_frame - base_frame|| to define "
-                             "the reference contact mask (default: 0.05). Only used when "
-                             "--use_ref_contact_mask is set.")
-    parser.add_argument("--ref_contact_blur_sigma", default=3.0, type=float,
-                        help="Gaussian blur sigma applied to the difference magnitude "
-                             "before thresholding, suppressing JPEG block artifacts "
-                             "(default: 3.0). Only used when --use_ref_contact_mask is set.")
-    parser.add_argument("--ref_contact_morph_radius", default=5, type=int,
-                        help="Radius of the elliptical structuring element used for "
-                             "morphological open+close on the contact mask (default: 5). "
-                             "Only used when --use_ref_contact_mask is set.")
-    parser.add_argument("--use_ref_static_mask", action="store_true",
-                        help="Prevent overwriting estimates for pixels where ref_static "
-                             "is zero (e.g. background / invalid regions).")
     parser.add_argument("--eval", action="store_true",
                         help="Enable evaluation mode (calculate metrics against GT video)")
     parser.add_argument("--no_nnf_figures", action="store_true",
@@ -546,48 +496,9 @@ def main():
             continue
         ref_frames, fps = read_video(vid_path)
 
-        # -- Optionally load mask video (from query dir) -------------------
-        mask_frames = None
-        if args.use_mask:
-            mask_path = osp.join(args.query_dir, f"{query_idx}_render_mask.mp4")  # NOTE: Render mask is obtained from heightmap thresholding
-            if not osp.exists(mask_path):
-                print(f"  Warning: mask video not found, ignoring mask: {mask_path}")
-            else:
-                mask_frames, _ = read_video(mask_path)
-                # Mask may be stored as 3-channel grayscale; collapse to single channel
-                if mask_frames[0].ndim == 3:
-                    mask_frames = [f.mean(axis=-1, keepdims=True) for f in mask_frames]
-
-        base_frame = ref_frames[0]  # pre-contact background from reference
-
-        # Mask out ref_static zero regions (invalid / background pixels)
-        ref_static_mask = None
-        if args.use_ref_static_mask:
-            ref_static_mask = (ref_static != 0).any(axis=-1, keepdims=True).astype(np.float32)
-
         # -- Transfer each frame using the single DINOv3 NNF ---------------
-        transferred = []
-        ref_contact_masks = []
-        valid_q_frames = []
-        for i, frame in enumerate(tqdm(ref_frames, desc="Transferring frames", leave=False)):
-            output = reconstruct_avg(nnf, frame, patch_size=1)
-            valid = np.ones((output.shape[0], output.shape[1], 1), dtype=np.float32)
-            if args.use_ref_contact_mask:
-                ref_contact_mask = compute_contact_mask(
-                    frame, base_frame, args.ref_contact_threshold,
-                    args.ref_contact_blur_sigma, args.ref_contact_morph_radius)
-                ref_contact_masks.append(ref_contact_mask)
-                valid = valid * ref_contact_mask
-            if ref_static_mask is not None:
-                valid = valid * ref_static_mask
-            # valid is in reference coordinates; warp to query coordinates via NNF
-            valid_q = (np.atleast_3d(reconstruct_avg(nnf, valid, patch_size=1))[..., :1] > 0.5).astype(np.float32)
-            valid_q_frames.append(valid_q)
-            output = valid_q * output + (1.0 - valid_q) * base_frame
-            if mask_frames is not None:
-                mask = mask_frames[i] if i < len(mask_frames) else mask_frames[-1]
-                output = mask * output + (1.0 - mask) * base_frame
-            transferred.append(output)
+        transferred = [reconstruct_avg(nnf, frame, patch_size=1)
+                      for frame in tqdm(ref_frames, desc="Transferring frames", leave=False)]
 
         # -- NNF figure -------------------------------------------------------
         if not args.no_nnf_figures:
@@ -619,17 +530,6 @@ def main():
         out_path = osp.join(args.save_dir, f"{query_idx}_transferred.mp4")
         write_video(out_path, transferred, fps)
         print(f"  Saved: {out_path}")
-
-        # valid_q video (query-space composite mask)
-        if valid_q_frames:
-            write_video(osp.join(args.save_dir, f"{query_idx}_valid_q.mp4"),
-                        [np.repeat(m, 3, axis=-1) for m in valid_q_frames], fps)
-
-        # Reference contact mask video
-        if ref_contact_masks:
-            mask_vid = [np.repeat(m, 3, axis=-1) for m in ref_contact_masks]
-            write_video(osp.join(args.save_dir, f"{query_idx}_ref_contact_mask.mp4"),
-                        mask_vid, fps)
 
         # Quantitative Evaluation Logic
         if args.eval:

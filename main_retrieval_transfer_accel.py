@@ -370,8 +370,8 @@ def em_transfer_frame_fullres(query_static, ref_static, ref_frame, init_estimate
 
         nnf_low = cv2.resize(pm_low.nnf.astype(np.float32), (W, H), interpolation=cv2.INTER_NEAREST)
         current_nnf = (nnf_low * downsample).astype(np.int32)
-        em_iters -= 1
-    
+        em_iters = max(1, em_iters - 1)
+
     for em_step in range(em_iters):
         query_combined = np.concatenate([query_static, estimate], axis=-1).copy(order="C")
         ref_combined   = np.concatenate([ref_static,   ref_frame], axis=-1).copy(order="C")

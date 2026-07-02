@@ -621,10 +621,6 @@ def main():
             if args.dinov3_match_scale is not None:
                 cmd += ["--dinov3_match_scale", f"{args.dinov3_match_scale:g}",
                         "--dinov3_match_scale_convention", args.dinov3_match_scale_convention]
-            if args.use_mask:
-                cmd.append("--use_mask")
-            if args.use_ref_static_mask:
-                cmd.append("--use_ref_static_mask")
             if not args.skip_eval:
                 cmd.append("--eval")
             _run(cmd, "Stage 2: DINOv3 Feature-Match Transfer")
