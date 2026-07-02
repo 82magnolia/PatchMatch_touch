@@ -53,6 +53,20 @@ from train import MODEL_CONFIGS, build_model
 from trainer import _write_video, _read_video_frames, _make_grid_video, _residual_to_vis
 
 
+def _strip_transferred_suffix(stem):
+    """Strip a '_transferred[_em]' suffix to recover the shared '{query_idx}' stem.
+
+    '_transferred_em' is main_retrieval_transfer_accel.py's (patchmatch backend)
+    output naming; plain '_transferred' is main_retrieval_transfer_feat_match.py's
+    (dinov3_feat_match backend). Longer suffix must be tried first so the
+    '_em'-suffixed case doesn't fall through to the shorter match.
+    """
+    for suffix in ("_transferred_em", "_transferred"):
+        if stem.endswith(suffix):
+            return stem[:-len(suffix)]
+    return stem
+
+
 def _read_video(path):
     cap = cv2.VideoCapture(path)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -132,12 +146,13 @@ def process_single_video(model, input_path, save_dir, device, save_gt=False,
     if residual:
         src_dir = os.path.dirname(input_path)
         stem = os.path.splitext(os.path.basename(input_path))[0]
-        base = stem.replace('_transferred_em', '')
+        base = _strip_transferred_suffix(stem)
         ref_path = os.path.join(src_dir, f"{base}_ref_shadow.mp4")
         if not os.path.exists(ref_path):
-            print(f"  Warning: ref video not found at {ref_path}, skipping residual mode.")
-        else:
-            blank_tensor = _load_blank_from_ref(ref_path)
+            raise FileNotFoundError(
+                f"--residual requires the blank reference frame at {ref_path}, "
+                f"but it was not found.")
+        blank_tensor = _load_blank_from_ref(ref_path)
 
     print(f"  Enhancing {input_path}  ({len(frames_uint8)} frames @ {fps:.1f} fps) ...",
           flush=True)
@@ -157,7 +172,7 @@ def process_single_video(model, input_path, save_dir, device, save_gt=False,
 
     if save_gt:
         src_dir = os.path.dirname(input_path)
-        base = stem.replace('_transferred_em', '')
+        base = _strip_transferred_suffix(stem)
 
         # Save the transferred (input) video
         transferred = [f.astype(np.float32) / 255.0 for f in frames_uint8]
