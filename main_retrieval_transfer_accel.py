@@ -141,16 +141,15 @@ def compute_scale_ratio(base_scale, init_scale, convention):
     return base_scale / init_scale  # "obj_scale_factor"
 
 
-def compute_init_nnf(query_dir, ref_dir, query_idx, ref_idx, modalities,
-                      base_scale, init_scale, convention, patch_size, iters):
-    """Compute a high-resolution seed NNF between static images only.
+def _prepare_init_scale_static(query_dir, ref_dir, query_idx, ref_idx, modalities,
+                                base_scale, init_scale, convention):
+    """Load an init-scale static pair and align it to the base canvas's FOV.
 
-    Loads the --init_scale static variant of the query/ref images, relates it
+    Loads the init-scale static variant of the query/ref images, relates it
     back to the base (--scale) resolution's field of view via the physical
-    ratio implied by `convention`, and returns (nnf, pm): a full (H, W, 2)
-    int32 NNF in the base resolution's coordinate space (ready to pass as
-    init_nnf) and the PatchMatchSingle instance used to compute it (for
-    diagnostic figures).
+    ratio implied by `convention`, and returns (q_rs, r_rs, H, W): both
+    arrays resized/cropped to the base resolution (H, W), ready for a
+    downstream correspondence algorithm (PatchMatch or DINOv3).
     """
     q_hi = build_combined_static(query_dir, query_idx, modalities, init_scale)
     r_hi = build_combined_static(ref_dir, ref_idx, modalities, init_scale)
@@ -161,25 +160,63 @@ def compute_init_nnf(query_dir, ref_dir, query_idx, ref_idx, modalities,
     r = compute_scale_ratio(base_scale, init_scale, convention)
     if r < 1.0:
         raise ValueError(
-            f"--init_scale must cover at least as much physical area as --scale "
+            f"init scale must cover at least as much physical area as --scale "
             f"(got ratio {r:.4f} < 1.0 for convention={convention!r}); a smaller "
             f"physical footprint can't seed the full base field of view.")
-    max_radius = int(max(H, W))
 
     if abs(r - 1.0) < 1e-6:
-        q_rs, r_rs = q_hi, r_hi
-    else:
-        # init canvas covers MORE physical area than base -> base FOV is a
-        # center crop of the init canvas; crop then upsample to full res so
-        # the resulting NNF is directly usable with no coordinate offset.
-        ch, cw = max(1, round(H / r)), max(1, round(W / r))
-        y0, x0 = (H - ch) // 2, (W - cw) // 2
-        q_rs = cv2.resize(q_hi[y0:y0 + ch, x0:x0 + cw], (W, H), interpolation=cv2.INTER_LINEAR)
-        r_rs = cv2.resize(r_hi[y0:y0 + ch, x0:x0 + cw], (W, H), interpolation=cv2.INTER_LINEAR)
+        return q_hi, r_hi, H, W
 
+    # init canvas covers MORE physical area than base -> base FOV is a
+    # center crop of the init canvas; crop then upsample to full res so
+    # the resulting NNF is directly usable with no coordinate offset.
+    ch, cw = max(1, round(H / r)), max(1, round(W / r))
+    y0, x0 = (H - ch) // 2, (W - cw) // 2
+    q_rs = cv2.resize(q_hi[y0:y0 + ch, x0:x0 + cw], (W, H), interpolation=cv2.INTER_LINEAR)
+    r_rs = cv2.resize(r_hi[y0:y0 + ch, x0:x0 + cw], (W, H), interpolation=cv2.INTER_LINEAR)
+    return q_rs, r_rs, H, W
+
+
+def compute_init_nnf(query_dir, ref_dir, query_idx, ref_idx, modalities,
+                      base_scale, init_scale, convention, patch_size, iters):
+    """Compute a high-resolution seed NNF between static images only (PatchMatch).
+
+    Returns (nnf, pm): a full (H, W, 2) int32 NNF in the base resolution's
+    coordinate space (ready to pass as init_nnf) and the PatchMatchSingle
+    instance used to compute it (for diagnostic figures).
+    """
+    q_rs, r_rs, H, W = _prepare_init_scale_static(
+        query_dir, ref_dir, query_idx, ref_idx, modalities, base_scale, init_scale, convention)
+    max_radius = int(max(H, W))
     pm = PatchMatchSingle(q_rs.copy(order="C"), r_rs.copy(order="C"), patch_size=patch_size)
     pm.propagate(iters=iters, rand_search_radius=max_radius)
     return pm.nnf.astype(np.int32), pm
+
+
+def compute_init_nnf_dinov3(query_dir, ref_dir, query_idx, ref_idx, modalities,
+                            base_scale, init_scale, convention, patch_size,
+                            dinov3_model, dinov3_weights,
+                            num_points=100, stratify_threshold=20.0, reproj_threshold=3.0):
+    """Compute a high-resolution seed NNF between static images only (DINOv3).
+
+    Same contract as compute_init_nnf, but uses DINOv3 patch-feature matching
+    + RANSAC homography + RBF dense warp instead of PatchMatch.
+    """
+    q_rs, r_rs, H, W = _prepare_init_scale_static(
+        query_dir, ref_dir, query_idx, ref_idx, modalities, base_scale, init_scale, convention)
+    if q_rs.shape[-1] != 3:
+        raise ValueError(
+            f"--init_dinov3_match_scale requires modalities that combine to exactly "
+            f"3 channels (got {q_rs.shape[-1]}); DINOv3 expects RGB input.")
+    from dinov3.dense_match import compute_dinov3_nnf
+    nnf = compute_dinov3_nnf(
+        image_left=r_rs, image_right=q_rs,  # left=REF (sampled), right=QUERY (output grid)
+        model_name=dinov3_model, weights_path=dinov3_weights,
+        num_points=num_points, stratify_threshold=stratify_threshold,
+        reproj_threshold=reproj_threshold)
+    pm = PatchMatchSingle(q_rs.copy(order="C"), r_rs.copy(order="C"),
+                          patch_size=patch_size, init_nnf=nnf)
+    return nnf, pm
 
 
 # ---------------------------------------------------------------------------
@@ -623,6 +660,25 @@ def main():
                              "'obj_scale_factor' (Taxim): physical FOV is fixed and a larger scale "
                              "renders finer detail, so ratio = scale/init_scale. Required when "
                              "--init_scale is set.")
+    parser.add_argument("--init_dinov3_match_scale", default=None, type=float,
+                        help="Alternative to --init_scale: additional scale suffix used to compute "
+                             "a high-resolution seed NNF via DINOv3 patch-feature matching (RANSAC "
+                             "homography + RBF dense warp) instead of PatchMatch. Mutually exclusive "
+                             "with --init_scale. Requires --scale, "
+                             "--init_dinov3_match_scale_convention, and --dinov3_weights.")
+    parser.add_argument("--init_dinov3_match_scale_convention", default=None,
+                        choices=["render_scale", "obj_scale_factor"],
+                        help="Same semantics as --init_scale_convention, applied to "
+                             "--init_dinov3_match_scale. Required when --init_dinov3_match_scale "
+                             "is set.")
+    parser.add_argument("--dinov3_model", default="dinov3_vitb16",
+                        choices=["dinov3_vits16", "dinov3_vits16plus",
+                                 "dinov3_vitb16", "dinov3_vitl16"],
+                        help="DINOv3 model variant for --init_dinov3_match_scale (default: "
+                             "dinov3_vitb16).")
+    parser.add_argument("--dinov3_weights", default=None, type=str,
+                        help="Path to gated DINOv3 .pth weights. Required when "
+                             "--init_dinov3_match_scale is set.")
     parser.add_argument("--use_mask", action="store_true",
                         help="Composite transferred frames with the query mask video. "
                              "Requires {idx}_mask.mp4 in --query_dir.")
@@ -679,12 +735,25 @@ def main():
                              "(em_transfer_frame_fullres). Only used when --em is set.")
     args = parser.parse_args()
 
+    if args.init_scale is not None and args.init_dinov3_match_scale is not None:
+        parser.error("--init_scale and --init_dinov3_match_scale are mutually exclusive; "
+                     "pick one NNF-seeding strategy.")
+
     if args.init_scale is not None:
         if args.scale is None:
             parser.error("--init_scale requires --scale to also be set "
                          "(need a base scale to compute a physical-size ratio against).")
         if args.init_scale_convention is None:
             parser.error("--init_scale requires --init_scale_convention to be set.")
+
+    if args.init_dinov3_match_scale is not None:
+        if args.scale is None:
+            parser.error("--init_dinov3_match_scale requires --scale to also be set.")
+        if args.init_dinov3_match_scale_convention is None:
+            parser.error("--init_dinov3_match_scale requires "
+                         "--init_dinov3_match_scale_convention to be set.")
+        if not args.dinov3_weights:
+            parser.error("--init_dinov3_match_scale requires --dinov3_weights to be set.")
 
     os.makedirs(args.save_dir, exist_ok=True)
 
@@ -740,11 +809,20 @@ def main():
         # -- Optionally compute a high-res seed NNF for the very first EM call ----
         init_nnf_seed = None
         init_pm = None
+        init_seed_scale = None
+        init_seed_tag = None
         if args.init_scale is not None:
             init_nnf_seed, init_pm = compute_init_nnf(
                 args.query_dir, args.ref_dir, query_idx, ref_idx, args.modality,
                 args.scale, args.init_scale, args.init_scale_convention,
                 args.patch_size, args.iters)
+            init_seed_scale, init_seed_tag = args.init_scale, "init"
+        elif args.init_dinov3_match_scale is not None:
+            init_nnf_seed, init_pm = compute_init_nnf_dinov3(
+                args.query_dir, args.ref_dir, query_idx, ref_idx, args.modality,
+                args.scale, args.init_dinov3_match_scale, args.init_dinov3_match_scale_convention,
+                args.patch_size, args.dinov3_model, args.dinov3_weights)
+            init_seed_scale, init_seed_tag = args.init_dinov3_match_scale, "dinov3_init"
 
         # -- Compute NNF (standard) or defer to EM loop below ----------------
         if not args.em:
@@ -941,11 +1019,11 @@ def main():
                 init_fig_path = make_nnf_figure(
                     query_idx=query_idx, ref_idx=ref_idx,
                     query_dir=args.query_dir, ref_dir=args.ref_dir,
-                    modalities=args.modality, scale=args.init_scale,
+                    modalities=args.modality, scale=init_seed_scale,
                     pm=init_pm, ref_shape=ref_static.shape,
-                    save_dir=args.save_dir, tag="init",
+                    save_dir=args.save_dir, tag=init_seed_tag,
                 )
-                print(f"  Saved init-scale NNF figure: {init_fig_path}")
+                print(f"  Saved {init_seed_tag} NNF figure: {init_fig_path}")
 
         # -- Save individual keyframe images ----------------------------------
         # Ensure anchor_idx exists

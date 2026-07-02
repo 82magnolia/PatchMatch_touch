@@ -127,4 +127,30 @@ python transfer_pipeline.py \
 
 With `--save_nnf_figures`, an extra `{query_idx}_init_nnf.png` diagnostic figure is saved next to the usual `{query_idx}_nnf.png`, showing the init-scale static modalities and the resulting seed NNF.
 
+**vi) DINOv3-based NNF seeding (`--init_dinov3_match_scale`)**
+
+An alternative to `--init_scale` for seeding that same first PatchMatch call: instead of computing the seed NNF with PatchMatch, it's computed via DINOv3 patch-feature matching — sparse patch matches, filtered by RANSAC homography inliers, then interpolated into a dense correspondence field with a thin-plate-spline RBF warp (`dinov3/dense_match.py`, based on the matching logic in the `dinov3/app.py` Gradio demo). `--init_scale` and `--init_dinov3_match_scale` are mutually exclusive — pick one seeding strategy per run.
+
+`--init_dinov3_match_scale` uses the same `--scale`/convention relationship as `--init_scale` (see the table above — pass `--init_dinov3_match_scale_convention`), plus two more required flags:
+
+- `--dinov3_weights`: path to a gated DINOv3 `.pth` checkpoint. Weights aren't bundled with the repo — request access at [ai.meta.com/resources/models-and-libraries/dinov3-downloads](https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/) and download the file yourself (see `dinov3/README.md`).
+- `--dinov3_model`: which variant the weights are for (`dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16` [default], or `dinov3_vitl16`).
+
+DINOv3 expects RGB input, so the static modalities used for matching (`--modality`, combined) must produce exactly 3 channels — e.g. `--modality normal` or `--modality raw_normal`, not a multi-modality concatenation. The pipeline raises a clear error if this doesn't hold.
+
+Example — same setup as above, but seeding via DINOv3 matching instead of PatchMatch:
+
+```bash
+python transfer_pipeline.py \
+    --ref_dir log/RealData/box_norm_fix \
+    --query_dir log/RealData/box_norm_fix \
+    --scale 1 \
+    --retrieval_mode real_gt_retrieval \
+    --use_keyframe --use_accel --use_downsample_em --use_mask \
+    --save_dir log/pipeline_box_residual_dino/ \
+    --checkpoint log/rebot_checkpoints_S_240x320_residual/best.pth --save_nnf_figures --residual --scale 1 --init_dinov3_match_scale 1 --init_dinov3_match_scale_convention render_scale --dinov3_weights dinov3/pretrained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
+```
+
+With `--save_nnf_figures`, this saves `{query_idx}_dinov3_init_nnf.png` instead of `{query_idx}_init_nnf.png`.
+
 Outputs are written to `--save_dir/{retrieval,transfer,enhanced}/`. Pass `--skip_refine` to stop after PatchMatch, or `--skip_retrieval` / `--skip_transfer` to resume from a later stage.

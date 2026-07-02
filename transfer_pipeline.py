@@ -382,6 +382,24 @@ def main():
                       help="How to relate --init_scale back to --scale's field of view: "
                            "'render_scale' for real GelSight captures, 'obj_scale_factor' for "
                            "Taxim synthetic data. Required when --init_scale is set.")
+    g_tr.add_argument("--init_dinov3_match_scale", type=float, default=None,
+                      help="Alternative to --init_scale: seed NNF via DINOv3 patch-feature "
+                           "matching instead of PatchMatch. Mutually exclusive with --init_scale. "
+                           "Requires --scale, --init_dinov3_match_scale_convention, and "
+                           "--dinov3_weights.")
+    g_tr.add_argument("--init_dinov3_match_scale_convention", default=None,
+                      choices=["render_scale", "obj_scale_factor"],
+                      help="Same semantics as --init_scale_convention, applied to "
+                           "--init_dinov3_match_scale. Required when --init_dinov3_match_scale "
+                           "is set.")
+    g_tr.add_argument("--dinov3_model", default="dinov3_vitb16",
+                      choices=["dinov3_vits16", "dinov3_vits16plus",
+                               "dinov3_vitb16", "dinov3_vitl16"],
+                      help="DINOv3 model variant for --init_dinov3_match_scale "
+                           "(default: dinov3_vitb16).")
+    g_tr.add_argument("--dinov3_weights", default=None,
+                      help="Path to gated DINOv3 .pth weights. Required when "
+                           "--init_dinov3_match_scale is set.")
 
     # ── Stage 3: Refine ───────────────────────────────────────────────────────
     g_ref = p.add_argument_group("Stage 3 — ReBotNet Refinement")
@@ -407,11 +425,24 @@ def main():
 
     args = p.parse_args()
 
+    if args.init_scale is not None and args.init_dinov3_match_scale is not None:
+        p.error("--init_scale and --init_dinov3_match_scale are mutually exclusive; "
+               "pick one NNF-seeding strategy.")
+
     if args.init_scale is not None:
         if not args.scale:
             p.error("--init_scale requires --scale to also be set.")
         if args.init_scale_convention is None:
             p.error("--init_scale requires --init_scale_convention to be set.")
+
+    if args.init_dinov3_match_scale is not None:
+        if not args.scale:
+            p.error("--init_dinov3_match_scale requires --scale to also be set.")
+        if args.init_dinov3_match_scale_convention is None:
+            p.error("--init_dinov3_match_scale requires "
+                    "--init_dinov3_match_scale_convention to be set.")
+        if not args.dinov3_weights:
+            p.error("--init_dinov3_match_scale requires --dinov3_weights to be set.")
 
     # Derived output paths
     save_dir      = os.path.abspath(args.save_dir)
@@ -497,6 +528,11 @@ def main():
         if args.init_scale is not None:
             cmd += ["--init_scale", f"{args.init_scale:g}",
                     "--init_scale_convention", args.init_scale_convention]
+        if args.init_dinov3_match_scale is not None:
+            cmd += ["--init_dinov3_match_scale", f"{args.init_dinov3_match_scale:g}",
+                    "--init_dinov3_match_scale_convention", args.init_dinov3_match_scale_convention,
+                    "--dinov3_model", args.dinov3_model,
+                    "--dinov3_weights", args.dinov3_weights]
         if args.use_keyframe:
             cmd.append("--use_keyframe")
         if args.use_accel:
