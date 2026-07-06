@@ -46,6 +46,10 @@ if __name__ == "__main__":
                              "pi, i.e. the perturbation covers the full [0, 2*pi) range regardless "
                              "of --contact_theta.")
     parser.add_argument("--save_dir", default="../results/gen_contact", type=str)
+    parser.add_argument("--data_folder", default=None, type=str,
+                        help="Name of the folder where calibrated data is stored "
+                             "(dataPack.npz, polycalib.npz, shadowTable.npz, gelmap5.npy). "
+                             "Defaults to ../calibs relative to this script.")
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -53,7 +57,8 @@ if __name__ == "__main__":
     # Paths
     file_path = osp.dirname(osp.abspath(args.obj_path))
     obj = osp.basename(args.obj_path)
-    data_folder = osp.join(osp.dirname(__file__), "..", "calibs")
+    data_folder = osp.join(args.data_folder) if args.data_folder is not None \
+        else osp.join(osp.dirname(__file__), "..", "calibs")
     gelpad_model_path = osp.join(data_folder, "gelmap5.npy")
 
     # Load contact points from .ply
