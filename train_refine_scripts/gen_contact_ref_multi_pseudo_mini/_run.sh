@@ -70,6 +70,7 @@ for obj_dir in "$OBJ_DIR"/*/; do
         --mode back_forth_press \
         --depth_range_info 0. 10. 50 \
         --rand_contact_theta \
+        --rand_contact_theta_mag 0.5235987755982988 \
         --save_dir "$save_dir" \
         --obj_scale_factor 100.0 \
         --override_hw 240 320 \
