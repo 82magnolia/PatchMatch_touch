@@ -1,17 +1,29 @@
 """
-Build a rotated copy of a Taxim calibration folder (dataPack.npz + polycalib.npz),
+Build a rotated copy of a Taxim calibration folder (dataPack.npz, polycalib.npz,
+shadowTable.npz, gelmap5.npy -- all four are assumed present in in_calib_folder),
 correcting for a physical sensor mounted at a 90-degree rotation relative to another.
 
-Handles three distinct representations that all need consistent treatment under rotation:
+Handles five distinct representations that all need consistent treatment under rotation:
   - f0 / imgs: raw pixel arrays -> plain np.rot90
   - polycalib grad_r/g/b: per-(mag_bin, dir_bin) bivariate polynomials over PIXEL coordinates
     -> coefficients must be re-derived via exact coordinate substitution (not just np.rot90'd)
   - direction bin axis of grad_r/g/b: gradient direction itself rotates with the image
     -> the direction axis must be circularly shifted/interpolated, independent of the
        pixel-coordinate substitution above
+  - direction bin axis of shadowTable's shadowTable array: same underlying grad_dir value is
+    used to index this table too, so it MUST be shifted by the same angle as polycalib's
+    direction axis, or the two tables fall out of sync with each other (grad_dir picks a
+    shading response from one table and a shadow-cast direction from the other that no
+    longer correspond to the same physical direction) -- this produces visually wrong,
+    scattered-looking shadows even though each table individually loads/runs fine.
+  - gelmap5.npy: a plain 2D height map, values are heights not direction-binned calibration
+    content -> plain np.rot90, same as f0/imgs.
 
 All transforms below were derived and verified numerically (see conversation) against
-np.rot90's actual index convention for k=-1 (90 deg clockwise) and k=1 (90 deg CCW).
+np.rot90's actual index convention for k=-1 (90 deg clockwise) and k=1 (90 deg CCW), and the
+shadowTable fix was additionally verified with a synthetic cone height map: rotating
+shadowTable's direction axis turns a scattered, ring-like shadow artifact into a single
+coherent directional shadow.
 """
 import argparse
 from os import path as osp
@@ -64,9 +76,10 @@ def circular_shift_interp(arr, shift, axis):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--in_calib_folder", required=True, type=str,
-                         help="Source calib folder containing dataPack.npz and polycalib.npz")
+                         help="Source calib folder containing dataPack.npz, polycalib.npz, "
+                              "shadowTable.npz, and gelmap5.npy -- all four are rotated")
     parser.add_argument("--out_calib_folder", required=True, type=str,
-                         help="Destination folder to write the rotated dataPack.npz/polycalib.npz")
+                         help="Destination folder to write the rotated calibration files")
     parser.add_argument("--k", required=True, type=int, choices=[1, -1],
                          help="+1 = rotate 90 deg CCW (np.rot90 k=1), -1 = rotate 90 deg CW (np.rot90 k=-1)")
     args = parser.parse_args()
@@ -104,6 +117,24 @@ def main():
 
     np.savez(osp.join(args.out_calib_folder, "polycalib.npz"), **pc)
     print(f"Wrote polycalib.npz: bins={bins}, direction axis shifted by {dir_shift_bins:.3f} bins")
+
+    # --- shadowTable.npz: must shift by the same physical angle as polycalib's direction axis ---
+    st = dict(np.load(osp.join(args.in_calib_folder, "shadowTable.npz"), allow_pickle=True))
+    shadow_bins = st["shadowTable"].shape[1]
+    discritize_precision = 2 * np.pi / (shadow_bins - 1)  # matches Basics/params.py's grid spacing
+    shadow_shift_bins = round(dir_shift_rad / discritize_precision)
+    # integer np.roll (not interpolated): shadowTable entries are ragged (variable-length
+    # per-cell profiles), so only exact index permutation is safe, not linear blending.
+    st["shadowTable"] = np.roll(st["shadowTable"], shift=shadow_shift_bins, axis=1)
+    np.savez(osp.join(args.out_calib_folder, "shadowTable.npz"), **st)
+    print(f"Wrote shadowTable.npz: direction axis rolled by {shadow_shift_bins} bins "
+          f"(of {shadow_bins})")
+
+    # --- gelmap5.npy: plain height map, straight np.rot90 (no coefficient/direction transform) ---
+    gel = np.load(osp.join(args.in_calib_folder, "gelmap5.npy"))
+    gel_rotated = np.rot90(gel, k=args.k)
+    np.save(osp.join(args.out_calib_folder, "gelmap5.npy"), gel_rotated)
+    print(f"Wrote gelmap5.npy: {gel.shape} -> {gel_rotated.shape}")
 
 
 if __name__ == "__main__":

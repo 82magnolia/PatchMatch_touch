@@ -1,16 +1,17 @@
 # Rotating a Taxim calibration folder
 
 `rotate_calib_folder.py` builds a rotated copy of a Taxim calibration folder
-(`dataPack.npz` + `polycalib.npz`) for a sensor that is physically mounted at
-a 90-degree rotation relative to another. This came up because the
+(`dataPack.npz`, `polycalib.npz`, `shadowTable.npz`, `gelmap5.npy` — all four
+must be present in the input folder) for a sensor that is physically mounted
+at a 90-degree rotation relative to another. This came up because the
 `gelsight_r1.5` sensor turned out to be the same physical sensor as the
 `gelsight` mini, just mounted rotated 90 degrees clockwise — so its raw
 calibration data needs de-rotating before it can be used at the mini's native
 480x640 orientation without passing `-override_hw` to `simOptical.py`.
 
 A calibration folder isn't just pixel arrays, so a naive `np.rot90` on
-everything is wrong. Three distinct things live in these files, and each
-needs its own treatment under rotation:
+everything is wrong. Four distinct things live in these files, and each needs
+its own treatment under rotation:
 
 1. **`f0` / `imgs`** — plain pixel arrays. A straight `np.rot90` is correct.
 2. **`polycalib.npz`'s `grad_r`/`grad_g`/`grad_b`** — for a given (gradient
@@ -27,6 +28,24 @@ needs its own treatment under rotation:
    vector rotates like any other vector). This shifts which direction bin a
    given physical gradient direction falls into, independent of the
    pixel-coordinate substitution in (2).
+4. **`shadowTable.npz`'s direction-bin axis** — `simulating()` uses the same
+   `grad_dir` value computed in (3) to index both `polycalib`'s direction
+   bins (for shading) and `shadowTable`'s direction bins (for shadow
+   casting). If polycalib's direction axis is shifted but shadowTable's
+   isn't, the two fall out of sync: a given `grad_dir` now picks a shading
+   response from one table and a shadow-cast direction from the other that
+   no longer correspond to the same physical direction. This was caught
+   empirically — a first version of this conversion left `shadowTable.npz`
+   unrotated (reasoning it was "just a borrowed/shared file, not real
+   per-sensor data"), which produced a visually wrong, scattered/ring-like
+   shadow artifact even though the rest of the image looked fine. Whether the
+   *content* is sensor-specific or borrowed is irrelevant — what matters is
+   that its direction convention must move together with polycalib's.
+
+`gelmap5.npy` (the gel dome height map) is not direction-binned calibration
+content — it's a plain 2D array of heights — so it only needs the same
+straight `np.rot90` as `f0`/`imgs`, with no coefficient or direction-bin
+transform.
 
 ## The math
 
@@ -56,61 +75,34 @@ preserves it). Both of these were verified numerically against
 maps (zero error, not an approximation) before being used here.
 
 Since `pi/2` in radians rarely lands on an exact integer number of direction
-bins (`bins - 1` isn't always divisible by 4), the direction axis is shifted
-with **circular linear interpolation** (`circular_shift_interp()`) rather than
-an integer `np.roll`, so the shift is still exact up to ordinary
-interpolation between adjacent calibration bins.
+bins (`bins - 1` isn't always divisible by 4), `polycalib`'s direction axis is
+shifted with **circular linear interpolation** (`circular_shift_interp()`)
+rather than an integer `np.roll`, so the shift is still exact up to ordinary
+interpolation between adjacent calibration bins. `shadowTable`'s direction
+axis, by contrast, is shifted with an integer `np.roll` (rounding to the
+nearest bin) because each `shadowTable[c, n, h]` entry is itself a
+variable-length (ragged) 1D array — you can't linearly blend two different-
+length shadow-falloff profiles element-wise, so exact index permutation is
+the safe option there.
 
 All of the above (both formulas, for both `k=1` and `k=-1`) were checked with
 brute-force numeric tests: sampling random pixels/coefficients, applying the
 substitution, and comparing against direct evaluation — see the conversation
 history for the test snippets. Everything matched to floating-point
-precision.
+precision. The `shadowTable` fix was additionally verified with a synthetic
+cone height map (guaranteed shadow-casting edges in every direction):
+rotating `shadowTable`'s direction axis turned a scattered, ring-like shadow
+artifact into a single coherent directional shadow.
 
 ## What does NOT get rotated
 
-`gelmap5.npy` (the gel dome height map) and `shadowTable.npz` are **not**
-independently calibrated per sensor in this repo — the `gelsight_r1.5` folder
-just had byte-identical copies of the default `calibs/` folder's versions
-(confirmed with `np.array_equal`), copied in only because they were missing.
-Rotating already-borrowed data and rotating it back is a pointless source of
-interpolation error, so the conversion script reuses the original default
-files unchanged instead of transforming `gelsight_r1.5`'s copies.
-
-`touch_center` / `touch_radius` / `names` inside `dataPack.npz` are also left
+`touch_center` / `touch_radius` / `names` inside `dataPack.npz` are left
 unrotated — `simOptical.py` never reads them (only `f0` is consumed; grep the
 codebase to confirm), and their pixel-coordinate convention was never pinned
 down, so transforming them risked silently introducing wrong data for no
 benefit.
 
-## Files
-
-- **`rotate_calib_folder.py`** — the general, reusable transform. Works for
-  either rotation direction via `--k {1,-1}`. Only rotates `dataPack.npz`
-  (`f0`, `imgs`, `img_size`) and `polycalib.npz` (`grad_r/g/b`, direction
-  axis) — it does not touch `gelmap5.npy` or `shadowTable.npz`, since whether
-  those need rotating depends on whether they're genuinely sensor-specific
-  data in your particular folder (see above).
-- **`convert_r1p5_to_pseudo_mini.py`** — the concrete, no-argument script for
-  this specific conversion: calls `rotate_calib_folder`'s functions with
-  `k=-1` on `../calibs/gelsight_r1.5/`, writes the result to
-  `../calibs/gelsight_pseudo_mini/`, and copies `gelmap5.npy`/
-  `shadowTable.npz` from the default `calibs/` folder instead of rotating the
-  borrowed copies.
-
 ## How to run it
-
-**Recommended — the concrete wrapper (no arguments):**
-
-```bash
-cd Taxim/DataCollection
-python3 convert_r1p5_to_pseudo_mini.py
-```
-
-This regenerates `Taxim/calibs/gelsight_pseudo_mini/` from
-`Taxim/calibs/gelsight_r1.5/` in one shot.
-
-**General form, for a different rotated-sensor pair:**
 
 ```bash
 cd Taxim/DataCollection
@@ -120,10 +112,9 @@ python3 rotate_calib_folder.py \
     --k -1   # -1 = 90 deg clockwise, 1 = 90 deg CCW
 ```
 
-Note this general form only writes `dataPack.npz`/`polycalib.npz` — you must
-separately decide what to do about `gelmap5.npy`/`shadowTable.npz` depending
-on whether your source folder's copies are real per-sensor calibration data
-or borrowed defaults.
+`in_calib_folder` must contain all four files (`dataPack.npz`, `polycalib.npz`,
+`shadowTable.npz`, `gelmap5.npy`) — all four are read, rotated, and written to
+`out_calib_folder` in one pass.
 
 ## How to determine `k`'s sign for a new sensor pair
 
@@ -140,5 +131,5 @@ After conversion, run `simOptical.py` with `-data_folder
 ../calibs/gelsight_pseudo_mini/` and no `-override_hw` flag (since the output
 is already in the target sensor's native `H0 x W0` -> `W0 x H0` shape). A
 correct conversion should run without the "inconsistent size" or index
-out-of-bounds warnings, and produce a coherent (not garbled) simulated tactile
-image.
+out-of-bounds warnings, and produce a coherent (not garbled, not a scattered
+shadow ring) simulated tactile image.
