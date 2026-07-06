@@ -14,9 +14,9 @@ def main():
                         help="Path to .ply with pre-picked reference contact points")
     parser.add_argument("--output_ply", required=True,
                         help="Output .ply file path")
-    parser.add_argument("--r_low", default=0.01, type=float,
+    parser.add_argument("--r_low", default=0.005, type=float,
                         help="Minimum distance from each reference point (inclusive, default: 0.01)")
-    parser.add_argument("--r_high", default=0.05, type=float,
+    parser.add_argument("--r_high", default=0.02, type=float,
                         help="Maximum distance from each reference point (inclusive, default: 0.2)")
     parser.add_argument("--num_dense_points", default=100_000, type=int,
                         help="Number of points in the dense surface sample (default: 100000)")
