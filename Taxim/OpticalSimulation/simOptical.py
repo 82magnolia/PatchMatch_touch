@@ -232,7 +232,7 @@ class simulator(object):
 
         # generate raw simulated image without background
         sim_img_r = np.zeros((self.psp_h,self.psp_w,3))
-        bins = psp.numBins
+        bins = self.calib_data.numBins
 
         [xx, yy] = np.meshgrid(range(self.psp_w), range(self.psp_h))
         xf = xx.flatten()
