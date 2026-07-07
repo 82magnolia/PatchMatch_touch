@@ -478,6 +478,10 @@ def main():
             continue
 
         # -- Compute the DINOv3 correspondence NNF (once per pair) ---------
+        # np.linalg.LinAlgError (e.g. a singular homography) is included alongside
+        # the RANSAC/shape failures already raised as ValueError/RuntimeError --
+        # any of these fall back to an identity NNF rather than skipping the
+        # query outright, so a video is still produced for every query.
         try:
             nnf = compute_dinov3_transfer_nnf(
                 args.query_dir, args.ref_dir, query_idx, ref_idx, args.modality,
@@ -485,9 +489,11 @@ def main():
                 args.dinov3_model, args.dinov3_weights,
                 args.dinov3_num_points, args.dinov3_stratify_threshold,
                 args.dinov3_reproj_threshold, args.dinov3_transform_type)
-        except (ValueError, RuntimeError) as e:
-            print(f"  Skipping (DINOv3 matching failed): {e}")
-            continue
+        except (ValueError, RuntimeError, np.linalg.LinAlgError) as e:
+            print(f"  DINOv3 matching failed ({e}); falling back to identity transform.")
+            h2, w2 = query_static.shape[:2]
+            grid_col, grid_row = np.meshgrid(np.arange(w2), np.arange(h2))
+            nnf = np.stack([grid_col, grid_row], axis=-1).astype(np.int32)
 
         # -- Load reference touch video ------------------------------------
         vid_path = osp.join(args.ref_dir, f"{ref_idx}_{args.video_type}.mp4")
