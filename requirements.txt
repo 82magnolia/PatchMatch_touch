@@ -17,3 +17,6 @@ scikit-image
 wandb>=0.17.0
 einops
 timm
+gradio
+torchmetrics
+termcolor
