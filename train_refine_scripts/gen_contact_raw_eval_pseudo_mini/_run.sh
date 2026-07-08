@@ -8,6 +8,11 @@ set -euo pipefail
 GPU_ID="${1:?Usage: $0 <GPU_ID (0-1)>}"
 NUM_GPUS=2
 
+if [ "$GPU_ID" -lt 0 ] || [ "$GPU_ID" -ge "$NUM_GPUS" ]; then
+    echo "Error: GPU_ID must be in [0, $((NUM_GPUS - 1))], got $GPU_ID" >&2
+    exit 1
+fi
+
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_VISIBLE_DEVICES=$GPU_ID
 export PYOPENGL_PLATFORM=egl
