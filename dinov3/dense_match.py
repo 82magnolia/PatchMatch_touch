@@ -164,8 +164,11 @@ TRANSFORM_TYPES = ("affine", "homography", "rbf_affine", "rbf_homography")
 
 def _dense_field_from_affine(pts_l_xy, pts_r_xy, h2, w2, reproj_threshold):
     """RANSAC affine fit; returns the dense inverse (right -> left) field."""
-    M, mask = cv2.estimateAffine2D(
-        pts_l_xy, pts_r_xy, method=cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
+    try:
+        M, mask = cv2.estimateAffine2D(
+            pts_l_xy, pts_r_xy, method=cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
+    except cv2.error as e:
+        raise RuntimeError(f"Affine RANSAC failed — too few or degenerate matches: {e}")
     if M is None or mask is None:
         raise RuntimeError("Affine RANSAC failed — too few or degenerate matches.")
     inlier_count = int(mask.sum())
@@ -180,8 +183,11 @@ def _dense_field_from_affine(pts_l_xy, pts_r_xy, h2, w2, reproj_threshold):
 
 def _dense_field_from_homography(pts_l_xy, pts_r_xy, h2, w2, reproj_threshold):
     """RANSAC homography fit; returns the dense inverse (right -> left) field."""
-    H_mat, mask = cv2.findHomography(
-        pts_l_xy, pts_r_xy, cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
+    try:
+        H_mat, mask = cv2.findHomography(
+            pts_l_xy, pts_r_xy, cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
+    except cv2.error as e:
+        raise RuntimeError(f"Homography RANSAC failed — too few or degenerate matches: {e}")
     if H_mat is None or mask is None:
         raise RuntimeError("Homography RANSAC failed — too few or degenerate matches.")
     inlier_count = int(mask.sum())
@@ -208,12 +214,15 @@ def _dense_field_from_rbf(pts_l, pts_r, pts_l_xy, pts_r_xy, h2, w2,
     position in the "left" image, plus the RANSAC inlier count / total match
     count used to fit them.
     """
-    if transform_type == "rbf_affine":
-        M_init, mask = cv2.estimateAffine2D(
-            pts_l_xy, pts_r_xy, method=cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
-    else:
-        M_init, mask = cv2.findHomography(
-            pts_l_xy, pts_r_xy, cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
+    try:
+        if transform_type == "rbf_affine":
+            M_init, mask = cv2.estimateAffine2D(
+                pts_l_xy, pts_r_xy, method=cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
+        else:
+            M_init, mask = cv2.findHomography(
+                pts_l_xy, pts_r_xy, cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
+    except cv2.error as e:
+        raise RuntimeError(f"{transform_type} RANSAC (inlier selection for RBF) failed: {e}")
     if M_init is None or mask is None:
         raise RuntimeError(f"{transform_type} RANSAC (inlier selection for RBF) failed.")
     inlier_bool = mask.ravel().astype(bool)
