@@ -294,6 +294,34 @@ python real_data_transfer/visualize_zed_fs.py \
 
 ---
 
+## Object cache & masking
+
+`capture_gelsight.py` and `capture_gelsight_single_shot.py` both cache the raw per-view geometry
+(`object_cache.npz` / `object_cache_N.npz`) used to orthographically render each touch's
+`{idx}_normal.jpg`, `{idx}_color.jpg`, etc. This cache and the final rendered output are masked
+independently, with different defaults:
+
+**What's in the cache (always unmasked):** `color`, `normals`, and `depth` are always saved as the
+full raw sensor frame — SAM background pixels are **not** zeroed or blacked out before caching, in
+any `--geometry_mode`. The SAM object `mask` itself is cached separately (as its own `mask` key), and
+is applied later, at render time, not baked into `color`/`normals`/`depth`. This means the cache
+retains real background geometry that can still be recovered later even though a given render was
+masked.
+
+**What's in the render (masked by default):** `{idx}_normal.jpg/.npz`, `{idx}_color.jpg`, and the
+live dashboard preview clip color/normals to the SAM mask by default — background pixels are zeroed.
+Pass **`--no_mask`** to render/save the full-FoV, unmasked color and normals instead. `--no_mask`
+only affects color/normal output; contact-mask/render-mask detection (`{idx}_contact_mask.jpg`,
+`{idx}_render_mask.mp4`, and the height-based `contact_mask` used internally) always uses the real
+SAM mask regardless of `--no_mask`, so contact detection is unaffected either way.
+
+`--no_mask` is available on `capture_gelsight.py`, `capture_gelsight_single_shot.py`, and
+`process_single_shot.py` (see each script's Options table below) — useful when you want to inspect
+or use surrounding context (table, background clutter) beyond the segmented object's silhouette,
+without needing to re-capture.
+
+---
+
 ### `capture_gelsight.py` — Real GelSight tactile capture for PatchMatch pipeline
 
 Produces `{idx}_normal.jpg/.npz`, `{idx}_color.jpg`, `{idx}_shadow.mp4` per touch location — the same file layout read by `main_retrieval_transfer_accel.py` (with `--scale` omitted). Combines ZED 2i depth/normals with a GelSight Mini tactile sensor.
@@ -377,6 +405,7 @@ python real_data_transfer/capture_gelsight.py \
 | `--contact_threshold` | `0.05` | Mean L2 diff vs blank for contact trimming |
 | `--inpaint_method` | `telea` | Normal-map hole inpainting: `telea`, `ns`, `nearest` |
 | `--render_scale` | `1` | One or more FoV multipliers for normal/RGB orthographic renders, each still output at 320×240 |
+| `--no_mask` | off | Render/save unmasked colors and normals (skip SAM clipping); contact-mask/render-mask detection is unaffected — see [Object cache & masking](#object-cache--masking) |
 | `--save_dir` | `log/gelsight_captures` | Output directory |
 | `--debug_sensor_align` | off | Add a dashboard row with the ortho normal map and RGB crop each blended 50/50 over the live GelSight frame, side-by-side. Useful for verifying that the sensor pose is correctly aligned before recording. |
 | `--geometry_mode` | `zed` | Geometry source: `zed` (ZED built-in), `foundation_stereo`, or `fast_foundation_stereo`. FS modes run stereo inference on the captured pair at Stage 1 and use the resulting depth/normals for all ortho projections and render masks. |
@@ -390,7 +419,7 @@ python real_data_transfer/capture_gelsight.py \
 | File | Description |
 |------|-------------|
 | `blank_frame.jpg` | GelSight no-contact frame (saved once in Stage 1) |
-| `object_cache.npz` | Cached ZED color/normals/depth/xyz/mask (saved once) |
+| `object_cache.npz` | Cached ZED color/normals/depth/xyz/mask (saved once). `color`/`normals`/`depth` are unmasked (raw, full frame); `mask` is the SAM object mask, applied only at render time — see [Object cache & masking](#object-cache--masking) |
 | `{idx}_normal.jpg` | Orthographic normal colormap at GelSight FoV |
 | `{idx}_normal.npz` | Raw float32 normals (H×W×3), key `"normal"` |
 | `{idx}_color.jpg` | Orthographic RGB at GelSight FoV |
@@ -586,6 +615,7 @@ python real_data_transfer/capture_gelsight_single_shot.py \
 | `--mask_temperature` | `0.002` | Sigmoid temperature in metres for soft masks |
 | `--inpaint_method` | `telea` | Normal-map hole inpainting: `telea`, `ns`, `nearest` |
 | `--render_scale` | `1` | One or more FoV multipliers for orthographic renders |
+| `--no_mask` | off | Render/save unmasked colors and normals (skip SAM clipping); contact-mask/render-mask detection is unaffected — see [Object cache & masking](#object-cache--masking) |
 | `--depth_mode` | `neural_plus` | ZED depth mode |
 | `--zed_confidence` | `95` | ZED depth confidence 0–100 |
 | `--sam_checkpoint` | `log/sam_vit_b_01ec64.pth` | SAM checkpoint path |
@@ -607,8 +637,8 @@ python real_data_transfer/capture_gelsight_single_shot.py \
 | `session_poses.npz` | `rvecs`/`tvecs` (N×3) per GelSight frame; NaN where marker absent |
 | `session_diffs.npz` | `diffs` (N,) diff-from-blank per frame |
 | `session_views.json` | `[{"view_idx": N, "gs_frame_start": M}, ...]` — maps frame ranges to object caches |
-| `object_cache_0.npz` | Stage 1 ZED cache (color, normals, depth, xyz, mask) |
-| `object_cache_N.npz` | One per `t`-key view update |
+| `object_cache_0.npz` | Stage 1 ZED cache (color, normals, depth, xyz, mask). `color`/`normals`/`depth` are unmasked (raw, full frame); `mask` is the SAM object mask, applied only at render time — see [Object cache & masking](#object-cache--masking) |
+| `object_cache_N.npz` | One per `t`-key view update (color, normals, depth, mask — no `xyz`) |
 | `blank_frame.jpg` | GelSight no-contact frame |
 | `intrinsics.json` | Camera intrinsics (fx, fy, cx, cy) for offline re-processing |
 
@@ -662,6 +692,12 @@ python real_data_transfer/process_single_shot.py \
 python real_data_transfer/process_single_shot.py \
     --session_dir log/gelsight_captures/session_01 \
     --render_scale 1 2
+
+# Re-render unmasked (full FoV, no SAM clipping) colors and normals
+python real_data_transfer/process_single_shot.py \
+    --session_dir log/gelsight_captures/session_01 \
+    --output_dir  log/reprocess/session_01_unmasked \
+    --no_mask
 ```
 
 **Options:**
@@ -679,6 +715,7 @@ python real_data_transfer/process_single_shot.py \
 | `--mask_temperature` | `0.002` | Sigmoid temperature in metres for soft masks |
 | `--inpaint_method` | `telea` | Normal-map inpainting: `telea`, `ns`, `nearest` |
 | `--render_scale` | `1` | One or more FoV multipliers for orthographic renders |
+| `--no_mask` | off | Render/save unmasked colors and normals (skip SAM clipping); contact-mask/render-mask detection is unaffected — see [Object cache & masking](#object-cache--masking) |
 | `--dry_run` | off | Print detected segments without writing any files |
 
 > `process_single_shot.py` loads `session_diffs.npz` to re-segment without re-decoding the full video, then loads `session_gs.mp4` only when it has segments to write. Multi-view sessions are handled automatically via `session_views.json` — each segment is assigned to the correct `object_cache_N.npz` based on its frame index.
