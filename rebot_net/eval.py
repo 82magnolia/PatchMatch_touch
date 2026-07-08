@@ -100,9 +100,7 @@ def main():
         for obj_id in test_ids:
             obj_mse, obj_psnr, obj_ssim, obj_lpips = [], [], [], []
             for pair_idx in range(test_dataset.NUM_PAIRS):
-                lq_path = os.path.join(args.transfer_dir, str(obj_id),
-                                       f"{pair_idx}_transferred_em.mp4")
-                if not os.path.exists(lq_path):
+                if not test_dataset.lq_video_exists(obj_id, pair_idx):
                     continue
 
                 print(f"  Object {obj_id}  contact {pair_idx}", flush=True)

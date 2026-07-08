@@ -18,6 +18,21 @@ def _to_tensor(frame):
     return torch.from_numpy(frame.astype(np.float32) / 255.0).permute(2, 0, 1)
 
 
+def _resolve_lq_path(obj_dir, pair_idx):
+    """Find the transferred video for pair_idx, trying both backend namings.
+
+    '_transferred_em' is main_retrieval_transfer_accel.py's (patchmatch/EM
+    backend) output naming; plain '_transferred' is
+    main_retrieval_transfer_feat_match.py's (dinov3_feat_match backend).
+    Returns None if neither exists.
+    """
+    for suffix in ("_transferred_em", "_transferred"):
+        path = os.path.join(obj_dir, f"{pair_idx}{suffix}.mp4")
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def _load_blank(video_path):
     """Load frame 0 of a video as the no-contact blank frame."""
     cap = cv2.VideoCapture(video_path)
@@ -37,16 +52,19 @@ class TactileTransferDataset(data.Dataset):
     When residual=True, inputs and targets are expressed as contact residuals:
         residual[t] = video[t] - blank
     where blank is frame 0 of the transferred video itself
-    ({pair_idx}_transferred_em.mp4) — always available at real deployment
-    (unlike the query's own touch video, which only exists for paired
-    train/eval data) and already in query coordinate space (unlike the raw
-    reference video, which lives in reference coordinate space).
+    ({pair_idx}_transferred_em.mp4 or {pair_idx}_transferred.mp4, see
+    _resolve_lq_path) — always available at real deployment (unlike the
+    query's own touch video, which only exists for paired train/eval data)
+    and already in query coordinate space (unlike the raw reference video,
+    which lives in reference coordinate space).
     The returned dict includes a 'blank' key for reconstruction.
 
     Directory layout expected:
         transfer_dir/
             {obj_id}/
                 {pair_idx}_transferred_em.mp4   # network input, blank source
+                                                 # (patchmatch/EM backend), or
+                {pair_idx}_transferred.mp4       # (dinov3_feat_match backend)
                 {pair_idx}_query_shadow.mp4      # ground truth
                 {pair_idx}_ref_shadow.mp4        # reference (viz only)
     """
@@ -66,8 +84,8 @@ class TactileTransferDataset(data.Dataset):
         for obj_id in object_ids:
             obj_dir = os.path.join(transfer_dir, str(obj_id))
             for pair_idx in range(self.NUM_PAIRS):
-                vid_path = os.path.join(obj_dir, f"{pair_idx}_transferred_em.mp4")
-                if not os.path.exists(vid_path):
+                vid_path = _resolve_lq_path(obj_dir, pair_idx)
+                if vid_path is None:
                     continue
                 cap = cv2.VideoCapture(vid_path)
                 n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -84,7 +102,7 @@ class TactileTransferDataset(data.Dataset):
         obj_id, pair_idx, t = self.samples[index]
         obj_dir = os.path.join(self.transfer_dir, str(obj_id))
 
-        lq_path = os.path.join(obj_dir, f"{pair_idx}_transferred_em.mp4")
+        lq_path = _resolve_lq_path(obj_dir, pair_idx)
         gt_path = os.path.join(obj_dir, f"{pair_idx}_query_shadow.mp4")
 
         cap_lq = cv2.VideoCapture(lq_path)
@@ -115,9 +133,8 @@ class TactileTransferDataset(data.Dataset):
         return {'lq': lq, 'gt': gt, 'meta': (obj_id, pair_idx, t)}
 
     def lq_video_exists(self, obj_id, pair_idx):
-        path = os.path.join(self.transfer_dir, str(obj_id),
-                            f"{pair_idx}_transferred_em.mp4")
-        return os.path.exists(path)
+        obj_dir = os.path.join(self.transfer_dir, str(obj_id))
+        return _resolve_lq_path(obj_dir, pair_idx) is not None
 
     def iter_video_pairs(self, obj_id, pair_idx):
         """Yield (lq_pair, gt_frame, blank_or_None) for every frame in order.
@@ -126,7 +143,7 @@ class TactileTransferDataset(data.Dataset):
         lq and gt are in residual space when residual=True.
         """
         obj_dir = os.path.join(self.transfer_dir, str(obj_id))
-        lq_path = os.path.join(obj_dir, f"{pair_idx}_transferred_em.mp4")
+        lq_path = _resolve_lq_path(obj_dir, pair_idx)
         gt_path = os.path.join(obj_dir, f"{pair_idx}_query_shadow.mp4")
 
         blank = None

@@ -51,6 +51,7 @@ import torch
 sys.path.insert(0, os.path.dirname(__file__))
 from train import MODEL_CONFIGS, build_model
 from trainer import _write_video, _read_video_frames, _make_grid_video, _residual_to_vis
+from dataset import _resolve_lq_path
 
 
 def _strip_transferred_suffix(stem):
@@ -240,8 +241,7 @@ def main():
         total = sum(
             1 for obj_id in object_ids
             for pair_idx in range(8)
-            if os.path.exists(os.path.join(args.transfer_dir, str(obj_id),
-                                           f"{pair_idx}_transferred_em.mp4"))
+            if _resolve_lq_path(os.path.join(args.transfer_dir, str(obj_id)), pair_idx)
         )
         done = 0
 
@@ -249,8 +249,8 @@ def main():
             obj_dir = os.path.join(args.transfer_dir, str(obj_id))
             out_dir = os.path.join(args.save_dir, str(obj_id))
             for pair_idx in range(8):
-                vid_path = os.path.join(obj_dir, f"{pair_idx}_transferred_em.mp4")
-                if not os.path.exists(vid_path):
+                vid_path = _resolve_lq_path(obj_dir, pair_idx)
+                if vid_path is None:
                     continue
                 done += 1
                 print(f"[{done}/{total}] obj {obj_id} pair {pair_idx}", end='  ', flush=True)
