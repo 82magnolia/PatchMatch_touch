@@ -59,12 +59,14 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
                   intr, inpaint_method, render_scale_list,
                   seg_cs_abs, seg_ce_abs, seg_peak_abs,
                   num_frames, render_mask_type, mask_temperature,
-                  render_mask_thres, output_dir, view_idx):
+                  render_mask_thres, output_dir, view_idx, unmasked=False):
     """Process one detected segment and write all outputs.
 
     gs_frames_seg: frames[seg_cs_abs : seg_ce_abs+1]
     pose_buffer_seg: matching slice of (rvec, tvec) tuples (None where missing)
     seg_*_abs: absolute frame indices within the full session
+    unmasked: if True, saved colors/normals skip SAM clipping (contact-mask/
+    render-mask detection is unaffected -- see ortho_project_raw's apply_mask).
     Returns True on success.
     """
     contact_morph_kernel = cv2.getStructuringElement(
@@ -88,7 +90,7 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
     res = ortho_project_raw(
         normals_cached, color_bgr_cached, mask_cached,
         depth_cached, intr, inpaint_method,
-        rvec=peak_aligned_rvec, tvec=peak_tvec)
+        rvec=peak_aligned_rvec, tvec=peak_tvec, apply_mask=not unmasked)
     if res is None:
         print(f"  [Touch #{touch_idx}] Ortho projection failed — skipping.")
         return False
@@ -102,7 +104,8 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
         sr = ortho_project_raw(
             normals_cached, color_bgr_cached, mask_cached,
             depth_cached, intr, inpaint_method,
-            rvec=peak_aligned_rvec, tvec=peak_tvec, render_scale=scale)
+            rvec=peak_aligned_rvec, tvec=peak_tvec, render_scale=scale,
+            apply_mask=not unmasked)
         if sr is not None:
             scaled_static[scale] = (sr[0], sr[1], sr[2])
 
@@ -114,7 +117,7 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
     cs_res = ortho_project_raw(
         normals_cached, color_bgr_cached, mask_cached,
         depth_cached, intr, inpaint_method,
-        rvec=_rotate_rvec_z(cs_rvec, R_z), tvec=cs_tvec)
+        rvec=_rotate_rvec_z(cs_rvec, R_z), tvec=cs_tvec, apply_mask=not unmasked)
 
     hmap_0 = sz_0 = vdr_0 = mc_0 = None
     if cs_res is not None:
@@ -213,7 +216,8 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
 def reprocess(session_dir, output_dir, seg_threshold, min_gap_frames,
               peak_ratio, num_frames, render_mask_type, mask_temperature,
               render_mask_thres, inpaint_method, render_scale_list,
-              dry_run, smooth_sigma=2.0, merge_gap=0, boundary_pad=0):
+              dry_run, smooth_sigma=2.0, merge_gap=0, boundary_pad=0,
+              unmasked=False):
     """Load saved session and re-process with the given parameters."""
     from scipy.ndimage import gaussian_filter1d
 
@@ -343,7 +347,7 @@ def reprocess(session_dir, output_dir, seg_threshold, min_gap_frames,
             intr, inpaint_method, render_scale_list,
             cs, ce, peak,
             num_frames, render_mask_type, mask_temperature,
-            render_mask_thres, output_dir, view_idx=vid)
+            render_mask_thres, output_dir, view_idx=vid, unmasked=unmasked)
         if ok:
             saved += 1
             print("saved.")
@@ -386,6 +390,9 @@ def parse_args():
     p.add_argument("--inpaint_method", default="telea",
                    choices=["telea", "ns", "nearest"])
     p.add_argument("--render_scale", type=float, nargs="+", default=[1.0])
+    p.add_argument("--no_mask", action="store_true",
+                   help="Render/save unmasked colors and normals (skip SAM clipping); "
+                        "contact-mask/render-mask detection is unaffected.")
     p.add_argument("--dry_run", action="store_true",
                    help="Print detected segments without writing files.")
     return p.parse_args()
@@ -408,7 +415,8 @@ def main():
         render_scale_list=args.render_scale,
         dry_run=args.dry_run,
         merge_gap=args.merge_gap,
-        boundary_pad=args.boundary_pad)
+        boundary_pad=args.boundary_pad,
+        unmasked=args.no_mask)
 
 
 if __name__ == "__main__":

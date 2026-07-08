@@ -130,8 +130,11 @@ def _save_segment(touch_idx, gs_buffer, pose_buffer, blank_frame,
                   intr, inpaint_method, render_scale_list,
                   seg_cs, seg_ce, seg_peak, seg_trim_threshold,
                   num_frames, render_mask_type, mask_temperature,
-                  render_mask_thres, save_dir, view_idx):
+                  render_mask_thres, save_dir, view_idx, unmasked=False):
     """Process one detected segment and save all outputs.
+
+    unmasked: if True, saved colors/normals skip SAM clipping (contact-mask/
+    render-mask detection is unaffected -- see ortho_project_raw's apply_mask).
 
     Returns True on success, False if ortho projection fails.
     """
@@ -155,7 +158,7 @@ def _save_segment(touch_idx, gs_buffer, pose_buffer, blank_frame,
     res = ortho_project_raw(
         normals_cached, color_bgr_cached, mask_cached,
         depth_cached, intr, inpaint_method,
-        rvec=peak_aligned_rvec, tvec=peak_tvec)
+        rvec=peak_aligned_rvec, tvec=peak_tvec, apply_mask=not unmasked)
     if res is None:
         print(f"  [Touch #{touch_idx}] Ortho projection at peak failed — skipping.")
         return False
@@ -170,7 +173,8 @@ def _save_segment(touch_idx, gs_buffer, pose_buffer, blank_frame,
         sr = ortho_project_raw(
             normals_cached, color_bgr_cached, mask_cached,
             depth_cached, intr, inpaint_method,
-            rvec=peak_aligned_rvec, tvec=peak_tvec, render_scale=scale)
+            rvec=peak_aligned_rvec, tvec=peak_tvec, render_scale=scale,
+            apply_mask=not unmasked)
         if sr is not None:
             scaled_static[scale] = (sr[0], sr[1], sr[2])
 
@@ -182,7 +186,7 @@ def _save_segment(touch_idx, gs_buffer, pose_buffer, blank_frame,
     cs_res = ortho_project_raw(
         normals_cached, color_bgr_cached, mask_cached,
         depth_cached, intr, inpaint_method,
-        rvec=_rotate_rvec_z(cs_rvec, R_z), tvec=cs_tvec)
+        rvec=_rotate_rvec_z(cs_rvec, R_z), tvec=cs_tvec, apply_mask=not unmasked)
 
     pose_contact = pose_buffer[seg_cs: seg_ce + 1]
     hmap_0 = sz_0 = vdr_0 = mc_0 = None
@@ -290,11 +294,12 @@ def process_session(gs_buffer, pose_buffer, blank_frame,
                     seg_threshold, min_gap_frames,
                     num_frames, render_mask_type, mask_temperature,
                     render_mask_thres, save_dir, peak_ratio=0.4, smooth_sigma=2.0,
-                    merge_gap=0, boundary_pad=0):
+                    merge_gap=0, boundary_pad=0, unmasked=False):
     """Segment the full session and save each contact event.
 
     object_caches: list of (normals, color, mask, depth) dicts, one per view.
     view_boundaries: list of {'view_idx': N, 'gs_frame_start': M}.
+    unmasked: if True, saved colors/normals skip SAM clipping (see _save_segment).
     Returns number of successfully saved touches.
     """
     from scipy.ndimage import gaussian_filter1d
@@ -334,7 +339,7 @@ def process_session(gs_buffer, pose_buffer, blank_frame,
             intr, inpaint_method, render_scale_list,
             cs, ce, peak, trim_thr,
             num_frames, render_mask_type, mask_temperature,
-            render_mask_thres, save_dir, view_idx=vid)
+            render_mask_thres, save_dir, view_idx=vid, unmasked=unmasked)
         if ok:
             saved += 1
             print("saved.")
@@ -383,6 +388,9 @@ def parse_args():
     p.add_argument("--inpaint_method", default="telea",
                    choices=["telea", "ns", "nearest"])
     p.add_argument("--render_scale", type=float, nargs="+", default=[1.0])
+    p.add_argument("--no_mask", action="store_true",
+                   help="Render/save unmasked colors and normals (skip SAM clipping); "
+                        "contact-mask/render-mask detection is unaffected.")
     p.add_argument("--render_mask_type", choices=["hard", "soft"], default="hard")
     p.add_argument("--render_mask_thres", type=float, default=-0.005,
                    help="Height threshold in metres for contact mask (default: -0.005)")
@@ -549,7 +557,10 @@ def main():
             xyz_np = xyz_sl.get_data()[:, :, :3].copy()
 
             if args.geometry_mode != "zed" and fs_depth_full is not None:
-                invalid = (mask == 0) | ~np.isfinite(fs_depth_full)
+                # Only NaN genuinely-failed stereo estimates -- keep SAM-background
+                # geometry in the cache (mask is cached separately and applied at
+                # render time), matching "zed" mode's already-unmasked caching.
+                invalid = ~np.isfinite(fs_depth_full)
                 fs_normals_full[invalid] = np.nan
                 fs_depth_full[invalid] = np.nan
                 normals_to_cache = fs_normals_full
@@ -666,7 +677,7 @@ def main():
                 res = ortho_project_raw(
                     normals_cached, color_bgr_cached, mask_cached,
                     depth_cached, intr, args.inpaint_method,
-                    rvec=aligned_rvec, tvec=tvec)
+                    rvec=aligned_rvec, tvec=tvec, apply_mask=not args.no_mask)
                 if res is not None:
                     ortho_mid_panels = [
                         _label_panel(res[0], "normal"),
@@ -679,7 +690,7 @@ def main():
                             normals_cached, color_bgr_cached, mask_cached,
                             depth_cached, intr, args.inpaint_method,
                             rvec=aligned_rvec, tvec=tvec,
-                            render_scale=scale)
+                            render_scale=scale, apply_mask=not args.no_mask)
                         if sr is not None:
                             ortho_mid_panels.append(
                                 _label_panel(sr[0], f"\xd7{scale:.2g} normal"))
@@ -798,7 +809,9 @@ def main():
                                 continue
 
                             if args.geometry_mode != "zed" and fs_d_t is not None:
-                                inv_t = (new_mask == 0) | ~np.isfinite(fs_d_t)
+                                # Only NaN genuinely-failed stereo estimates -- keep
+                                # SAM-background geometry (see initial-cache comment above).
+                                inv_t = ~np.isfinite(fs_d_t)
                                 fs_n_t[inv_t] = np.nan
                                 fs_d_t[inv_t] = np.nan
                                 nc_t = fs_n_t
@@ -891,7 +904,8 @@ def main():
         save_dir=args.save_dir,
         peak_ratio=args.peak_ratio,
         merge_gap=args.merge_gap,
-        boundary_pad=args.boundary_pad)
+        boundary_pad=args.boundary_pad,
+        unmasked=args.no_mask)
 
     print(f"\nDone. {saved} touch(es) saved to: {args.save_dir}")
 

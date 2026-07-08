@@ -87,12 +87,17 @@ def _rotate_rvec_z(rvec, R_z):
 # ── Orthographic projection ───────────────────────────────────────────────────
 
 def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
-                      rvec=None, tvec=None, render_scale=1.0):
+                      rvec=None, tvec=None, render_scale=1.0, apply_mask=True):
     """
     True orthographic projection of the GelSight Mini FoV using sensor pose.
     Returns (normal_bgr, raw_normals_hw3, color_bgr_crop, height_vis,
              contact_mask, height_map, sensor_z_hmap, valid_depth_remap, mask_crop)
     or None if the projection fails.
+
+    apply_mask: when False, color/normal outputs are not clipped to the SAM
+    mask (still clipped to valid_proj, i.e. in front of the camera) -- but
+    contact_mask and the returned mask_crop are unaffected, still using the
+    real mask, so contact/render-mask detection stays exactly as before.
     """
     if rvec is None or tvec is None:
         return None
@@ -159,7 +164,12 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
     normals_crop[~valid_proj] = np.nan
     mask_crop[~valid_proj] = 0
     color_crop[~valid_proj] = 0
-    normals_crop[mask_crop == 0] = np.nan
+
+    # render_mask_crop gates color/normal outputs only; mask_crop (real SAM mask)
+    # is left untouched for contact_mask and the returned mask_crop, so --no_mask
+    # never changes contact/render-mask detection.
+    render_mask_crop = mask_crop if apply_mask else (valid_proj.astype(np.uint8) * 255)
+    normals_crop[render_mask_crop == 0] = np.nan
 
     if not np.isfinite(normals_crop[:, :, 0]).any():
         return None
@@ -174,15 +184,15 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
         normals_filled = normals_filled.copy()
         normals_filled[:, :, :3] = nxyz_rot
 
-    color_crop[mask_crop == 0] = 0
+    color_crop[render_mask_crop == 0] = 0
     normal_bgr = normals_to_colormap(normals_filled)
-    normal_bgr[mask_crop == 0] = 0
+    normal_bgr[render_mask_crop == 0] = 0
     raw_norm = normals_filled[:, :, :3].copy()
     # Re-normalize: bilinear remap and inpainting can break unit length
     norms = np.linalg.norm(raw_norm, axis=-1, keepdims=True)
-    valid_px = (norms[..., 0] > 1e-6) & (mask_crop > 0)
+    valid_px = (norms[..., 0] > 1e-6) & (render_mask_crop > 0)
     raw_norm[valid_px] /= norms[valid_px]
-    raw_norm[mask_crop == 0] = 0.0
+    raw_norm[render_mask_crop == 0] = 0.0
 
     contact_mask = (height_map < HEIGHT_MASK_THRES_M) & valid_depth_remap & (mask_crop > 0)
     h_u8 = (np.clip(-height_map / HEIGHT_CUTOFF_M, 0, 1) * 255).astype(np.uint8)

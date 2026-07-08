@@ -160,7 +160,7 @@ class GelSightCapture:
 # ── Orthographic projection ───────────────────────────────────────────────────
 
 def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
-                      rvec=None, tvec=None, render_scale=1.0):
+                      rvec=None, tvec=None, render_scale=1.0, apply_mask=True):
     """
     True orthographic projection of the GelSight Mini FoV using sensor pose.
 
@@ -173,6 +173,11 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
     rvec should already encode the z-axis alignment correction via _rotate_rvec_z().
     R_sensor (with R_z baked in) is used for spatial grid placement only.
     Normal re-orientation uses R_orig @ R_flip (R_z undone) to avoid swapping nx↔ny.
+
+    apply_mask: when False, color/normal outputs are not clipped to the SAM
+    mask (still clipped to valid_proj, i.e. in front of the camera) -- but
+    contact_mask and the returned mask_crop are unaffected, still using the
+    real mask, so contact/render-mask detection stays exactly as before.
 
     Returns (normal_bgr, raw_normals_hw3, color_bgr_crop) at GELSIGHT_W × GELSIGHT_H.
     normal_bgr:      (H, W, 3) uint8 BGR colormap
@@ -263,7 +268,11 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
     mask_crop[~valid_proj] = 0
     color_crop[~valid_proj] = 0
 
-    normals_crop[mask_crop == 0] = np.nan
+    # render_mask_crop gates color/normal outputs only; mask_crop (real SAM mask)
+    # is left untouched for contact_mask and the returned mask_crop, so --no_mask
+    # never changes contact/render-mask detection.
+    render_mask_crop = mask_crop if apply_mask else (valid_proj.astype(np.uint8) * 255)
+    normals_crop[render_mask_crop == 0] = np.nan
     if not np.isfinite(normals_crop[:, :, 0]).any():
         return None
 
@@ -285,17 +294,17 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
         normals_filled = normals_filled.copy()
         normals_filled[:, :, :3] = nxyz_rot
 
-    color_crop[mask_crop == 0] = 0
+    color_crop[render_mask_crop == 0] = 0
 
     normal_bgr = normals_to_colormap(normals_filled)
-    normal_bgr[mask_crop == 0] = 0
+    normal_bgr[render_mask_crop == 0] = 0
 
     raw_norm = normals_filled[:, :, :3].copy()
     # Re-normalize: bilinear remap and inpainting can break unit length
     norms = np.linalg.norm(raw_norm, axis=-1, keepdims=True)
-    valid_px = (norms[..., 0] > 1e-6) & (mask_crop > 0)
+    valid_px = (norms[..., 0] > 1e-6) & (render_mask_crop > 0)
     raw_norm[valid_px] /= norms[valid_px]
-    raw_norm[mask_crop == 0] = 0.0
+    raw_norm[render_mask_crop == 0] = 0.0
 
     # Render contact mask: object surface above the virtual gel plane (height_map < 0
     # means the object is closer to the camera than the gel tip, i.e. in contact).
@@ -680,6 +689,9 @@ def parse_args():
     p.add_argument("--render_scale", type=float, nargs="+", default=[1.0],
                    help="One or more FoV multipliers for normal/RGB orthographic "
                         "renders, each still output at 320x240 (default: 1)")
+    p.add_argument("--no_mask", action="store_true",
+                   help="Render/save unmasked colors and normals (skip SAM clipping); "
+                        "contact-mask/render-mask detection is unaffected.")
     p.add_argument("--render_mask_type", choices=["hard", "soft"], default="hard",
                    help="Contact mask encoding: 'hard' = binary white/black (default); "
                         "'soft' = grayscale sigmoid intensity")
@@ -873,7 +885,10 @@ def main():
             xyz_np = xyz_sl.get_data()[:, :, :3].copy()
 
             if args.geometry_mode != "zed" and fs_depth_full is not None:
-                invalid = (mask == 0) | ~np.isfinite(fs_depth_full)
+                # Only NaN genuinely-failed stereo estimates -- keep SAM-background
+                # geometry in the cache (mask is cached separately and applied at
+                # render time), matching "zed" mode's already-unmasked caching.
+                invalid = ~np.isfinite(fs_depth_full)
                 fs_normals_full[invalid] = np.nan
                 fs_depth_full[invalid] = np.nan
                 normals_to_cache = fs_normals_full
@@ -984,7 +999,7 @@ def main():
                     result = ortho_project_raw(
                         normals_cached, color_bgr_cached, mask_cached,
                         depth_cached, intr, args.inpaint_method,
-                        rvec=aligned_rvec, tvec=tvec)
+                        rvec=aligned_rvec, tvec=tvec, apply_mask=not args.no_mask)
                     if result is not None:
                         rcm_vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
                         rcm_vis[result[4]] = (255, 255, 255)
@@ -1002,7 +1017,7 @@ def main():
                             normals_cached, color_bgr_cached, mask_cached,
                             depth_cached, intr, args.inpaint_method,
                             rvec=aligned_rvec, tvec=tvec,
-                            render_scale=scale)
+                            render_scale=scale, apply_mask=not args.no_mask)
                         if scale_res is None:
                             scale_prevs.append((scale, None, None))
                         else:
@@ -1151,7 +1166,9 @@ def main():
 
                             # Update cache in current camera frame (no rotation)
                             if args.geometry_mode != "zed" and fs_depth_t is not None:
-                                invalid_t = (new_mask == 0) | ~np.isfinite(fs_depth_t)
+                                # Only NaN genuinely-failed stereo estimates -- keep
+                                # SAM-background geometry (see initial-cache comment above).
+                                invalid_t = ~np.isfinite(fs_depth_t)
                                 fs_normals_t[invalid_t] = np.nan
                                 fs_depth_t[invalid_t] = np.nan
                                 normals_cached   = fs_normals_t
@@ -1218,7 +1235,7 @@ def main():
                 res = ortho_project_raw(
                     normals_cached, color_bgr_cached, mask_cached,
                     depth_cached, intr, args.inpaint_method,
-                    rvec=peak_aligned_rvec, tvec=peak_tvec)
+                    rvec=peak_aligned_rvec, tvec=peak_tvec, apply_mask=not args.no_mask)
                 if res is None:
                     print("  ERROR: no valid depth at contact point. Try again.")
                     buffer = []
@@ -1235,7 +1252,7 @@ def main():
                         normals_cached, color_bgr_cached, mask_cached,
                         depth_cached, intr, args.inpaint_method,
                         rvec=peak_aligned_rvec, tvec=peak_tvec,
-                        render_scale=scale)
+                        render_scale=scale, apply_mask=not args.no_mask)
                     if scale_res is None:
                         print(f"  WARNING: scale {scale:g} ortho failed — skipping.")
                     else:
@@ -1251,7 +1268,8 @@ def main():
                 cs_res = ortho_project_raw(
                     normals_cached, color_bgr_cached, mask_cached,
                     depth_cached, intr, args.inpaint_method,
-                    rvec=_rotate_rvec_z(cs_rvec_raw, R_z), tvec=cs_tvec_raw)
+                    rvec=_rotate_rvec_z(cs_rvec_raw, R_z), tvec=cs_tvec_raw,
+                    apply_mask=not args.no_mask)
                 pose_contact = pose_buffer[cs_idx: ce_idx + 1]
                 hmap_0 = sz_0 = vdr_0 = mc_0 = None
                 if cs_res is not None:
