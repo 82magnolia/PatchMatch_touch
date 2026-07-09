@@ -56,7 +56,7 @@ for ref_dir in "$REF_BASE"/*/; do
         --query_dir      "$query_dir" \
         --ref_dir        "$ref_dir" \
         --retrieval_pkl  "$retrieval_pkl" \
-        --modality       raw_normal \
+        --modality       normal \
         --video_type     shadow \
         --scale          100. \
         --dinov3_match_scale 100. \
