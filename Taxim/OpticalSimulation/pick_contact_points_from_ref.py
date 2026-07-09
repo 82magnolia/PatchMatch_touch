@@ -24,9 +24,9 @@ def main():
                         help="Path to .ply with pre-picked reference contact points")
     parser.add_argument("--output_ply", required=True,
                         help="Output .ply file path")
-    parser.add_argument("--r_low", default=0.002, type=float,
+    parser.add_argument("--r_low", default=0.001, type=float,
                         help="Minimum shell radius from each reference point (inclusive, default: 0.005)")
-    parser.add_argument("--r_high", default=0.005, type=float,
+    parser.add_argument("--r_high", default=0.003, type=float,
                         help="Maximum shell radius from each reference point (inclusive, default: 0.02)")
     parser.add_argument("--seed", default=None, type=int,
                         help="Random seed for reproducibility")
