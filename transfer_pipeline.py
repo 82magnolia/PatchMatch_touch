@@ -357,7 +357,7 @@ def main():
                        help="Top-K retrievals per query (dinov3 mode, default: 5).")
     g_ret.add_argument("--dino_model", default="dinov3_vitb16",
                        choices=["dinov3_vits16", "dinov3_vits16plus",
-                                "dinov3_vitb16", "dinov3_vitl16"],
+                                "dinov3_vitb16", "dinov3_vitl16", "dinov3_vith16plus"],
                        help="DINOv3 variant (dinov3 mode, default: dinov3_vitb16).")
     g_ret.add_argument("--dino_weights", default=None,
                        help="Path to gated DINOv3 .pth weights. Required when "
@@ -415,7 +415,7 @@ def main():
                            "is set.")
     g_tr.add_argument("--dinov3_model", default="dinov3_vitb16",
                       choices=["dinov3_vits16", "dinov3_vits16plus",
-                               "dinov3_vitb16", "dinov3_vitl16"],
+                               "dinov3_vitb16", "dinov3_vitl16", "dinov3_vith16plus"],
                       help="DINOv3 model variant, used by --init_dinov3_match_scale (patchmatch "
                            "backend) and --transfer_backend dinov3_feat_match (default: dinov3_vitb16).")
     g_tr.add_argument("--dinov3_weights", default=None,

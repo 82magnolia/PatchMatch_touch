@@ -19,7 +19,11 @@ QUERY_BASE="$PROJECT_ROOT/Taxim/results/gen_contact_full_query_pseudo_mini"
 RETRIEVAL_BASE="$PROJECT_ROOT/log/touch_retrieval"
 OUT_BASE="$PROJECT_ROOT/log/transfer_feat_match_pseudo_mini"
 TRANSFER_SCRIPT="$PROJECT_ROOT/main_retrieval_transfer_feat_match.py"
-DINOV3_WEIGHTS="$PROJECT_ROOT/dinov3/pretrained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
+# dinov3_vith16plus + modality=curvature: best config found by the combined
+# synthetic/real-data tuning sweep (see report) -- vith16plus edges out vitb16
+# on both datasets and compounds with the real-data scale finding, without
+# hurting synthetic-data results.
+DINOV3_WEIGHTS="$PROJECT_ROOT/dinov3/pretrained/dinov3_vith16plus_pretrain_lvd1689m-7c1da9a5.pth"
 
 TOUCHES_PER_OBJ=8
 
@@ -59,8 +63,7 @@ for ref_dir in "$REF_BASE"/*/; do
         --modality       curvature \
         --video_type     shadow \
         --scale          100. \
-        --dinov3_match_scale 100. \
-        --dinov3_match_scale_convention obj_scale_factor \
+        --dinov3_model   dinov3_vith16plus \
         --dinov3_weights "$DINOV3_WEIGHTS" \
         --save_dir       "$save_dir" \
         --eval

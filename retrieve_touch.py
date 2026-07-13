@@ -359,7 +359,7 @@ def main():
                              "mask token. Default: none.")
     parser.add_argument("--dino_model", default="dinov3_vitb16",
                         choices=["dinov3_vits16", "dinov3_vits16plus",
-                                 "dinov3_vitb16", "dinov3_vitl16"],
+                                 "dinov3_vitb16", "dinov3_vitl16", "dinov3_vith16plus"],
                         help="DINOv3 model variant (dinov3 mode, default: dinov3_vitb16).")
     parser.add_argument("--dinov3_weights", default=None, type=str,
                         help="Path to gated DINOv3 .pth weights. Required when "

@@ -235,9 +235,27 @@ python main_retrieval_transfer_feat_match.py \
     --query_dir Taxim/results/gen_contact_full_query_pseudo_mini/52 \
     --ref_dir   Taxim/results/gen_contact_full_pseudo_mini/52 \
     --retrieval_pkl log/touch_retrieval/52/results.pkl \
-    --modality normal \
+    --modality curvature \
     --video_type shadow \
     --scale 100 \
     --matcher superpoint_lightglue \
     --save_dir log/transfer_feat_match_spg_lg
 ```
+
+**ix) Recommended settings (from combined synthetic + real-data tuning sweeps)**
+
+Parameter/backend sweeps across sampled objects on both Taxim synthetic data and real GelSight captures (`log/real_data_gt_retrieval`) converged on one configuration that performs best on **both**:
+
+```
+--matcher dinov3 --modality curvature --dinov3_model dinov3_vith16plus \
+--transform_type rbf_homography --reproj_threshold 3.0 \
+--scale <dataset's own maximum: 100 for Taxim, 8 for real GelSight>
+```
+
+- **`--matcher dinov3`**: all five image-matching-webui backends (section viii) are substantially worse on both datasets — much higher fallback-to-identity rates on synthetic data (31–81% vs. DINOv3's 0%), and far lower PSNR on real data even where fallback is low. The curvature-colorization modality appears to be what trips up these general-purpose, natural-image-pretrained matchers, not the sim-vs-real gap.
+- **`--modality curvature`**: also the one modality that's good on *both* datasets. A synthetic-only sweep favored `height`, but `height` is real data's second-worst modality — `curvature` stays within noise of that synthetic-only result and is clearly best on real data, so it's the safer universal choice.
+- **`--dinov3_model dinov3_vith16plus`**: the largest available DINOv3 checkpoint. Helps real data substantially (+1.15 dB over `vitb16`) and is neutral-to-slightly-better on synthetic data — a safe upgrade either way.
+- **`--transform_type`/`--reproj_threshold`**: non-levers on both datasets; the defaults (`rbf_homography`, `3.0`) are already fine.
+- **`--scale`**: always use the largest static-image scale your dataset has rendered — for Taxim that's `--scale 100` (unchanged default). For real GelSight data captured via `capture_gelsight_single_shot.py`/`process_single_shot.py`, that's **`--scale 8` directly** (no `--dinov3_match_scale` mixing) — a change from the `--scale 1` shown in the illustrative examples above. The two datasets' scale conventions point in physically opposite directions (Taxim: bigger number = more zoomed in; GelSight: bigger number = wider field of view), but "use the biggest number available" wins on both.
+
+Reference implementations: `train_refine_scripts/transfer_all_multi_pseudo_mini/run.sh` (Taxim) and `train_refine_scripts/transfer_all_real_data_gt_retrieval/run.sh` (real GelSight, via `transfer_pipeline.py --retrieval_mode real_gt_retrieval --transfer_backend dinov3_feat_match`, looping every session in `log/real_data_gt_retrieval`).
