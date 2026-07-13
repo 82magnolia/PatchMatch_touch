@@ -202,6 +202,28 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
             height_map, sensor_z_hmap, valid_depth_remap, mask_crop)
 
 
+def height2laplacian(H):
+    """Height map -> per-image zero-anchored curvature map (uint8, L=0 pinned
+    to pixel 128). Local copy of Taxim/OpticalSimulation/simOptical.py's
+    height2laplacian, kept in sync by hand rather than imported -- importing
+    simOptical would pull in open3d/pyrender/trimesh, the heavy Taxim-mesh-
+    simulation deps this module deliberately has none of (see module
+    docstring). The normalization is per-image adaptive (uses only H's own
+    gradient min/max), so it works unchanged regardless of height_map's units
+    (meters here vs. Taxim's internal scale).
+    """
+    gy, gx = np.gradient(H)
+    L = np.gradient(gx, axis=1) + np.gradient(gy, axis=0)
+    L = cv2.GaussianBlur(L, (5, 5), 0)
+    Lmin, Lmax = float(L.min()), float(L.max())
+    out = np.where(
+        L < 0,
+        0.5 * (L - Lmin) / (-Lmin + 1e-8),
+        0.5 + 0.5 * L / (Lmax + 1e-8),
+    )
+    return (255 * out).astype(np.uint8)
+
+
 # ── Video helpers ─────────────────────────────────────────────────────────────
 
 def write_video(path, frames, fps):

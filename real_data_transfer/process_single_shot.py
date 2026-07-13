@@ -43,7 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _gelsight_processing import (
     _make_Rz, _rotate_rvec_z,
-    ortho_project_raw,
+    ortho_project_raw, height2laplacian,
     write_video, read_video_frames,
     make_render_mask_video,
     trim_and_resample, segment_contacts,
@@ -95,11 +95,13 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
         print(f"  [Touch #{touch_idx}] Ortho projection failed — skipping.")
         return False
     normal_bgr_out, raw_norm_out, color_out, height_vis_out, rcm_out = res[:5]
+    height_map_out = res[5]
 
     scaled_static = {}
     for scale in render_scale_list:
         if np.isclose(scale, 1.0):
-            scaled_static[scale] = (normal_bgr_out, raw_norm_out, color_out)
+            scaled_static[scale] = (normal_bgr_out, raw_norm_out, color_out,
+                                    height_vis_out, height_map_out)
             continue
         sr = ortho_project_raw(
             normals_cached, color_bgr_cached, mask_cached,
@@ -107,7 +109,7 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
             rvec=peak_aligned_rvec, tvec=peak_tvec, render_scale=scale,
             apply_mask=not unmasked)
         if sr is not None:
-            scaled_static[scale] = (sr[0], sr[1], sr[2])
+            scaled_static[scale] = (sr[0], sr[1], sr[2], sr[3], sr[5])
 
     # Contact-start pose
     cs_rvec, cs_tvec = pose_buffer_seg[0]
@@ -145,12 +147,15 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
     cv2.imwrite(f"{prefix}_normal.jpg", normal_bgr_out)
     np.savez_compressed(f"{prefix}_normal.npz", normal=raw_norm_out)
     cv2.imwrite(f"{prefix}_color.jpg", color_out)
-    for scale, (normal_s, raw_s, color_s) in scaled_static.items():
+    cv2.imwrite(f"{prefix}_height.jpg", height_vis_out)
+    cv2.imwrite(f"{prefix}_curvature.jpg", height2laplacian(height_map_out))
+    for scale, (normal_s, raw_s, color_s, height_vis_s, height_map_s) in scaled_static.items():
         tag = _format_scale(scale)
         cv2.imwrite(f"{prefix}_scale{tag}_normal.jpg", normal_s)
         np.savez_compressed(f"{prefix}_scale{tag}_normal.npz", normal=raw_s)
         cv2.imwrite(f"{prefix}_scale{tag}_color.jpg", color_s)
-    cv2.imwrite(f"{prefix}_height.jpg", height_vis_out)
+        cv2.imwrite(f"{prefix}_scale{tag}_height.jpg", height_vis_s)
+        cv2.imwrite(f"{prefix}_scale{tag}_curvature.jpg", height2laplacian(height_map_s))
 
     rcm_vis = (rcm_out.astype(np.uint8) * 255)
     rcm_vis = cv2.morphologyEx(rcm_vis, cv2.MORPH_OPEN, contact_morph_kernel)
