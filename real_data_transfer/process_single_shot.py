@@ -38,6 +38,7 @@ import json
 import argparse
 import numpy as np
 import cv2
+import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -45,11 +46,15 @@ from _gelsight_processing import (
     _make_Rz, _rotate_rvec_z,
     ortho_project_raw, height2laplacian,
     write_video, read_video_frames,
-    make_render_mask_video,
+    make_render_mask_video, normals_to_colormap,
     trim_and_resample, segment_contacts,
     GELSIGHT_W, GELSIGHT_H, VIDEO_FPS, MASK_OPEN_PX,
     RENDER_MASK_THRES_M, _format_scale,
 )
+from _tactile_normal_net import load_normal_net, frame_to_normals
+
+DEFAULT_NORMAL_NN_MODEL_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "gsnormal_models", "nnmini.pt")
 
 
 # ── Per-segment save (mirrors capture_gelsight_single_shot._save_segment) ────
@@ -59,7 +64,8 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
                   intr, inpaint_method, render_scale_list,
                   seg_cs_abs, seg_ce_abs, seg_peak_abs,
                   num_frames, render_mask_type, mask_temperature,
-                  render_mask_thres, output_dir, view_idx, unmasked=False):
+                  render_mask_thres, output_dir, view_idx, unmasked=False,
+                  normal_net=None, normal_device=None, normal_marker_range=(0, 70)):
     """Process one detected segment and write all outputs.
 
     gs_frames_seg: frames[seg_cs_abs : seg_ce_abs+1]
@@ -166,6 +172,14 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
     sbs = [np.hstack([s, r]) for s, r in zip(resampled, rm_frames)]
     write_video(f"{prefix}_shadow_render_mask.mp4", sbs, VIDEO_FPS)
 
+    if normal_net is not None:
+        tactile_normal_frames = [
+            normals_to_colormap(frame_to_normals(
+                f, normal_net, normal_device, marker_range=normal_marker_range))
+            for f in resampled
+        ]
+        write_video(f"{prefix}_tactile_normal.mp4", tactile_normal_frames, VIDEO_FPS)
+
     if hmap_0 is not None:
         np.savez_compressed(
             f"{prefix}_contact_data.npz",
@@ -222,9 +236,20 @@ def reprocess(session_dir, output_dir, seg_threshold, min_gap_frames,
               peak_ratio, num_frames, render_mask_type, mask_temperature,
               render_mask_thres, inpaint_method, render_scale_list,
               dry_run, smooth_sigma=2.0, merge_gap=0, boundary_pad=0,
-              unmasked=False):
+              unmasked=False, tactile_normal_video=True,
+              normal_nn_model_path=DEFAULT_NORMAL_NN_MODEL_PATH,
+              normal_marker_range=(0, 70), normal_net_device=None):
     """Load saved session and re-process with the given parameters."""
     from scipy.ndimage import gaussian_filter1d
+
+    normal_net = None
+    normal_device = None
+    if tactile_normal_video:
+        if not os.path.exists(normal_nn_model_path):
+            sys.exit(f"Missing tactile normal net checkpoint: {normal_nn_model_path}")
+        normal_device = torch.device(normal_net_device) if normal_net_device else \
+            torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        normal_net = load_normal_net(normal_nn_model_path, normal_device)
 
     # ── Load session files ──────────────────────────────────────────────────
     diffs_path = os.path.join(session_dir, "session_diffs.npz")
@@ -352,7 +377,9 @@ def reprocess(session_dir, output_dir, seg_threshold, min_gap_frames,
             intr, inpaint_method, render_scale_list,
             cs, ce, peak,
             num_frames, render_mask_type, mask_temperature,
-            render_mask_thres, output_dir, view_idx=vid, unmasked=unmasked)
+            render_mask_thres, output_dir, view_idx=vid, unmasked=unmasked,
+            normal_net=normal_net, normal_device=normal_device,
+            normal_marker_range=normal_marker_range)
         if ok:
             saved += 1
             print("saved.")
@@ -398,6 +425,22 @@ def parse_args():
     p.add_argument("--no_mask", action="store_true",
                    help="Render/save unmasked colors and normals (skip SAM clipping); "
                         "contact-mask/render-mask detection is unaffected.")
+    p.add_argument("--tactile_normal_video", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="Render a color-coded normal video for each tactile video, "
+                        "using the RGB2NormNet model (default: on).")
+    p.add_argument("--normal_nn_model_path", default=DEFAULT_NORMAL_NN_MODEL_PATH,
+                   help="Path to the RGB2NormNet checkpoint used for "
+                        "--tactile_normal_video (default: gsnormal_models/nnmini.pt)")
+    p.add_argument("--normal_marker_mask_min", type=int, default=0,
+                   help="Lower grayscale bound for marker pixels excluded from "
+                        "normal-net input (default: 0)")
+    p.add_argument("--normal_marker_mask_max", type=int, default=70,
+                   help="Upper grayscale bound for marker pixels excluded from "
+                        "normal-net input (default: 70)")
+    p.add_argument("--normal_net_device", default=None,
+                   help="Device for the normal net, e.g. 'cuda' or 'cpu' "
+                        "(default: cuda if available)")
     p.add_argument("--dry_run", action="store_true",
                    help="Print detected segments without writing files.")
     return p.parse_args()
@@ -421,7 +464,11 @@ def main():
         dry_run=args.dry_run,
         merge_gap=args.merge_gap,
         boundary_pad=args.boundary_pad,
-        unmasked=args.no_mask)
+        unmasked=args.no_mask,
+        tactile_normal_video=args.tactile_normal_video,
+        normal_nn_model_path=args.normal_nn_model_path,
+        normal_marker_range=(args.normal_marker_mask_min, args.normal_marker_mask_max),
+        normal_net_device=args.normal_net_device)
 
 
 if __name__ == "__main__":

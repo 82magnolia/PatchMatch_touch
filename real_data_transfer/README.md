@@ -716,9 +716,52 @@ python real_data_transfer/process_single_shot.py \
 | `--inpaint_method` | `telea` | Normal-map inpainting: `telea`, `ns`, `nearest` |
 | `--render_scale` | `1` | One or more FoV multipliers for orthographic renders |
 | `--no_mask` | off | Render/save unmasked colors and normals (skip SAM clipping); contact-mask/render-mask detection is unaffected — see [Object cache & masking](#object-cache--masking) |
+| `--tactile_normal_video` / `--no-tactile_normal_video` | on | Render a color-coded normal video (`{idx}_tactile_normal.mp4`) for each tactile video — see [Tactile normal video](#tactile-normal-video) below |
+| `--normal_nn_model_path` | `gsnormal_models/nnmini.pt` | RGB2NormNet checkpoint used for `--tactile_normal_video` |
+| `--normal_marker_mask_min` | `0` | Lower grayscale bound for marker pixels excluded from the normal net's input |
+| `--normal_marker_mask_max` | `70` | Upper grayscale bound for marker pixels excluded from the normal net's input |
+| `--normal_net_device` | *(cuda if available)* | Device for the normal net, e.g. `cuda` or `cpu` |
 | `--dry_run` | off | Print detected segments without writing any files |
 
 > `process_single_shot.py` loads `session_diffs.npz` to re-segment without re-decoding the full video, then loads `session_gs.mp4` only when it has segments to write. Multi-view sessions are handled automatically via `session_views.json` — each segment is assigned to the correct `object_cache_N.npz` based on its frame index.
+
+#### Tactile normal video
+
+For each touch, `{idx}_shadow.mp4` (the raw GelSight tactile video) is fed frame-by-frame through
+the RGB2NormNet network (`_tactile_normal_net.py`, a self-contained port of GelSight's own
+`utilities.reconstruction.Reconstruction3D` normal-reconstruction model) to recover a per-pixel
+surface normal, which is then color-coded (`(n + 1) / 2` → RGB, same convention as `{idx}_normal.jpg`)
+and written as `{idx}_tactile_normal.mp4`. This is on by default; use `--no-tactile_normal_video` to
+skip it.
+
+The network checkpoint (`gsnormal_models/nnmini.pt`) must exist under `real_data_transfer/` — it is
+**not** committed to the repo, so copy it in from a GelSight SDK install (e.g. `gsrobotics`) before
+running with `--tactile_normal_video` enabled (the default), or pass `--no-tactile_normal_video` /
+`--normal_nn_model_path` to point elsewhere.
+
+Grayscale pixels in the marker-dot intensity range (`--normal_marker_mask_min`/`--normal_marker_mask_max`,
+default `0`–`70`) are excluded from the network's input and held flat (pointing straight up), matching
+how `Reconstruction3D.get_depthmap`'s `markers_threshold` masking works — ARuCO dots on the gel would
+otherwise confuse the per-pixel RGB→normal regression.
+
+**Run:**
+
+```bash
+# Default: tactile normal video rendered alongside everything else
+python real_data_transfer/process_single_shot.py \
+    --session_dir log/gelsight_captures/session_01
+
+# Point at a different checkpoint / run the net on CPU
+python real_data_transfer/process_single_shot.py \
+    --session_dir log/gelsight_captures/session_01 \
+    --normal_nn_model_path log/nnmini.pt \
+    --normal_net_device cpu
+
+# Skip tactile normal video (faster re-processing when you only need masks/shadow)
+python real_data_transfer/process_single_shot.py \
+    --session_dir log/gelsight_captures/session_01 \
+    --no-tactile_normal_video
+```
 
 ---
 

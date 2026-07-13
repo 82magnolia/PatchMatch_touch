@@ -11,7 +11,7 @@ from matplotlib import colormaps
 from tqdm import tqdm
 
 sys.path.append("..")
-from simOptical import height2laplacian, mesh_simulator, height2shapeindex
+from simOptical import height2laplacian, mesh_simulator, height2shapeindex, height_map_to_normals
 
 
 def build_press_depth_arr(mode, press_min, press_max, num_step):
@@ -50,7 +50,12 @@ if __name__ == "__main__":
                         help="Name of the folder where calibrated data is stored "
                              "(dataPack.npz, polycalib.npz, shadowTable.npz, gelmap5.npy). "
                              "Defaults to ../calibs relative to this script.")
+    parser.add_argument("--modalities", default=["sim", "shadow", "tactile_normal"], type=str, nargs="+",
+                        choices=["sim", "shadow", "tactile_normal"],
+                        help="Which of the sim/shadow/tactile_normal videos to render. "
+                             "(mask, render_mask, and the per-scale static outputs are always rendered.)")
     args = parser.parse_args()
+    modalities = set(args.modalities)
 
     os.makedirs(args.save_dir, exist_ok=True)
 
@@ -104,8 +109,10 @@ if __name__ == "__main__":
             if args.rand_contact_theta else args.contact_theta
         sim_video = None
         shadow_video = None
+        tactile_normal_video = None
         mask_video = None
         render_mask_video = None
+        writers_initialized = False
 
         for press_idx, press_depth in enumerate(tqdm(press_depth_arr, desc=f"  [{idx}] Press", leave=False)):
             height_map, gel_map, render_contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map = \
@@ -121,12 +128,19 @@ if __name__ == "__main__":
 
             if press_idx == 0:
                 # Init video writers (using primary scale)
-                sim_video = cv2.VideoWriter(
-                    osp.join(args.save_dir, f"{idx}_sim.mp4"),
-                    cv2.VideoWriter_fourcc(*"mp4v"), 5., (w_out, h_out))
-                shadow_video = cv2.VideoWriter(
-                    osp.join(args.save_dir, f"{idx}_shadow.mp4"),
-                    cv2.VideoWriter_fourcc(*"mp4v"), 5., (w_out, h_out))
+                writers_initialized = True
+                if 'sim' in modalities:
+                    sim_video = cv2.VideoWriter(
+                        osp.join(args.save_dir, f"{idx}_sim.mp4"),
+                        cv2.VideoWriter_fourcc(*"mp4v"), 5., (w_out, h_out))
+                if 'shadow' in modalities:
+                    shadow_video = cv2.VideoWriter(
+                        osp.join(args.save_dir, f"{idx}_shadow.mp4"),
+                        cv2.VideoWriter_fourcc(*"mp4v"), 5., (w_out, h_out))
+                if 'tactile_normal' in modalities:
+                    tactile_normal_video = cv2.VideoWriter(
+                        osp.join(args.save_dir, f"{idx}_tactile_normal.mp4"),
+                        cv2.VideoWriter_fourcc(*"mp4v"), 5., (w_out, h_out))
                 mask_video = cv2.VideoWriter(
                     osp.join(args.save_dir, f"{idx}_mask.mp4"),
                     cv2.VideoWriter_fourcc(*"mp4v"), 5., (w_out, h_out), isColor=False)
@@ -169,14 +183,24 @@ if __name__ == "__main__":
                                 height2shapeindex(scale_height_map))
 
             # Write video frames
-            sim_video.write(cv2.cvtColor(sim_img_u8, cv2.COLOR_RGB2BGR))
-            shadow_video.write(cv2.cvtColor(shadow_img_u8, cv2.COLOR_RGB2BGR))
+            if 'sim' in modalities:
+                sim_video.write(cv2.cvtColor(sim_img_u8, cv2.COLOR_RGB2BGR))
+            if 'shadow' in modalities:
+                shadow_video.write(cv2.cvtColor(shadow_img_u8, cv2.COLOR_RGB2BGR))
+            if 'tactile_normal' in modalities:
+                tactile_normal_map = height_map_to_normals(heightMap)
+                tactile_normal_img = (np.clip((tactile_normal_map + 1.0) * 0.5, 0, 1) * 255).astype(np.uint8)
+                tactile_normal_video.write(cv2.cvtColor(tactile_normal_img, cv2.COLOR_RGB2BGR))
             mask_video.write((contact_mask * 255).astype(np.uint8))
             render_mask_video.write((render_contact_mask * 255).astype(np.uint8))
 
-        if sim_video is not None:
-            sim_video.release()
-            shadow_video.release()
+        if writers_initialized:
+            if 'sim' in modalities:
+                sim_video.release()
+            if 'shadow' in modalities:
+                shadow_video.release()
+            if 'tactile_normal' in modalities:
+                tactile_normal_video.release()
             mask_video.release()
             render_mask_video.release()
 

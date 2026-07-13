@@ -785,6 +785,33 @@ class mesh_simulator(simulator):
 
         return zq, gel_map, contact_mask, rawcolorMap, rawnormalMap, vis_rawnormalMap, heightMap
 
+def height_map_to_normals(height_map):
+    """
+    Estimate a per-pixel unit surface normal map (nx, ny, nz) directly from
+    a height map via central finite differences -- same slope convention as
+    simulator.generate_normals() (isotropic pixel spacing, since heightMap
+    is already expressed in units of one height-pixel), but returns the
+    normal vector itself instead of magnitude/direction, so it can be
+    color-coded for a "tactile_normal" video without going through the
+    RGB2NormNet reconstruction network.
+
+    :param height_map: np.array (H, W); the height map (e.g. the gel-deformed
+        heightMap passed to simulator.simulating()).
+    :return normal: np.array (H, W, 3) float; unit normal vectors in [-1, 1].
+    """
+    h, w = height_map.shape
+    top = height_map[0:h - 2, 1:w - 1]
+    bot = height_map[2:h, 1:w - 1]
+    left = height_map[1:h - 1, 0:w - 2]
+    right = height_map[1:h - 1, 2:w]
+    dzdx = (bot - top) / 2.0
+    dzdy = (right - left) / 2.0
+
+    denom = np.sqrt(dzdx ** 2 + dzdy ** 2 + 1.0)
+    normal = np.stack([-dzdx / denom, -dzdy / denom, 1.0 / denom], axis=-1)
+    return np.pad(normal, ((1, 1), (1, 1), (0, 0)), 'symmetric')
+
+
 def raw_laplacian(H):
     """
     Second-derivative (Laplacian) curvature field of a height map, before any
@@ -887,7 +914,12 @@ if __name__ == "__main__":
     parser.add_argument('-override_hw', default = None, type=int, help='Size of image to generate which will be overridden from default', nargs=2)
     parser.add_argument('-save_folder', default = None, type=str, help='Name of folder to use for saving results')
     parser.add_argument('-data_folder', default = None, type=str, help='Name of the folder where calibrated data is stored')
+    parser.add_argument('-modalities', default=['sim', 'shadow', 'tactile_normal'], type=str, nargs='+',
+                        choices=['sim', 'shadow', 'tactile_normal'],
+                        help='Which of the sim/shadow/tactile_normal outputs to render. '
+                             '(raw_color, raw_normal, mask, render_mask, curvature are always rendered.)')
     args = parser.parse_args()
+    modalities = set(args.modalities)
 
     data_folder = osp.join(args.data_folder) if args.data_folder is not None else osp.join('..', 'calibs')
     filePath = osp.join('..', 'data', 'objects') if args.obj_path is None else args.obj_path
@@ -925,6 +957,7 @@ if __name__ == "__main__":
         sim_img, shadow_sim_img = sim.simulating(heightMap, contact_mask, contact_height, shadow=True)
         img_savePath = osp.join('..', 'results', args.save_folder, obj[:-4]+'_sim.jpg')
         shadow_savePath = osp.join('..', 'results', args.save_folder, obj[:-4]+'_shadow.jpg')
+        tactile_normal_savePath = osp.join('..', 'results', args.save_folder, obj[:-4]+'_tactile_normal.jpg')
         height_savePath = osp.join('..', 'results', args.save_folder, obj[:-4]+'_raw_height.jpg')
         raw_color_savePath = osp.join('..', 'results', args.save_folder, obj[:-4]+'_raw_color.jpg')
         raw_normal_savePath = osp.join('..', 'results', args.save_folder, obj[:-4]+'_raw_normal.jpg')
@@ -935,8 +968,14 @@ if __name__ == "__main__":
         raw_color_img = (raw_color_map * 255).astype(np.uint8)
         raw_normal_img = (vis_raw_normal_map * 255).astype(np.uint8)
 
-        cv2.imwrite(img_savePath, sim_img)
-        cv2.imwrite(shadow_savePath, shadow_sim_img)
+        if 'sim' in modalities:
+            cv2.imwrite(img_savePath, sim_img)
+        if 'shadow' in modalities:
+            cv2.imwrite(shadow_savePath, shadow_sim_img)
+        if 'tactile_normal' in modalities:
+            tactile_normal_map = height_map_to_normals(heightMap)
+            tactile_normal_img = (np.clip((tactile_normal_map + 1.0) * 0.5, 0, 1) * 255).astype(np.uint8)
+            cv2.imwrite(tactile_normal_savePath, cv2.cvtColor(tactile_normal_img, cv2.COLOR_RGB2BGR))
 
         norm_raw_height_map = colormaps.get_cmap("viridis")((raw_height_map - raw_height_map.min()) / (raw_height_map.max() - raw_height_map.min() + 1e-6))
         norm_raw_height_map = (norm_raw_height_map * 255).astype(np.uint8)
@@ -971,16 +1010,24 @@ if __name__ == "__main__":
             sim_img, shadow_sim_img = sim.simulating(heightMap, contact_mask, contact_height, shadow=True)
 
             if press_idx == 0:
-                sim_video = cv2.VideoWriter(
-                    osp.join('..', 'results', args.save_folder, obj[:-4] + f'_sim_{press_min}_{press_max}.mp4'),
-                    cv2.VideoWriter_fourcc(*'mp4v'),
-                    5.,
-                    (sim_img.shape[1], sim_img.shape[0]))
-                shadow_sim_video = cv2.VideoWriter(
-                    osp.join('..', 'results', args.save_folder, obj[:-4] + f'_shadow_{press_min}_{press_max}.mp4'),
-                    cv2.VideoWriter_fourcc(*'mp4v'),
-                    5.,
-                    (shadow_sim_img.shape[1], shadow_sim_img.shape[0]))
+                if 'sim' in modalities:
+                    sim_video = cv2.VideoWriter(
+                        osp.join('..', 'results', args.save_folder, obj[:-4] + f'_sim_{press_min}_{press_max}.mp4'),
+                        cv2.VideoWriter_fourcc(*'mp4v'),
+                        5.,
+                        (sim_img.shape[1], sim_img.shape[0]))
+                if 'shadow' in modalities:
+                    shadow_sim_video = cv2.VideoWriter(
+                        osp.join('..', 'results', args.save_folder, obj[:-4] + f'_shadow_{press_min}_{press_max}.mp4'),
+                        cv2.VideoWriter_fourcc(*'mp4v'),
+                        5.,
+                        (shadow_sim_img.shape[1], shadow_sim_img.shape[0]))
+                if 'tactile_normal' in modalities:
+                    tactile_normal_video = cv2.VideoWriter(
+                        osp.join('..', 'results', args.save_folder, obj[:-4] + f'_tactile_normal_{press_min}_{press_max}.mp4'),
+                        cv2.VideoWriter_fourcc(*'mp4v'),
+                        5.,
+                        (heightMap.shape[1], heightMap.shape[0]))
                 raw_color_video = cv2.VideoWriter(
                     osp.join('..', 'results', args.save_folder, obj[:-4] + f'_raw_color_{press_min}_{press_max}.mp4'),
                     cv2.VideoWriter_fourcc(*'mp4v'),
@@ -1007,8 +1054,14 @@ if __name__ == "__main__":
                     5.,
                     (sim_img.shape[1], sim_img.shape[0]), isColor=False)
 
-            sim_video.write(cv2.cvtColor(sim_img.astype(np.uint8), cv2.COLOR_RGB2BGR))
-            shadow_sim_video.write(cv2.cvtColor(shadow_sim_img.astype(np.uint8), cv2.COLOR_RGB2BGR))
+            if 'sim' in modalities:
+                sim_video.write(cv2.cvtColor(sim_img.astype(np.uint8), cv2.COLOR_RGB2BGR))
+            if 'shadow' in modalities:
+                shadow_sim_video.write(cv2.cvtColor(shadow_sim_img.astype(np.uint8), cv2.COLOR_RGB2BGR))
+            if 'tactile_normal' in modalities:
+                tactile_normal_map = height_map_to_normals(heightMap)
+                tactile_normal_img = (np.clip((tactile_normal_map + 1.0) * 0.5, 0, 1) * 255).astype(np.uint8)
+                tactile_normal_video.write(cv2.cvtColor(tactile_normal_img, cv2.COLOR_RGB2BGR))
 
             raw_color_img = (raw_color_map * 255).astype(np.uint8)
             raw_normal_img = (vis_raw_normal_map * 255).astype(np.uint8)
@@ -1020,8 +1073,12 @@ if __name__ == "__main__":
             curvature_video.write(height2laplacian(raw_height_map).astype(np.uint8))
 
             if press_idx == num_step - 1:
-                sim_video.release()
-                shadow_sim_video.release()
+                if 'sim' in modalities:
+                    sim_video.release()
+                if 'shadow' in modalities:
+                    shadow_sim_video.release()
+                if 'tactile_normal' in modalities:
+                    tactile_normal_video.release()
                 raw_color_video.release()
                 raw_normal_video.release()
                 mask_video.release()
@@ -1050,16 +1107,24 @@ if __name__ == "__main__":
             sim_img, shadow_sim_img = sim.simulating(heightMap, contact_mask, contact_height, shadow=True)
 
             if press_idx == 0:
-                sim_video = cv2.VideoWriter(
-                    osp.join('..', 'results', args.save_folder, obj[:-4] + f'_sim_rot_{yaw_amplitude}_{pitch_amplitude}_{roll_amplitude}.mp4'),
-                    cv2.VideoWriter_fourcc(*'mp4v'),
-                    5.,
-                    (sim_img.shape[1], sim_img.shape[0]))
-                shadow_sim_video = cv2.VideoWriter(
-                    osp.join('..', 'results', args.save_folder, obj[:-4] + f'_shadow_rot_{yaw_amplitude}_{pitch_amplitude}_{roll_amplitude}.mp4'),
-                    cv2.VideoWriter_fourcc(*'mp4v'),
-                    5.,
-                    (shadow_sim_img.shape[1], shadow_sim_img.shape[0]))
+                if 'sim' in modalities:
+                    sim_video = cv2.VideoWriter(
+                        osp.join('..', 'results', args.save_folder, obj[:-4] + f'_sim_rot_{yaw_amplitude}_{pitch_amplitude}_{roll_amplitude}.mp4'),
+                        cv2.VideoWriter_fourcc(*'mp4v'),
+                        5.,
+                        (sim_img.shape[1], sim_img.shape[0]))
+                if 'shadow' in modalities:
+                    shadow_sim_video = cv2.VideoWriter(
+                        osp.join('..', 'results', args.save_folder, obj[:-4] + f'_shadow_rot_{yaw_amplitude}_{pitch_amplitude}_{roll_amplitude}.mp4'),
+                        cv2.VideoWriter_fourcc(*'mp4v'),
+                        5.,
+                        (shadow_sim_img.shape[1], shadow_sim_img.shape[0]))
+                if 'tactile_normal' in modalities:
+                    tactile_normal_video = cv2.VideoWriter(
+                        osp.join('..', 'results', args.save_folder, obj[:-4] + f'_tactile_normal_rot_{yaw_amplitude}_{pitch_amplitude}_{roll_amplitude}.mp4'),
+                        cv2.VideoWriter_fourcc(*'mp4v'),
+                        5.,
+                        (heightMap.shape[1], heightMap.shape[0]))
                 raw_color_video = cv2.VideoWriter(
                     osp.join('..', 'results', args.save_folder, obj[:-4] + f'_raw_color_rot_{yaw_amplitude}_{pitch_amplitude}_{roll_amplitude}.mp4'),
                     cv2.VideoWriter_fourcc(*'mp4v'),
@@ -1086,8 +1151,14 @@ if __name__ == "__main__":
                     5.,
                     (sim_img.shape[1], sim_img.shape[0]), isColor=False)
 
-            sim_video.write(cv2.cvtColor(sim_img.astype(np.uint8), cv2.COLOR_RGB2BGR))
-            shadow_sim_video.write(cv2.cvtColor(shadow_sim_img.astype(np.uint8), cv2.COLOR_RGB2BGR))
+            if 'sim' in modalities:
+                sim_video.write(cv2.cvtColor(sim_img.astype(np.uint8), cv2.COLOR_RGB2BGR))
+            if 'shadow' in modalities:
+                shadow_sim_video.write(cv2.cvtColor(shadow_sim_img.astype(np.uint8), cv2.COLOR_RGB2BGR))
+            if 'tactile_normal' in modalities:
+                tactile_normal_map = height_map_to_normals(heightMap)
+                tactile_normal_img = (np.clip((tactile_normal_map + 1.0) * 0.5, 0, 1) * 255).astype(np.uint8)
+                tactile_normal_video.write(cv2.cvtColor(tactile_normal_img, cv2.COLOR_RGB2BGR))
 
             raw_color_img = (raw_color_map * 255).astype(np.uint8)
             raw_normal_img = (vis_raw_normal_map * 255).astype(np.uint8)
@@ -1099,8 +1170,12 @@ if __name__ == "__main__":
             curvature_video.write(height2laplacian(raw_height_map).astype(np.uint8))
 
             if press_idx == num_step - 1:
-                sim_video.release()
-                shadow_sim_video.release()
+                if 'sim' in modalities:
+                    sim_video.release()
+                if 'shadow' in modalities:
+                    shadow_sim_video.release()
+                if 'tactile_normal' in modalities:
+                    tactile_normal_video.release()
                 raw_color_video.release()
                 raw_normal_video.release()
                 mask_video.release()
@@ -1123,16 +1198,24 @@ if __name__ == "__main__":
             sim_img, shadow_sim_img = sim.simulating(heightMap, contact_mask, contact_height, shadow=True)
 
             if press_idx == 0:
-                sim_video = cv2.VideoWriter(
-                    osp.join('..', 'results', args.save_folder, obj[:-4] + f'_sim_slide_{dx_min}_{dx_max}_{dy_min}_{dy_max}.mp4'),
-                    cv2.VideoWriter_fourcc(*'mp4v'),
-                    5.,
-                    (sim_img.shape[1], sim_img.shape[0]))
-                shadow_sim_video = cv2.VideoWriter(
-                    osp.join('..', 'results', args.save_folder, obj[:-4] + f'_shadow_slide_{dx_min}_{dx_max}_{dy_min}_{dy_max}.mp4'),
-                    cv2.VideoWriter_fourcc(*'mp4v'),
-                    5.,
-                    (shadow_sim_img.shape[1], shadow_sim_img.shape[0]))
+                if 'sim' in modalities:
+                    sim_video = cv2.VideoWriter(
+                        osp.join('..', 'results', args.save_folder, obj[:-4] + f'_sim_slide_{dx_min}_{dx_max}_{dy_min}_{dy_max}.mp4'),
+                        cv2.VideoWriter_fourcc(*'mp4v'),
+                        5.,
+                        (sim_img.shape[1], sim_img.shape[0]))
+                if 'shadow' in modalities:
+                    shadow_sim_video = cv2.VideoWriter(
+                        osp.join('..', 'results', args.save_folder, obj[:-4] + f'_shadow_slide_{dx_min}_{dx_max}_{dy_min}_{dy_max}.mp4'),
+                        cv2.VideoWriter_fourcc(*'mp4v'),
+                        5.,
+                        (shadow_sim_img.shape[1], shadow_sim_img.shape[0]))
+                if 'tactile_normal' in modalities:
+                    tactile_normal_video = cv2.VideoWriter(
+                        osp.join('..', 'results', args.save_folder, obj[:-4] + f'_tactile_normal_slide_{dx_min}_{dx_max}_{dy_min}_{dy_max}.mp4'),
+                        cv2.VideoWriter_fourcc(*'mp4v'),
+                        5.,
+                        (heightMap.shape[1], heightMap.shape[0]))
                 raw_color_video = cv2.VideoWriter(
                     osp.join('..', 'results', args.save_folder, obj[:-4] + f'_raw_color_slide_{dx_min}_{dx_max}_{dy_min}_{dy_max}.mp4'),
                     cv2.VideoWriter_fourcc(*'mp4v'),
@@ -1159,8 +1242,14 @@ if __name__ == "__main__":
                     5.,
                     (sim_img.shape[1], sim_img.shape[0]), isColor=False)
 
-            sim_video.write(cv2.cvtColor(sim_img.astype(np.uint8), cv2.COLOR_RGB2BGR))
-            shadow_sim_video.write(cv2.cvtColor(shadow_sim_img.astype(np.uint8), cv2.COLOR_RGB2BGR))
+            if 'sim' in modalities:
+                sim_video.write(cv2.cvtColor(sim_img.astype(np.uint8), cv2.COLOR_RGB2BGR))
+            if 'shadow' in modalities:
+                shadow_sim_video.write(cv2.cvtColor(shadow_sim_img.astype(np.uint8), cv2.COLOR_RGB2BGR))
+            if 'tactile_normal' in modalities:
+                tactile_normal_map = height_map_to_normals(heightMap)
+                tactile_normal_img = (np.clip((tactile_normal_map + 1.0) * 0.5, 0, 1) * 255).astype(np.uint8)
+                tactile_normal_video.write(cv2.cvtColor(tactile_normal_img, cv2.COLOR_RGB2BGR))
 
             raw_color_img = (raw_color_map * 255).astype(np.uint8)
             raw_normal_img = (vis_raw_normal_map * 255).astype(np.uint8)
@@ -1172,8 +1261,12 @@ if __name__ == "__main__":
             curvature_video.write(height2laplacian(raw_height_map).astype(np.uint8))
 
             if press_idx == num_step - 1:
-                sim_video.release()
-                shadow_sim_video.release()
+                if 'sim' in modalities:
+                    sim_video.release()
+                if 'shadow' in modalities:
+                    shadow_sim_video.release()
+                if 'tactile_normal' in modalities:
+                    tactile_normal_video.release()
                 raw_color_video.release()
                 raw_normal_video.release()
                 mask_video.release()
