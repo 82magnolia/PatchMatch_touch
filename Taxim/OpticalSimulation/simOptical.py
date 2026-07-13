@@ -785,18 +785,45 @@ class mesh_simulator(simulator):
 
         return zq, gel_map, contact_mask, rawcolorMap, rawnormalMap, vis_rawnormalMap, heightMap
 
-def height2laplacian(H):
+def raw_laplacian(H):
     """
-    Convert a height map to gradient map.
+    Second-derivative (Laplacian) curvature field of a height map, before any
+    clipping/quantization -- factored out of height2laplacian so callers that
+    need to inspect/tune the raw signal (e.g. visualize_curvature_clip.py)
+    share the exact same formula instead of re-deriving it.
 
     :param H: np.array (H, W); the height map.
-    :return L: np.array (H, W); the curvature map.
+    :return L: np.array (H, W); float curvature field (unbounded, un-clipped).
     """
     gy, gx = np.gradient(H)
     L = np.gradient(gx, axis=1) + np.gradient(gy, axis=0)
     L = cv2.GaussianBlur(L, (5, 5), 0)
-    L = (255 * (L - L.min()) / (L.max() - L.min())).astype(np.uint8)
     return L
+
+
+def height2laplacian(H):
+    """
+    Convert a height map to a per-image zero-anchored, uint8-quantized
+    curvature map: L=0 always maps to pixel 128 (mid-gray) regardless of the
+    image's own min/max, unlike a plain per-image min-max stretch (where zero
+    curvature lands at a different intensity in every image depending on that
+    image's min/max skew) -- required for cross-image comparability (e.g.
+    DINOv3 matching). Negative and positive values are each scaled by their
+    own per-image extent (L.min() / L.max() respectively), so both sides
+    still use their full per-image dynamic range; only the zero point is
+    pinned.
+
+    :param H: np.array (H, W); the height map.
+    :return L: np.array (H, W) uint8; the curvature map.
+    """
+    L = raw_laplacian(H)
+    Lmin, Lmax = float(L.min()), float(L.max())
+    out = np.where(
+        L < 0,
+        0.5 * (L - Lmin) / (-Lmin + 1e-8),
+        0.5 + 0.5 * L / (Lmax + 1e-8),
+    )
+    return (255 * out).astype(np.uint8)
 
 def height2shapeindex(H):
     """
