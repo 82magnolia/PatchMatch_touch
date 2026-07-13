@@ -158,10 +158,18 @@ def compute_imcui_sparse_matches(image_left, image_right, method):
             f"IMCUI matcher {method!r} likely found zero matches between the "
             f"image pair (underlying error: {e}).") from e
 
-    mkpts_l_xy = pred["mkeypoints0_orig"]
-    mkpts_r_xy = pred["mkeypoints1_orig"]
-    if len(mkpts_l_xy) == 0:
-        raise RuntimeError(f"IMCUI matcher {method!r} found zero matches between the image pair.")
+    mkpts_l_xy = np.asarray(pred["mkeypoints0_orig"])
+    mkpts_r_xy = np.asarray(pred["mkeypoints1_orig"])
+    # image-matching-webui's match_features/match_dense occasionally return a
+    # malformed 1-D array (instead of (N, 2)) for one side when very few
+    # matches survive (observed with N=0 and N=1) -- treat any such shape
+    # degeneracy as "no usable matches" rather than crashing on the slice
+    # below, consistent with the RuntimeError fallback already used for the
+    # zero-match case.
+    if mkpts_l_xy.ndim != 2 or mkpts_r_xy.ndim != 2 or len(mkpts_l_xy) == 0 or len(mkpts_r_xy) == 0:
+        raise RuntimeError(
+            f"IMCUI matcher {method!r} returned degenerate matches "
+            f"(shapes {mkpts_l_xy.shape}, {mkpts_r_xy.shape}); treating as zero matches.")
 
     pts_l = mkpts_l_xy[:, ::-1]   # (x, y) -> (row, col)
     pts_r = mkpts_r_xy[:, ::-1]

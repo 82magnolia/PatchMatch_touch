@@ -477,7 +477,7 @@ def main():
                              "is set.")
     parser.add_argument("--dinov3_model", default="dinov3_vitb16",
                         choices=["dinov3_vits16", "dinov3_vits16plus",
-                                 "dinov3_vitb16", "dinov3_vitl16"],
+                                 "dinov3_vitb16", "dinov3_vitl16", "dinov3_vith16plus"],
                         help="DINOv3 model variant (default: dinov3_vitb16). Only used with "
                              "--matcher dinov3.")
     parser.add_argument("--dinov3_weights", default=None, type=str,

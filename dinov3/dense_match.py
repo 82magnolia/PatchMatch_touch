@@ -27,6 +27,7 @@ MODEL_N_LAYERS = {
     "dinov3_vits16plus": 12,
     "dinov3_vitb16": 12,
     "dinov3_vitl16": 24,
+    "dinov3_vith16plus": 32,
 }
 
 _model_cache: dict = {}
