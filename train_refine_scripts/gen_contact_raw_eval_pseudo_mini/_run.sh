@@ -81,7 +81,7 @@ for obj_dir in "$OBJ_DIR"/*/; do
         --rand_contact_theta \
         --rand_contact_theta_mag 0.5235987755982988 \
         --save_dir "$save_dir" \
-        --obj_scale_factor 100.0 \
+        --obj_scale_factor 100. 50. 25. \
         --override_hw 240 320 \
         --data_folder "$CALIB_DIR"
 done

@@ -79,7 +79,7 @@ for obj_dir in "$OBJ_DIR"/*/; do
         --mode back_forth_press \
         --depth_range_info 0. 10. 50 \
         --save_dir "$save_dir" \
-        --obj_scale_factor 100.0 \
+        --obj_scale_factor 100. 50. 25. \
         --override_hw 240 320 \
         --data_folder "$CALIB_DIR"
 done
