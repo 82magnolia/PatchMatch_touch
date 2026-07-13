@@ -622,8 +622,8 @@ def main():
                 "--dinov3_weights", args.dinov3_weights,
                 "--dinov3_num_points", str(args.dinov3_num_points),
                 "--dinov3_stratify_threshold", str(args.dinov3_stratify_threshold),
-                "--dinov3_reproj_threshold", str(args.dinov3_reproj_threshold),
-                "--dinov3_transform_type", args.dinov3_transform_type,
+                "--reproj_threshold", str(args.dinov3_reproj_threshold),
+                "--transform_type", args.dinov3_transform_type,
             ]
             if not args.save_nnf_figures:
                 cmd.append("--no_nnf_figures")

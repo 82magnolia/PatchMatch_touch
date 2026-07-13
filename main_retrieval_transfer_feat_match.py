@@ -1,21 +1,32 @@
 """
-Retrieval-based touch video transfer using DINOv3 feature matching.
+Retrieval-based touch video transfer using local feature matching.
 
 For each query contact point, loads the top-1 retrieved reference from a
 results.pkl (produced by retrieve_touch.py), computes a Nearest-Neighbor
-Field (NNF) between their static modality images via DINOv3 patch-feature
-matching (sparse matches -> RANSAC homography inliers -> thin-plate-spline
-RBF dense warp, see dinov3/dense_match.py), and uses that single NNF to warp
-every frame of the query's touch video into the reference's coordinate
-layout.
+Field (NNF) between their static modality images via one of several
+correspondence backends (sparse matches -> RANSAC homography inliers ->
+thin-plate-spline RBF dense warp), and uses that single NNF to warp every
+frame of the query's touch video into the reference's coordinate layout.
+
+--matcher selects the backend (default "dinov3"):
+  dinov3                DINOv3 patch-feature matching (dinov3/dense_match.py,
+                        requires --dinov3_weights, a gated checkpoint).
+  disk_lightglue        DISK keypoints + LightGlue         (image-matching-webui)
+  superpoint_superglue  SuperPoint keypoints + SuperGlue    (image-matching-webui)
+  loftr                 LoFTR, an end-to-end dense matcher  (image-matching-webui)
+  superpoint_lightglue  SuperPoint keypoints + LightGlue    (image-matching-webui)
+  sift_lightglue        SIFT keypoints + LightGlue          (image-matching-webui)
+See README.md for the one-time setup required for the image-matching-webui
+backends (extra pip installs + a third-party clone), and imcui_match.py for
+the implementation.
 
 Unlike main_retrieval_transfer_accel.py, this script has no PatchMatch/CUDA
-dependency at all -- DINOv3 is the entire correspondence mechanism, computed
-once per query/ref pair and applied directly to every touch frame (no
-iterative EM refinement, keyframe propagation, acceleration, or
-downsampling).
+dependency at all -- the selected matcher is the entire correspondence
+mechanism, computed once per query/ref pair and applied directly to every
+touch frame (no iterative EM refinement, keyframe propagation, acceleration,
+or downsampling).
 
-Example usage:
+Example usage (DINOv3, the default backend):
     python main_retrieval_transfer_feat_match.py \
         --query_dir log/gelsight_captures/session_01 \
         --ref_dir   log/gelsight_captures/session_01 \
@@ -25,6 +36,17 @@ Example usage:
         --video_type shadow \
         --dinov3_weights dinov3/pretrained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth \
         --save_dir log/transfer_feat_match
+
+Example usage (an image-matching-webui backend instead):
+    python main_retrieval_transfer_feat_match.py \
+        --query_dir log/gelsight_captures/session_01 \
+        --ref_dir   log/gelsight_captures/session_01 \
+        --retrieval_pkl log/touch_retrieval/results.pkl \
+        --modality normal \
+        --scale 1 \
+        --video_type shadow \
+        --matcher superpoint_lightglue \
+        --save_dir log/transfer_feat_match_spg_lg
 """
 
 import argparse
@@ -183,22 +205,15 @@ def _prepare_init_scale_static(query_dir, ref_dir, query_idx, ref_idx, modalitie
     return q_rs, r_rs, H, W
 
 
-def compute_dinov3_transfer_nnf(query_dir, ref_dir, query_idx, ref_idx, modalities,
-                                base_scale, match_scale, convention,
-                                dinov3_model, dinov3_weights,
-                                num_points, stratify_threshold, reproj_threshold,
-                                transform_type):
-    """Compute the DINOv3 correspondence NNF used for the entire transfer.
+def _load_query_ref_static_for_matching(query_dir, ref_dir, query_idx, ref_idx, modalities,
+                                        base_scale, match_scale, convention, matcher_label):
+    """Shared static-image loading/validation for every correspondence backend.
 
-    If match_scale is None, matches directly on the base --scale static
-    images. Otherwise reuses _prepare_init_scale_static to align a
-    higher-res variant to the base canvas's field of view first.
-
-    transform_type: one of "affine", "homography", "rbf_affine",
-    "rbf_homography" (see dinov3/dense_match.py:TRANSFORM_TYPES).
-
-    Returns a full (H, W, 2) int32 NNF in the base resolution's coordinate
-    space.
+    If match_scale is None, loads directly at the base --scale. Otherwise
+    reuses _prepare_init_scale_static to align a higher-res variant to the
+    base canvas's field of view first. All of the matchers in this script
+    (DINOv3 and the image-matching-webui backends) require RGB-like input,
+    so the combined modalities must total exactly 3 channels.
     """
     if match_scale is None:
         q = build_combined_static(query_dir, query_idx, modalities, base_scale)
@@ -212,9 +227,28 @@ def compute_dinov3_transfer_nnf(query_dir, ref_dir, query_idx, ref_idx, modaliti
 
     if q.shape[-1] != 3:
         raise ValueError(
-            f"DINOv3 matching requires modalities that combine to exactly "
+            f"{matcher_label} matching requires modalities that combine to exactly "
             f"3 channels (got {q.shape[-1]}); pick a single RGB-like modality "
             f"(e.g. normal, raw_normal).")
+    return q, r
+
+
+def compute_dinov3_transfer_nnf(query_dir, ref_dir, query_idx, ref_idx, modalities,
+                                base_scale, match_scale, convention,
+                                dinov3_model, dinov3_weights,
+                                num_points, stratify_threshold, reproj_threshold,
+                                transform_type):
+    """Compute the DINOv3 correspondence NNF used for the entire transfer.
+
+    transform_type: one of "affine", "homography", "rbf_affine",
+    "rbf_homography" (see dinov3/dense_match.py:TRANSFORM_TYPES).
+
+    Returns a full (H, W, 2) int32 NNF in the base resolution's coordinate
+    space.
+    """
+    q, r = _load_query_ref_static_for_matching(
+        query_dir, ref_dir, query_idx, ref_idx, modalities,
+        base_scale, match_scale, convention, "DINOv3")
 
     from dinov3.dense_match import compute_dinov3_nnf
     return compute_dinov3_nnf(
@@ -222,6 +256,32 @@ def compute_dinov3_transfer_nnf(query_dir, ref_dir, query_idx, ref_idx, modaliti
         model_name=dinov3_model, weights_path=dinov3_weights,
         num_points=num_points, stratify_threshold=stratify_threshold,
         reproj_threshold=reproj_threshold, transform_type=transform_type)
+
+
+def compute_imcui_transfer_nnf(query_dir, ref_dir, query_idx, ref_idx, modalities,
+                               base_scale, match_scale, convention,
+                               matcher, reproj_threshold, transform_type):
+    """Compute a correspondence NNF via one of image-matching-webui's local
+    feature matchers (see imcui_match.py), as an alternative to DINOv3.
+
+    matcher: one of imcui_match.METHOD_TO_ZOO_KEY's keys (e.g.
+    "disk_lightglue", "superpoint_superglue", "loftr", "superpoint_lightglue",
+    "sift_lightglue"). reproj_threshold/transform_type feed the same
+    RANSAC-inlier-selection + geometric-fit stage the DINOv3 backend uses
+    (dinov3/dense_match.py's _fit_dense_field), so the two backends' warps
+    are directly comparable.
+
+    Returns a full (H, W, 2) int32 NNF in the base resolution's coordinate
+    space.
+    """
+    q, r = _load_query_ref_static_for_matching(
+        query_dir, ref_dir, query_idx, ref_idx, modalities,
+        base_scale, match_scale, convention, "IMCUI")
+
+    from imcui_match import compute_imcui_nnf
+    return compute_imcui_nnf(
+        image_left=r, image_right=q,  # left=REF (sampled), right=QUERY (output grid)
+        method=matcher, reproj_threshold=reproj_threshold, transform_type=transform_type)
 
 
 # ---------------------------------------------------------------------------
@@ -389,11 +449,24 @@ def main():
     parser.add_argument("--scale", default=None, type=float,
                         help="Scale suffix for static images (e.g. 100 for Taxim, 0.5 for GelSight). "
                              "Omit to use base-resolution files. Tag formatted with :g (100.0→'100', 0.5→'0.5').")
+    parser.add_argument("--matcher", default="dinov3",
+                        choices=["dinov3", "disk_lightglue", "superpoint_superglue", "loftr",
+                                 "superpoint_lightglue", "sift_lightglue"],
+                        help="Correspondence backend used to compute the NNF (default: dinov3). "
+                             "'dinov3' uses DINOv3 patch-feature matching (dinov3/dense_match.py, "
+                             "requires --dinov3_weights). The other five run a local feature "
+                             "matcher from image-matching-webui (imcui_match.py) instead -- see "
+                             "README.md for setup. All backends share the same RANSAC-inlier-"
+                             "selection + geometric-fit stage (dinov3/dense_match.py's "
+                             "_fit_dense_field), configured uniformly via --reproj_threshold/"
+                             "--transform_type regardless of --matcher.")
     parser.add_argument("--dinov3_match_scale", default=None, type=float,
-                        help="Optional additional scale suffix used to compute the DINOv3 "
-                             "correspondence from a higher-resolution static variant, aligned "
-                             "back to --scale's field of view. Omit to match directly on the "
-                             "--scale images. Requires --dinov3_match_scale_convention.")
+                        help="Optional additional scale suffix used to compute the correspondence "
+                             "(with --matcher dinov3 or any of the image-matching-webui backends) "
+                             "from a higher-resolution static variant, aligned back to --scale's "
+                             "field of view. Omit to match directly on the --scale images. Requires "
+                             "--dinov3_match_scale_convention. (Named --dinov3_match_scale for "
+                             "historical reasons; applies regardless of --matcher.)")
     parser.add_argument("--dinov3_match_scale_convention", default=None,
                         choices=["render_scale", "obj_scale_factor"],
                         help="How to interpret --scale/--dinov3_match_scale to compute the "
@@ -405,24 +478,29 @@ def main():
     parser.add_argument("--dinov3_model", default="dinov3_vitb16",
                         choices=["dinov3_vits16", "dinov3_vits16plus",
                                  "dinov3_vitb16", "dinov3_vitl16"],
-                        help="DINOv3 model variant (default: dinov3_vitb16).")
-    parser.add_argument("--dinov3_weights", required=True, type=str,
-                        help="Path to gated DINOv3 .pth weights.")
+                        help="DINOv3 model variant (default: dinov3_vitb16). Only used with "
+                             "--matcher dinov3.")
+    parser.add_argument("--dinov3_weights", default=None, type=str,
+                        help="Path to gated DINOv3 .pth weights. Required iff --matcher dinov3.")
     parser.add_argument("--dinov3_num_points", default=100, type=int,
-                        help="Max sparse DINOv3 keypoints used to fit the RBF warp (default: 100).")
+                        help="Max sparse DINOv3 keypoints used to fit the RBF warp (default: 100). "
+                             "Only used with --matcher dinov3.")
     parser.add_argument("--dinov3_stratify_threshold", default=20.0, type=float,
                         help="Spatial stratification threshold in px, avoids redundant nearby "
-                             "keypoints (default: 20.0).")
-    parser.add_argument("--dinov3_reproj_threshold", default=3.0, type=float,
+                             "keypoints (default: 20.0). Only used with --matcher dinov3.")
+    parser.add_argument("--reproj_threshold", default=3.0, type=float,
                         help="RANSAC reprojection threshold in px, used to fit/select inliers "
-                             "for --dinov3_transform_type (default: 3.0).")
-    parser.add_argument("--dinov3_transform_type", default="rbf_homography",
+                             "for --transform_type (default: 3.0). Applies to whichever "
+                             "--matcher is selected -- every backend's sparse matches are fit "
+                             "with the same dinov3/dense_match.py:_fit_dense_field stage.")
+    parser.add_argument("--transform_type", default="rbf_homography",
                         choices=["affine", "homography", "rbf_affine", "rbf_homography"],
-                        help="Geometric warp fitted from the DINOv3 sparse matches. 'affine'/"
-                             "'homography' fit a single global RANSAC-robust transform over all "
-                             "matches. 'rbf_affine'/'rbf_homography' use that same RANSAC fit "
-                             "only to select inliers, then interpolate a non-rigid thin-plate-"
-                             "spline warp through them (default: rbf_homography).")
+                        help="Geometric warp fitted from the selected --matcher's sparse "
+                             "matches. 'affine'/'homography' fit a single global RANSAC-robust "
+                             "transform over all matches. 'rbf_affine'/'rbf_homography' use that "
+                             "same RANSAC fit only to select inliers, then interpolate a "
+                             "non-rigid thin-plate-spline warp through them (default: "
+                             "rbf_homography).")
     parser.add_argument("--save_dir", default="./log/transfer_feat_match", type=str,
                         help="Output directory for transferred videos.")
     parser.add_argument("--eval", action="store_true",
@@ -433,6 +511,8 @@ def main():
 
     if args.dinov3_match_scale is not None and args.dinov3_match_scale_convention is None:
         parser.error("--dinov3_match_scale requires --dinov3_match_scale_convention to be set.")
+    if args.matcher == "dinov3" and args.dinov3_weights is None:
+        parser.error("--dinov3_weights is required when --matcher dinov3 (the default).")
 
     os.makedirs(args.save_dir, exist_ok=True)
 
@@ -477,20 +557,26 @@ def main():
                   f"query={query_static.shape} ref={ref_static.shape}")
             continue
 
-        # -- Compute the DINOv3 correspondence NNF (once per pair) ---------
+        # -- Compute the correspondence NNF (once per pair) ----------------
         # np.linalg.LinAlgError (e.g. a singular homography) is included alongside
         # the RANSAC/shape failures already raised as ValueError/RuntimeError --
         # any of these fall back to an identity NNF rather than skipping the
         # query outright, so a video is still produced for every query.
         try:
-            nnf = compute_dinov3_transfer_nnf(
-                args.query_dir, args.ref_dir, query_idx, ref_idx, args.modality,
-                args.scale, args.dinov3_match_scale, args.dinov3_match_scale_convention,
-                args.dinov3_model, args.dinov3_weights,
-                args.dinov3_num_points, args.dinov3_stratify_threshold,
-                args.dinov3_reproj_threshold, args.dinov3_transform_type)
+            if args.matcher == "dinov3":
+                nnf = compute_dinov3_transfer_nnf(
+                    args.query_dir, args.ref_dir, query_idx, ref_idx, args.modality,
+                    args.scale, args.dinov3_match_scale, args.dinov3_match_scale_convention,
+                    args.dinov3_model, args.dinov3_weights,
+                    args.dinov3_num_points, args.dinov3_stratify_threshold,
+                    args.reproj_threshold, args.transform_type)
+            else:
+                nnf = compute_imcui_transfer_nnf(
+                    args.query_dir, args.ref_dir, query_idx, ref_idx, args.modality,
+                    args.scale, args.dinov3_match_scale, args.dinov3_match_scale_convention,
+                    args.matcher, args.reproj_threshold, args.transform_type)
         except (ValueError, RuntimeError, np.linalg.LinAlgError) as e:
-            print(f"  DINOv3 matching failed ({e}); falling back to identity transform.")
+            print(f"  {args.matcher} matching failed ({e}); falling back to identity transform.")
             h2, w2 = query_static.shape[:2]
             grid_col, grid_row = np.meshgrid(np.arange(w2), np.arange(h2))
             nnf = np.stack([grid_col, grid_row], axis=-1).astype(np.int32)

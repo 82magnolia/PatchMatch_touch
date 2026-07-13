@@ -165,8 +165,8 @@ Its CLI mirrors the shared pieces of `main_retrieval_transfer_accel.py` (`--quer
 
 - `--dinov3_weights` (**required** — no PatchMatch fallback exists here) and `--dinov3_model`, same as `--init_dinov3_match_scale`.
 - `--dinov3_match_scale` / `--dinov3_match_scale_convention`: optional higher-resolution matching scale, same semantics as `--init_dinov3_match_scale`/`_convention` above — omit to match directly on the `--scale` images.
-- `--dinov3_num_points` (default `100`), `--dinov3_stratify_threshold` (default `20.0`), `--dinov3_reproj_threshold` (default `3.0`): the RBF/matching hyperparameters, exposed here (unlike the seeding flags above) since DINOv3 is the sole correspondence source.
-- `--dinov3_transform_type` (default `rbf_homography`): which geometric warp is fitted from the sparse DINOv3 matches, mirroring `dinov3/app.py`'s four transform options — `affine`/`homography` fit a single global RANSAC-robust transform over all matches (rigid across the whole frame); `rbf_affine`/`rbf_homography` use that same RANSAC fit only to select inliers, then interpolate a non-rigid thin-plate-spline warp through them (handles local deformation, at the cost of being less constrained where matches are sparse).
+- `--dinov3_num_points` (default `100`), `--dinov3_stratify_threshold` (default `20.0`): DINOv3-specific sparse-matching hyperparameters.
+- `--reproj_threshold` (default `3.0`) and `--transform_type` (default `rbf_homography`): the RANSAC-inlier-selection + geometric-fit hyperparameters shared by every `--matcher` backend (see section viii below) — `affine`/`homography` fit a single global RANSAC-robust transform over all matches (rigid across the whole frame); `rbf_affine`/`rbf_homography` use that same RANSAC fit only to select inliers, then interpolate a non-rigid thin-plate-spline warp through them (handles local deformation, at the cost of being less constrained where matches are sparse).
 
 Run it directly:
 
@@ -197,3 +197,47 @@ python transfer_pipeline.py \
 Output filenames differ slightly from the `patchmatch` backend (no `_em` suffix, since there's no EM loop to disambiguate): `{query_idx}_transferred.mp4` instead of `{query_idx}_transferred_em.mp4`. `transfer_pipeline.py` accounts for this automatically in Stages 3–5 (ReBotNet refine, grid viz, eval) based on `--transfer_backend`.
 
 Outputs are written to `--save_dir/{retrieval,transfer,enhanced}/`. Pass `--skip_refine` to stop after PatchMatch, or `--skip_retrieval` / `--skip_transfer` to resume from a later stage.
+
+**viii) Alternative local feature matchers via image-matching-webui (`--matcher`)**
+
+`main_retrieval_transfer_feat_match.py` can swap DINOv3 out for one of five local feature matchers vendored in `image-matching-webui/` (IMCUI), selected with `--matcher`:
+
+| `--matcher` value | Method |
+|---|---|
+| `dinov3` (default) | DINOv3 patch-feature matching — unchanged from section vii above |
+| `disk_lightglue` | DISK keypoints + LightGlue matcher |
+| `superpoint_superglue` | SuperPoint keypoints + SuperGlue matcher |
+| `loftr` | LoFTR — end-to-end dense matcher, no separate keypoint detector |
+| `superpoint_lightglue` | SuperPoint keypoints + LightGlue matcher |
+| `sift_lightglue` | SIFT keypoints + LightGlue matcher |
+
+All five run through `imcui_match.py`, which calls IMCUI's `hloc.extract_features`/`hloc.match_features`/`hloc.match_dense` directly (the same functions IMCUI's own `ImageMatchingAPI` calls internally) rather than importing `imcui.api`/`imcui.ui.utils` — those pull in `gradio`/`spaces`/`datasets`/`poselib` at module level just to be importable, none of which this script needs for a single headless matching call. The raw matched keypoints from whichever method is selected are then fed into the *same* RANSAC-inlier-selection + affine/homography/RBF geometric-fit stage `dinov3/dense_match.py` uses for DINOv3 (`_fit_dense_field`), so every backend in this script shares one fitting implementation and produces directly comparable NNFs.
+
+Setup (one-time, only needed for `--matcher` values other than `dinov3`):
+
+```bash
+pip install kornia omegaconf h5py pycolmap
+pip install git+https://github.com/cvg/LightGlue.git
+git clone https://github.com/Vincentqyw/SuperGluePretrainedNetwork.git \
+    image-matching-webui/imcui/third_party/SuperGluePretrainedNetwork
+```
+
+Notes on the setup steps:
+- `kornia` backs the `disk_lightglue` and `loftr` matchers (and is also imported by the `sift_lightglue` extractor); `omegaconf` and `h5py` and `pycolmap` are imported unconditionally by IMCUI's `hloc` modules as soon as any matcher is loaded, regardless of which one — all five are needed even if you only ever use one matcher.
+- `LightGlue` has no official PyPI package, so `disk_lightglue`, `superpoint_lightglue`, and `sift_lightglue` need it installed from GitHub directly.
+- `SuperGluePretrainedNetwork` provides the **SuperPoint extractor** in addition to SuperGlue itself, so it's required for `superpoint_lightglue` too, not just `superpoint_superglue`. Use **`Vincentqyw/SuperGluePretrainedNetwork`** specifically (a patched fork — this is the exact fork IMCUI's own `.gitmodules` pins), not the vanilla `magicleap/SuperGluePretrainedNetwork`: IMCUI's `SuperPoint._forward` calls `self.net(data, self.conf)`, which only the patched fork's `SuperPoint.forward(self, data, cfg={})` signature accepts — the original upstream `forward(self, data)` raises a `TypeError` at every call.
+- No pretrained weights need to be downloaded manually. All five auto-download on first use: LightGlue/SuperGlue/SuperPoint weights come from the `Realcat/imcui_checkpoints` HuggingFace Hub repo (cached under `~/.cache/huggingface/hub/`); DISK and LoFTR weights are fetched by kornia's own hub / torch hub mechanism (cached under `~/.cache/torch/hub/checkpoints/`).
+
+`--dinov3_match_scale`/`--dinov3_match_scale_convention` (higher-resolution matching, see section vii) apply to every `--matcher` choice despite the flag name (kept for backward compatibility — it predates this multi-matcher support). `--reproj_threshold`/`--transform_type` (also section vii) likewise configure the geometric fit uniformly for whichever `--matcher` is selected — there's no separate `--imcui_*` version of these.
+
+```bash
+python main_retrieval_transfer_feat_match.py \
+    --query_dir Taxim/results/gen_contact_full_query_pseudo_mini/52 \
+    --ref_dir   Taxim/results/gen_contact_full_pseudo_mini/52 \
+    --retrieval_pkl log/touch_retrieval/52/results.pkl \
+    --modality normal \
+    --video_type shadow \
+    --scale 100 \
+    --matcher superpoint_lightglue \
+    --save_dir log/transfer_feat_match_spg_lg
+```
