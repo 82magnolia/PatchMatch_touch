@@ -8,8 +8,8 @@ set -euo pipefail
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_VISIBLE_DEVICES=0
 # main_retrieval_transfer_feat_match.py has no PatchMatch/CUDA (pycuda) dependency at all
-# (DINOv3 is the entire correspondence mechanism), so unlike transfer_all_multi_240x320's
-# _run.sh, no CUDA-11.8 nvcc PATH override is needed here.
+# (the selected --matcher backend is the entire correspondence mechanism), so unlike
+# transfer_all_multi_240x320's _run.sh, no CUDA-11.8 nvcc PATH override is needed here.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -19,11 +19,12 @@ QUERY_BASE="$PROJECT_ROOT/Taxim/results/gen_contact_full_query_pseudo_mini"
 RETRIEVAL_BASE="$PROJECT_ROOT/log/touch_retrieval"
 OUT_BASE="$PROJECT_ROOT/log/transfer_feat_match_pseudo_mini"
 TRANSFER_SCRIPT="$PROJECT_ROOT/main_retrieval_transfer_feat_match.py"
-# dinov3_vith16plus + modality=curvature: best config found by the combined
-# synthetic/real-data tuning sweep (see report) -- vith16plus edges out vitb16
-# on both datasets and compounds with the real-data scale finding, without
-# hurting synthetic-data results.
-DINOV3_WEIGHTS="$PROJECT_ROOT/dinov3/pretrained/dinov3_vith16plus_pretrain_lvd1689m-7c1da9a5.pth"
+# matcher=loftr + modality=curvature + scale=25: a follow-up sweep that scores
+# the warped static image directly (instead of via reconstructed video, which
+# masked this) found DINOv3 mostly outputs a near-identity transform on this
+# data, while loftr's fallback rate on synth curvature drops sharply at lower
+# render scales (31% at scale=100 -> 13% at scale=25) with no loss in fit
+# quality (SSIM actually improves) -- see report.
 
 TOUCHES_PER_OBJ=8
 
@@ -62,9 +63,8 @@ for ref_dir in "$REF_BASE"/*/; do
         --retrieval_pkl  "$retrieval_pkl" \
         --modality       curvature \
         --video_type     shadow \
-        --scale          100. \
-        --dinov3_model   dinov3_vith16plus \
-        --dinov3_weights "$DINOV3_WEIGHTS" \
+        --scale          25. \
+        --matcher        loftr \
         --save_dir       "$save_dir" \
         --eval
 

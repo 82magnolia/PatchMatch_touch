@@ -246,6 +246,23 @@ python main_retrieval_transfer_feat_match.py \
 
 **ix) Recommended settings (from combined synthetic + real-data tuning sweeps)**
 
+An earlier round of sweeps (below, kept for context) scored the full *reconstructed touch video* against ground truth and concluded `--matcher dinov3` was best on both datasets. A follow-up round instead measures the fitted NNF directly: warp the reference's static curvature image into the query's grid and compare it to the query's own static image, restricted to their shared foreground — this isolates the correspondence step from downstream video content and from the identity-transform fallback (which scores deceptively well on the mild, near-identity transforms common in this data, masking that DINOv3 rarely finds a real correspondence). Measured this way, the picture reverses on both datasets:
+
+```
+--matcher loftr --modality curvature --transform_type rbf_homography --reproj_threshold 8.0 \
+--scale <dataset's own maximum: 25 for Taxim synthetic, 8 for real GelSight>
+```
+
+- **`--matcher loftr`**: on real data, `loftr` reaches 0/30 fallback at `--scale 8` with SSIM 0.985 (vs. DINOv3's 0.902) — a large, low-risk win. On synthetic data every image-matching-webui matcher (including loftr) still falls back more often than DINOv3 (0% fallback) at the default `--scale 100`, but `loftr`'s fallback rate drops sharply as scale decreases (31% at 100 → 13% at 25) with SSIM *improving* at the same time, making `loftr --scale 25` the best-performing non-DINOv3 option found on synthetic data. `superpoint_lightglue` and `sift_lightglue` remain unreliable at every scale tried (50–81% fallback on synth) and are not recommended.
+- **`--modality curvature`**: unchanged from the original finding — the one modality good on both datasets (see below).
+- **`--dinov3_model`**: no longer a relevant lever once `--matcher` is not `dinov3` — the model-size sweep below (vitb16 vs. vitl16 vs. vith16plus) also turned out to be a non-lever for warp accuracy itself when measured this more direct way, so there's no reason to prefer a larger checkpoint if you do use `--matcher dinov3`.
+- **`--transform_type`**: still a non-lever on both datasets; `rbf_homography` is fine.
+- **`--reproj_threshold`**: `8.0` (see below) still holds under this matcher.
+- **`--scale`**: still "use the dataset's own maximum" — but the maximum-fidelity choice changed on the synthetic side specifically because lower render scales reduce loftr's fallback rate; real data's maximum (`8`) was already best and stays that way.
+
+<details>
+<summary>Earlier (video-metric) sweep findings — superseded by the above for <code>--matcher</code>/<code>--dinov3_model</code>, still accurate for the rest</summary>
+
 Parameter/backend sweeps across sampled objects on both Taxim synthetic data and real GelSight captures (`log/real_data_gt_retrieval`) converged on one configuration that performs best on **both**:
 
 ```
@@ -254,11 +271,13 @@ Parameter/backend sweeps across sampled objects on both Taxim synthetic data and
 --scale <dataset's own maximum: 100 for Taxim, 8 for real GelSight>
 ```
 
-- **`--matcher dinov3`**: all five image-matching-webui backends (section viii) are substantially worse on both datasets — much higher fallback-to-identity rates on synthetic data (31–81% vs. DINOv3's 0%), and far lower PSNR on real data even where fallback is low. The curvature-colorization modality appears to be what trips up these general-purpose, natural-image-pretrained matchers, not the sim-vs-real gap.
+- **`--matcher dinov3`**: all five image-matching-webui backends (section viii) appeared substantially worse on both datasets under video-level scoring — much higher fallback-to-identity rates on synthetic data (31–81% vs. DINOv3's 0%), and far lower PSNR on real data even where fallback is low. **Superseded above**: DINOv3's 0% fallback turned out to mean it was reliably outputting a near-identity transform, not a correct one — the video-level metric couldn't tell the difference on this mildly-deformed data.
 - **`--modality curvature`**: also the one modality that's good on *both* datasets. A synthetic-only sweep favored `height`, but `height` is real data's second-worst modality — `curvature` stays within noise of that synthetic-only result and is clearly best on real data, so it's the safer universal choice.
-- **`--dinov3_model dinov3_vith16plus`**: the largest available DINOv3 checkpoint. Helps real data substantially (+1.15 dB over `vitb16`) and is neutral-to-slightly-better on synthetic data — a safe upgrade either way.
+- **`--dinov3_model dinov3_vith16plus`**: the largest available DINOv3 checkpoint. Appeared to help real data substantially (+1.15 dB over `vitb16`) under video-level scoring. **Superseded above**: measuring the static warp directly found no model-size effect at all — the earlier gain likely came from something downstream of correspondence (video reconstruction detail), not a better fit.
 - **`--transform_type`**: non-lever on both datasets; the default (`rbf_homography`) is fine.
-- **`--reproj_threshold`**: raised from `3.0` to **`8.0`** (new default) after a follow-up sweep that measures warp quality directly on the warped static image (instead of via the reconstructed touch video, which buries small static-warp gains under video-content noise) — `8.0` beat `3.0` on both datasets with no added matcher-fallback cost. The other bullets above were tuned under the older video-level sweep and haven't been re-verified against this more direct metric.
+- **`--reproj_threshold`**: raised from `3.0` to **`8.0`** (new default) after a follow-up sweep that measures warp quality directly on the warped static image (instead of via the reconstructed touch video, which buries small static-warp gains under video-content noise) — `8.0` beat `3.0` on both datasets with no added matcher-fallback cost.
 - **`--scale`**: always use the largest static-image scale your dataset has rendered — for Taxim that's `--scale 100` (unchanged default). For real GelSight data captured via `capture_gelsight_single_shot.py`/`process_single_shot.py`, that's **`--scale 8` directly** (no `--dinov3_match_scale` mixing) — a change from the `--scale 1` shown in the illustrative examples above. The two datasets' scale conventions point in physically opposite directions (Taxim: bigger number = more zoomed in; GelSight: bigger number = wider field of view), but "use the biggest number available" wins on both.
+
+</details>
 
 Reference implementations: `train_refine_scripts/transfer_all_multi_pseudo_mini/run.sh` (Taxim) and `train_refine_scripts/transfer_all_real_data_gt_retrieval/run.sh` (real GelSight, via `transfer_pipeline.py --retrieval_mode real_gt_retrieval --transfer_backend dinov3_feat_match`, looping every session in `log/real_data_gt_retrieval`).

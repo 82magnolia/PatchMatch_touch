@@ -428,6 +428,13 @@ def main():
                            "with the EM/PatchMatch loop; 'dinov3_feat_match' runs "
                            "main_retrieval_transfer_feat_match.py, a DINOv3-only correspondence pipeline "
                            "with no PatchMatch/CUDA dependency.")
+    g_tr.add_argument("--transfer_matcher", default="dinov3",
+                      choices=["dinov3", "disk_lightglue", "superpoint_superglue", "loftr",
+                               "superpoint_lightglue", "sift_lightglue"],
+                      help="dinov3_feat_match backend only: correspondence backend used to compute "
+                           "the NNF (default: dinov3). The other five run a local feature matcher "
+                           "from image-matching-webui instead -- see main_retrieval_transfer_feat_match.py "
+                           "and README.md for details. Only 'dinov3' requires --dinov3_weights.")
     g_tr.add_argument("--dinov3_match_scale", type=float, default=None,
                       help="dinov3_feat_match backend only: optional higher-res scale for DINOv3 "
                            "matching, aligned back to --scale's field of view. Requires "
@@ -497,8 +504,9 @@ def main():
             p.error("--init_dinov3_match_scale requires --dinov3_weights to be set.")
 
     if args.transfer_backend == "dinov3_feat_match":
-        if not args.dinov3_weights:
-            p.error("--transfer_backend dinov3_feat_match requires --dinov3_weights.")
+        if args.transfer_matcher == "dinov3" and not args.dinov3_weights:
+            p.error("--transfer_backend dinov3_feat_match requires --dinov3_weights "
+                    "when --transfer_matcher dinov3 (the default) is used.")
         if args.dinov3_match_scale is not None and args.dinov3_match_scale_convention is None:
             p.error("--dinov3_match_scale requires --dinov3_match_scale_convention to be set.")
 
@@ -620,13 +628,15 @@ def main():
                 "--modality",  *args.transfer_modality,
                 "--video_type", args.video_type,
                 "--save_dir",  transfer_dir,
-                "--dinov3_model", args.dinov3_model,
-                "--dinov3_weights", args.dinov3_weights,
+                "--matcher", args.transfer_matcher,
                 "--dinov3_num_points", str(args.dinov3_num_points),
                 "--dinov3_stratify_threshold", str(args.dinov3_stratify_threshold),
                 "--reproj_threshold", str(args.dinov3_reproj_threshold),
                 "--transform_type", args.dinov3_transform_type,
             ]
+            if args.transfer_matcher == "dinov3":
+                cmd += ["--dinov3_model", args.dinov3_model,
+                        "--dinov3_weights", args.dinov3_weights]
             if not args.save_nnf_figures:
                 cmd.append("--no_nnf_figures")
             if transfer_scale is not None:
@@ -636,7 +646,7 @@ def main():
                         "--dinov3_match_scale_convention", args.dinov3_match_scale_convention]
             if not args.skip_eval:
                 cmd.append("--eval")
-            _run(cmd, "Stage 2: DINOv3 Feature-Match Transfer")
+            _run(cmd, f"Stage 2: {args.transfer_matcher} Feature-Match Transfer")
     else:
         print("[Stage 2] Skipped (--skip_transfer).")
 
