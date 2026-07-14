@@ -481,6 +481,11 @@ def main():
     p.add_argument("--save_nnf_figures", action="store_true",
                    help="Save per-query NNF diagnostic figures in the transfer dir "
                         "(disabled by default).")
+    p.add_argument("--save_match_figures", action="store_true",
+                   help="dinov3_feat_match backend only: save a per-query ref|query panel of "
+                        "the raw sparse feature matches, colored by RANSAC inlier/outlier/"
+                        "fit-failed status (disabled by default; adds runtime since it "
+                        "recomputes the sparse-matching stage).")
 
     args = p.parse_args()
 
@@ -639,6 +644,8 @@ def main():
                         "--dinov3_weights", args.dinov3_weights]
             if not args.save_nnf_figures:
                 cmd.append("--no_nnf_figures")
+            if args.save_match_figures:
+                cmd.append("--save_match_figures")
             if transfer_scale is not None:
                 cmd += ["--scale", f"{transfer_scale:g}"]
             if args.dinov3_match_scale is not None:

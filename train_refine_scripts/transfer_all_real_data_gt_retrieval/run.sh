@@ -64,6 +64,7 @@ for session_dir in "$SESSIONS_BASE"/*/; do
         --video_type         shadow \
         --skip_refine \
         --skip_viz \
+        --save_match_figures \
         --save_dir           "$save_dir"
 
     echo "  → done  ($done_count/$total sessions transferred)"

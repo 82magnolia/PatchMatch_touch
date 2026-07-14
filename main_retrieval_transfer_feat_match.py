@@ -390,6 +390,128 @@ def make_nnf_figure(query_idx, ref_idx, query_dir, ref_dir, modalities, scale,
 
 
 # ---------------------------------------------------------------------------
+# Local feature match figure (raw sparse matches, RANSAC inliers/outliers)
+# ---------------------------------------------------------------------------
+
+def _compute_sparse_matches_and_inliers(q, r, matcher, dinov3_model, dinov3_weights,
+                                        num_points, stratify_threshold,
+                                        reproj_threshold, transform_type):
+    """Recompute the sparse matches (and RANSAC inlier mask) that fed the NNF.
+
+    Mirrors the sparse-matching + inlier-selection stages of
+    compute_dinov3_transfer_nnf/compute_imcui_transfer_nnf (and
+    dinov3/dense_match.py's _fit_dense_field), but also returns the raw match
+    points and the RANSAC inlier boolean mask, which the production NNF path
+    doesn't need and so doesn't expose.
+
+    Returns (pts_l, pts_r, inlier_mask, status, reason):
+      pts_l/pts_r: (N, 2) (row, col) arrays in q/r's original pixel space, or
+        None if sparse matching itself failed.
+      inlier_mask: (N,) bool array, or None if fitting failed/wasn't reached.
+      status: "ok" | "fit_fail" | "sparse_fail".
+      reason: human-readable failure explanation, "" if status == "ok".
+    """
+    try:
+        if matcher == "dinov3":
+            from dinov3.dense_match import _find_sparse_matches, _load_model, MODEL_N_LAYERS
+            from PIL import Image
+            model, device = _load_model(dinov3_model, dinov3_weights)
+            n_layers = MODEL_N_LAYERS[dinov3_model]
+            pil_left = Image.fromarray((np.clip(r, 0, 1) * 255).astype(np.uint8))
+            pil_right = Image.fromarray((np.clip(q, 0, 1) * 255).astype(np.uint8))
+            pts_l, pts_r = _find_sparse_matches(
+                pil_left, pil_right, model, n_layers, device, num_points, stratify_threshold)
+        else:
+            from imcui_match import compute_imcui_sparse_matches
+            pts_l, pts_r = compute_imcui_sparse_matches(r, q, matcher)
+    except Exception as e:
+        return None, None, None, "sparse_fail", f"{type(e).__name__}: {e}"
+
+    # Same RANSAC call dense_match.py's _dense_field_from_affine/_homography (and
+    # _dense_field_from_rbf's inlier-selection step) use -- just also keeping the mask.
+    pts_l_xy = pts_l[:, ::-1].astype(np.float32)
+    pts_r_xy = pts_r[:, ::-1].astype(np.float32)
+    min_needed = 3 if transform_type in ("affine", "rbf_affine") else 4
+    try:
+        if transform_type in ("affine", "rbf_affine"):
+            M_init, mask = cv2.estimateAffine2D(
+                pts_l_xy, pts_r_xy, method=cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
+        else:
+            M_init, mask = cv2.findHomography(
+                pts_l_xy, pts_r_xy, cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
+    except cv2.error as e:
+        return pts_l, pts_r, None, "fit_fail", f"cv2 error: {e}"
+    if M_init is None or mask is None:
+        return pts_l, pts_r, None, "fit_fail", "RANSAC returned None (degenerate configuration)"
+
+    inlier_mask = mask.ravel().astype(bool)
+    n_inliers = int(inlier_mask.sum())
+    if n_inliers < min_needed:
+        return pts_l, pts_r, inlier_mask, "fit_fail", f"Only {n_inliers} inliers (need >= {min_needed})"
+    return pts_l, pts_r, inlier_mask, "ok", ""
+
+
+def _draw_match_panel(ref_img, query_img, pts_l, pts_r, inlier_mask, status, reason):
+    """ref_img/query_img: float32 (H, W, 3) [0, 1]. Returns a BGR uint8 canvas
+    with ref | query side by side, matches drawn as lines: green (RANSAC
+    inlier), red (outlier), orange (matches found but the fit failed
+    outright, e.g. too few inliers), colored border by status.
+    """
+    ref_u8 = cv2.cvtColor((np.clip(ref_img, 0, 1) * 255).astype(np.uint8), cv2.COLOR_RGB2BGR).copy()
+    q_u8 = cv2.cvtColor((np.clip(query_img, 0, 1) * 255).astype(np.uint8), cv2.COLOR_RGB2BGR).copy()
+    h, w = ref_u8.shape[:2]
+    gap = 8
+    canvas = np.full((h + 60, w * 2 + gap, 3), 255, dtype=np.uint8)
+    canvas[60:60 + h, 0:w] = ref_u8
+    canvas[60:60 + h, w + gap:2 * w + gap] = q_u8
+    off_x, off_y = w + gap, 60
+
+    n_matches = 0 if pts_l is None else len(pts_l)
+    n_inliers = 0 if inlier_mask is None else int(inlier_mask.sum())
+
+    if pts_l is not None:
+        for i in range(len(pts_l)):
+            r1, c1 = pts_l[i]
+            r2, c2 = pts_r[i]
+            p1 = (int(round(c1)), int(round(r1)) + 60)
+            p2 = (int(round(c2)) + off_x, int(round(r2)) + off_y)
+            if status == "ok":
+                color = (0, 180, 0) if inlier_mask[i] else (0, 0, 220)
+            else:
+                color = (0, 140, 255)  # orange: matches found but fit failed
+            cv2.line(canvas, p1, p2, color, 1, cv2.LINE_AA)
+            cv2.circle(canvas, p1, 3, color, -1, cv2.LINE_AA)
+            cv2.circle(canvas, p2, 3, color, -1, cv2.LINE_AA)
+
+    border_color = {"ok": (0, 170, 0), "fit_fail": (0, 140, 255), "sparse_fail": (0, 0, 220)}[status]
+    cv2.rectangle(canvas, (0, 0), (canvas.shape[1] - 1, canvas.shape[0] - 1), border_color, 6)
+
+    header = f"matches={n_matches}  inliers={n_inliers}  status={status}"
+    cv2.putText(canvas, header, (12, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
+    if reason:
+        cv2.putText(canvas, reason[:130], (12, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
+    return canvas
+
+
+def make_match_figure(query_idx, ref_idx, q, r, matcher, dinov3_model, dinov3_weights,
+                      num_points, stratify_threshold, reproj_threshold, transform_type,
+                      save_dir):
+    """Save a ref|query panel showing this query's raw sparse matches, colored
+    by RANSAC inlier/outlier status -- unlike make_nnf_figure (which shows the
+    final dense NNF), this exposes what the correspondence step actually
+    found, including *why* a query fell back to identity (zero/degenerate
+    matches vs. too few RANSAC inliers).
+    """
+    pts_l, pts_r, inlier_mask, status, reason = _compute_sparse_matches_and_inliers(
+        q[..., :3], r[..., :3], matcher, dinov3_model, dinov3_weights,
+        num_points, stratify_threshold, reproj_threshold, transform_type)
+    canvas = _draw_match_panel(r[..., :3], q[..., :3], pts_l, pts_r, inlier_mask, status, reason)
+    out_path = osp.join(save_dir, f"{query_idx}_matches.png")
+    cv2.imwrite(out_path, canvas)
+    return out_path, status
+
+
+# ---------------------------------------------------------------------------
 # Video frame evaluation function
 # ---------------------------------------------------------------------------
 def evaluate_video_metrics(frames_gt, frames_pred, lpips_model, device):
@@ -518,6 +640,13 @@ def main():
                         help="Enable evaluation mode (calculate metrics against GT video)")
     parser.add_argument("--no_nnf_figures", action="store_true",
                         help="Skip saving per-query NNF diagnostic figures.")
+    parser.add_argument("--save_match_figures", action="store_true",
+                        help="Save a per-query ref|query panel of the raw sparse feature "
+                             "matches, colored by RANSAC inlier (green) / outlier (red) / "
+                             "fit-failed (orange) -- unlike the NNF figure (final dense warp), "
+                             "this shows what the correspondence step actually found, including "
+                             "why a query fell back to identity. Disabled by default (recomputes "
+                             "the sparse-matching stage, so adds runtime).")
     args = parser.parse_args()
 
     if args.dinov3_match_scale is not None and args.dinov3_match_scale_convention is None:
@@ -614,6 +743,27 @@ def main():
                 save_dir=args.save_dir,
             )
             print(f"  Saved NNF figure: {fig_path}")
+
+        # -- Match figure (raw sparse matches, inliers/outliers) ---------------
+        if args.save_match_figures:
+            try:
+                q_match, r_match = _load_query_ref_static_for_matching(
+                    args.query_dir, args.ref_dir, query_idx, ref_idx, args.modality,
+                    args.scale, args.dinov3_match_scale, args.dinov3_match_scale_convention,
+                    args.matcher)
+            except ValueError as e:
+                print(f"  Skipping match figure (same load failure that triggered the "
+                      f"identity fallback above): {e}")
+            else:
+                match_fig_path, match_status = make_match_figure(
+                    query_idx=query_idx, ref_idx=ref_idx,
+                    q=q_match, r=r_match, matcher=args.matcher,
+                    dinov3_model=args.dinov3_model, dinov3_weights=args.dinov3_weights,
+                    num_points=args.dinov3_num_points, stratify_threshold=args.dinov3_stratify_threshold,
+                    reproj_threshold=args.reproj_threshold, transform_type=args.transform_type,
+                    save_dir=args.save_dir,
+                )
+                print(f"  Saved match figure ({match_status}): {match_fig_path}")
 
         # -- Save videos ------------------------------------------------------
         # Query touch video
