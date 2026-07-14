@@ -66,6 +66,14 @@ from skimage.metrics import mean_squared_error as compute_mse
 from skimage.metrics import peak_signal_noise_ratio as compute_psnr
 from skimage.metrics import structural_similarity as compute_ssim
 
+# cv2's own thread pool doesn't respect OMP_NUM_THREADS/MKL_NUM_THREADS, so it needs
+# to be capped separately when several instances of this script run side by side
+# (e.g. via run.sh's NUM_THREADS) to avoid CPU oversubscription.
+if "NUM_THREADS" in os.environ:
+    _num_threads = int(os.environ["NUM_THREADS"])
+    cv2.setNumThreads(_num_threads)
+    torch.set_num_threads(_num_threads)
+
 
 # ---------------------------------------------------------------------------
 # Video I/O (mirrored from main_retrieval_transfer_accel.py)

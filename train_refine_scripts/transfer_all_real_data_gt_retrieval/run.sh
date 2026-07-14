@@ -20,6 +20,16 @@
 
 set -euo pipefail
 
+# torch/OpenCV/numpy(MKL,OpenBLAS) all default to using every CPU core. That's fine
+# for a single run, but running several copies of this script side by side makes them
+# oversubscribe the same cores and slow each other down. Cap per-process thread count;
+# override e.g. `NUM_THREADS=7 bash run.sh` when running 4-way in parallel on 28 cores.
+export NUM_THREADS="${NUM_THREADS:-4}"
+export OMP_NUM_THREADS="$NUM_THREADS"
+export MKL_NUM_THREADS="$NUM_THREADS"
+export OPENBLAS_NUM_THREADS="$NUM_THREADS"
+export NUMEXPR_NUM_THREADS="$NUM_THREADS"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
