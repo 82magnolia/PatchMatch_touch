@@ -284,7 +284,7 @@ def _fit_dense_field(pts_l, pts_r, h2, w2, transform_type, reproj_threshold):
 
 
 def compute_dinov3_nnf(image_left, image_right, model_name, weights_path,
-                       num_points=100, stratify_threshold=20.0, reproj_threshold=3.0,
+                       num_points=100, stratify_threshold=20.0, reproj_threshold=8.0,
                        transform_type="rbf_homography"):
     """Dense correspondence NNF via DINOv3 sparse matching + a fitted geometric warp.
 

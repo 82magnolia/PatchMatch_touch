@@ -440,9 +440,11 @@ def main():
     g_tr.add_argument("--dinov3_stratify_threshold", type=float, default=20.0,
                       help="dinov3_feat_match backend only: spatial stratification threshold in px "
                            "(default: 20.0).")
-    g_tr.add_argument("--dinov3_reproj_threshold", type=float, default=3.0,
+    g_tr.add_argument("--dinov3_reproj_threshold", type=float, default=8.0,
                       help="dinov3_feat_match backend only: RANSAC reprojection threshold in px, "
-                           "used to fit/select inliers for --dinov3_transform_type (default: 3.0).")
+                           "used to fit/select inliers for --dinov3_transform_type (default: 8.0, "
+                           "found to beat the previous 3.0 default on both synthetic and real "
+                           "data when warp quality is measured directly on the static image).")
     g_tr.add_argument("--dinov3_transform_type", default="rbf_homography",
                       choices=["affine", "homography", "rbf_affine", "rbf_homography"],
                       help="dinov3_feat_match backend only: geometric warp fitted from the DINOv3 "

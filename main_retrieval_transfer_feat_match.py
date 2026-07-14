@@ -488,9 +488,12 @@ def main():
     parser.add_argument("--dinov3_stratify_threshold", default=20.0, type=float,
                         help="Spatial stratification threshold in px, avoids redundant nearby "
                              "keypoints (default: 20.0). Only used with --matcher dinov3.")
-    parser.add_argument("--reproj_threshold", default=3.0, type=float,
+    parser.add_argument("--reproj_threshold", default=8.0, type=float,
                         help="RANSAC reprojection threshold in px, used to fit/select inliers "
-                             "for --transform_type (default: 3.0). Applies to whichever "
+                             "for --transform_type (default: 8.0 -- found to beat the previous "
+                             "3.0 default on both synthetic and real data once warp quality is "
+                             "measured directly on the static image instead of via reconstructed "
+                             "video). Applies to whichever "
                              "--matcher is selected -- every backend's sparse matches are fit "
                              "with the same dinov3/dense_match.py:_fit_dense_field stage.")
     parser.add_argument("--transform_type", default="rbf_homography",

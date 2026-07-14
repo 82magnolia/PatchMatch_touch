@@ -157,6 +157,17 @@ def compute_imcui_sparse_matches(image_left, image_right, method):
         raise RuntimeError(
             f"IMCUI matcher {method!r} likely found zero matches between the "
             f"image pair (underlying error: {e}).") from e
+    except ValueError as e:
+        # SIFT's extractor (imcui/hloc/extractors/sift.py:filter_dog_point)
+        # crashes with "array is not broadcastable to correct shape" on
+        # very low-texture images (e.g. synthetic curvature renders with
+        # large flat regions), where DoG finds too few/degenerate keypoints
+        # for its NMS index buffer -- translate to RuntimeError for the same
+        # "no usable matches" fallback as the other degenerate-input cases.
+        raise RuntimeError(
+            f"IMCUI matcher {method!r} likely found too few/degenerate "
+            f"keypoints for its extractor's NMS step (underlying error: "
+            f"{e}).") from e
 
     mkpts_l_xy = np.asarray(pred["mkeypoints0_orig"])
     mkpts_r_xy = np.asarray(pred["mkeypoints1_orig"])

@@ -196,7 +196,7 @@ def compute_init_nnf(query_dir, ref_dir, query_idx, ref_idx, modalities,
 def compute_init_nnf_dinov3(query_dir, ref_dir, query_idx, ref_idx, modalities,
                             base_scale, init_scale, convention, patch_size,
                             dinov3_model, dinov3_weights,
-                            num_points=100, stratify_threshold=20.0, reproj_threshold=3.0):
+                            num_points=100, stratify_threshold=20.0, reproj_threshold=8.0):
     """Compute a high-resolution seed NNF between static images only (DINOv3).
 
     Same contract as compute_init_nnf, but uses DINOv3 patch-feature matching
