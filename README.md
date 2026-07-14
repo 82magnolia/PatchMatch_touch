@@ -216,7 +216,8 @@ All five run through `imcui_match.py`, which calls IMCUI's `hloc.extract_feature
 Setup (one-time, only needed for `--matcher` values other than `dinov3`):
 
 ```bash
-pip install kornia omegaconf h5py pycolmap
+pip install kornia omegaconf pycolmap
+conda install -c conda-forge h5py
 pip install git+https://github.com/cvg/LightGlue.git
 git clone https://github.com/Vincentqyw/SuperGluePretrainedNetwork.git \
     image-matching-webui/imcui/third_party/SuperGluePretrainedNetwork
@@ -224,6 +225,7 @@ git clone https://github.com/Vincentqyw/SuperGluePretrainedNetwork.git \
 
 Notes on the setup steps:
 - `kornia` backs the `disk_lightglue` and `loftr` matchers (and is also imported by the `sift_lightglue` extractor); `omegaconf` and `h5py` and `pycolmap` are imported unconditionally by IMCUI's `hloc` modules as soon as any matcher is loaded, regardless of which one — all five are needed even if you only ever use one matcher.
+- `h5py` should be installed via `conda install -c conda-forge h5py`, not `pip install h5py`: on machines with an old system HDF5 on `PATH` (e.g. `/usr/bin/h5cc` at 1.10.0), `pip install h5py` tries to build from source against it and fails with `This version of h5py requires HDF5 >= 1.10.7 and != 1.12.0`. The conda-forge package bundles its own HDF5, sidestepping the stale system one entirely.
 - `LightGlue` has no official PyPI package, so `disk_lightglue`, `superpoint_lightglue`, and `sift_lightglue` need it installed from GitHub directly.
 - `SuperGluePretrainedNetwork` provides the **SuperPoint extractor** in addition to SuperGlue itself, so it's required for `superpoint_lightglue` too, not just `superpoint_superglue`. Use **`Vincentqyw/SuperGluePretrainedNetwork`** specifically (a patched fork — this is the exact fork IMCUI's own `.gitmodules` pins), not the vanilla `magicleap/SuperGluePretrainedNetwork`: IMCUI's `SuperPoint._forward` calls `self.net(data, self.conf)`, which only the patched fork's `SuperPoint.forward(self, data, cfg={})` signature accepts — the original upstream `forward(self, data)` raises a `TypeError` at every call.
 - No pretrained weights need to be downloaded manually. All five auto-download on first use: LightGlue/SuperGlue/SuperPoint weights come from the `Realcat/imcui_checkpoints` HuggingFace Hub repo (cached under `~/.cache/huggingface/hub/`); DISK and LoFTR weights are fetched by kornia's own hub / torch hub mechanism (cached under `~/.cache/torch/hub/checkpoints/`).
