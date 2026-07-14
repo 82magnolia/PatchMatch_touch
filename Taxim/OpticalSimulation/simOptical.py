@@ -350,6 +350,10 @@ class simulator(object):
         zq: the interacted height map
         gel_map: gelpad height map
         contact_mask: indicate contact area
+        footprint_mask: object footprint (in-bounds projected/rendered
+            pixels) -- distinct from contact_mask (a stricter "height
+            exceeds gel surface" subset); this is the mask that matches
+            heightMap's background-step boundary, for height2laplacian.
         """
         # NOTE 1: Tactile sensor is placed at the x,y location of object center with z location at maximum object height, and object points with height over a threshold (0.2) are all considered
         # NOTE 2: Tactile sensor is placed oppositely facing the object placed on top of a virtual plane with z=0, although the object can be "floating"
@@ -464,7 +468,7 @@ class simulator(object):
         zq[contact_mask]  = heightMap[contact_mask]
         zq[~contact_mask] = gel_map[~contact_mask]
 
-        return zq, gel_map, contact_mask, rawcolorMap, rawnormalMap, vis_rawnormalMap, heightMap
+        return zq, gel_map, contact_mask, rawcolorMap, rawnormalMap, vis_rawnormalMap, heightMap, mask_map
 
     def deformApprox(self, pressing_height_mm, height_map, gel_map, contact_mask):
         zq = height_map.copy()
@@ -628,6 +632,10 @@ class mesh_simulator(simulator):
         zq: the interacted height map
         gel_map: gelpad height map
         contact_mask: indicate contact area
+        footprint_mask: object footprint (in-bounds projected/rendered
+            pixels) -- distinct from contact_mask (a stricter "height
+            exceeds gel surface" subset); this is the mask that matches
+            heightMap's background-step boundary, for height2laplacian.
         """
         # NOTE 1: Tactile sensor is placed at the x,y location of object center with z location at maximum object height, and object points with height over a threshold (0.2) are all considered
         # NOTE 2: Tactile sensor is placed oppositely facing the object placed on top of a virtual plane with z=0, although the object can be "floating"
@@ -783,7 +791,7 @@ class mesh_simulator(simulator):
         zq[contact_mask]  = heightMap[contact_mask]
         zq[~contact_mask] = gel_map[~contact_mask]
 
-        return zq, gel_map, contact_mask, rawcolorMap, rawnormalMap, vis_rawnormalMap, heightMap
+        return zq, gel_map, contact_mask, rawcolorMap, rawnormalMap, vis_rawnormalMap, heightMap, noninf
 
 def height_map_to_normals(height_map):
     """
@@ -812,6 +820,20 @@ def height_map_to_normals(height_map):
     return np.pad(normal, ((1, 1), (1, 1), (0, 0)), 'symmetric')
 
 
+def _erode_footprint_mask(mask, mask_erode_px):
+    """(H, W) bool/uint8 -> uint8 mask eroded by mask_erode_px on each side.
+
+    Shared by raw_laplacian/height2laplacian: the object/background height
+    discontinuity (background is a hard 0 in Taxim, see generateHeightMap)
+    contaminates the double-np.gradient + 5x5-GaussianBlur curvature field
+    for a few pixels inward of the true silhouette; eroding the footprint
+    mask before using it excludes that contaminated ring.
+    """
+    mask_u8 = (np.asarray(mask) != 0).astype(np.uint8)
+    k = 2 * mask_erode_px + 1
+    return cv2.erode(mask_u8, np.ones((k, k), np.uint8))
+
+
 def raw_laplacian(H):
     """
     Second-derivative (Laplacian) curvature field of a height map, before any
@@ -828,7 +850,32 @@ def raw_laplacian(H):
     return L
 
 
-def height2laplacian(H):
+def _normalize_field(L, valid, clip_percentile):
+    """Zero-anchored uint8 encoding of L (see height2laplacian), with the
+    min/max (or percentile) stats computed only from L[valid] -- so a region
+    with a different curvature scale than the rest of the image (e.g. a
+    boundary artifact ring) can be normalized on its own terms.
+    """
+    L_valid = L[valid]
+    if L_valid.size == 0:
+        return np.full(L.shape, 128, dtype=np.uint8)
+
+    if clip_percentile > 0:
+        Lmin = float(np.percentile(L_valid, clip_percentile))
+        Lmax = float(np.percentile(L_valid, 100 - clip_percentile))
+    else:
+        Lmin, Lmax = float(L_valid.min()), float(L_valid.max())
+
+    out = np.where(
+        L < 0,
+        0.5 * (L - Lmin) / (-Lmin + 1e-8),
+        0.5 + 0.5 * L / (Lmax + 1e-8),
+    )
+    out = np.clip(out, 0.0, 1.0)
+    return (255 * out).astype(np.uint8)
+
+
+def height2laplacian(H, mask=None, mask_erode_px=4, clip_percentile=1.0):
     """
     Convert a height map to a per-image zero-anchored, uint8-quantized
     curvature map: L=0 always maps to pixel 128 (mid-gray) regardless of the
@@ -836,21 +883,40 @@ def height2laplacian(H):
     curvature lands at a different intensity in every image depending on that
     image's min/max skew) -- required for cross-image comparability (e.g.
     DINOv3 matching). Negative and positive values are each scaled by their
-    own per-image extent (L.min() / L.max() respectively), so both sides
-    still use their full per-image dynamic range; only the zero point is
-    pinned.
+    own per-image extent, so both sides still use their full per-image
+    dynamic range; only the zero point is pinned.
 
     :param H: np.array (H, W); the height map.
+    :param mask: optional (H, W) bool/uint8; nonzero marks valid object-surface
+        pixels (as opposed to background/out-of-view). H has a hard step to 0
+        at this mask's boundary (see generateHeightMap), which the double
+        np.gradient + Gaussian blur turns into a spurious high-magnitude
+        curvature ring for a few pixels inward of the true silhouette --
+        left alone, that ring's huge magnitude dominates a single global
+        min/max and compresses genuine interior curvature toward mid-gray.
+        When `mask` is given, the interior (an eroded copy of `mask`, see
+        `mask_erode_px`) and the boundary-ring-plus-background (everything
+        else) are each normalized against their *own* min/max/percentile
+        stats and then composited back together -- both regions keep their
+        real curvature values (nothing is zeroed or discarded), they just
+        no longer share one dynamic range.
+    :param mask_erode_px: erosion radius in px, matching the ~4px spread of
+        the double-gradient + 5x5 blur, i.e. how far inward of `mask` the
+        boundary artifact reaches. Only used when `mask` is given.
+    :param clip_percentile: use the [clip_percentile, 100-clip_percentile]
+        percentiles of each region instead of its raw min()/max() for
+        normalization, so a handful of outlier pixels can't dominate that
+        region's own dynamic range. 0 recovers raw-min/max behavior.
     :return L: np.array (H, W) uint8; the curvature map.
     """
     L = raw_laplacian(H)
-    Lmin, Lmax = float(L.min()), float(L.max())
-    out = np.where(
-        L < 0,
-        0.5 * (L - Lmin) / (-Lmin + 1e-8),
-        0.5 + 0.5 * L / (Lmax + 1e-8),
-    )
-    return (255 * out).astype(np.uint8)
+    if mask is None:
+        return _normalize_field(L, np.ones_like(L, dtype=bool), clip_percentile)
+
+    interior = _erode_footprint_mask(mask, mask_erode_px) != 0
+    interior_encoded = _normalize_field(L, interior, clip_percentile)
+    boundary_encoded = _normalize_field(L, ~interior, clip_percentile)
+    return np.where(interior, interior_encoded, boundary_encoded)
 
 def height2shapeindex(H):
     """
@@ -950,7 +1016,7 @@ if __name__ == "__main__":
         dy = 0
 
         # generate height map
-        height_map, gel_map, render_contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map = sim.generateHeightMap(gelpad_model_path, press_depth, dx, dy, contact_point=contact_point, contact_theta=args.contact_theta)
+        height_map, gel_map, render_contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map, footprint_mask = sim.generateHeightMap(gelpad_model_path, press_depth, dx, dy, contact_point=contact_point, contact_theta=args.contact_theta)
         # approximate the soft deformation
         heightMap, contact_mask, contact_height = sim.deformApprox(press_depth, height_map, gel_map, render_contact_mask)
         # simulate tactile images
@@ -985,7 +1051,7 @@ if __name__ == "__main__":
         cv2.imwrite(raw_normal_savePath, cv2.cvtColor(raw_normal_img, cv2.COLOR_RGB2BGR))
         cv2.imwrite(mask_savePath, (contact_mask * 255).astype(np.uint8))
         cv2.imwrite(render_mask_savePath, (render_contact_mask * 255).astype(np.uint8))
-        cv2.imwrite(curvature_savePath, height2laplacian(raw_height_map))
+        cv2.imwrite(curvature_savePath, height2laplacian(raw_height_map, mask=footprint_mask))
     elif args.mode in ["continuous_press", "back_forth_press"]:
         sim = tac_sim(data_folder, filePath, obj, args.obj_scale_factor, args.override_hw)
         press_min, press_max, num_step = args.depth_range_info
@@ -1003,7 +1069,7 @@ if __name__ == "__main__":
             dy = 0
 
             # generate height map
-            height_map, gel_map, render_contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map = sim.generateHeightMap(gelpad_model_path, press_depth, dx, dy, contact_point=contact_point, contact_theta=args.contact_theta)
+            height_map, gel_map, render_contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map, footprint_mask = sim.generateHeightMap(gelpad_model_path, press_depth, dx, dy, contact_point=contact_point, contact_theta=args.contact_theta)
             # approximate the soft deformation
             heightMap, contact_mask, contact_height = sim.deformApprox(press_depth, height_map, gel_map, render_contact_mask)
             # simulate tactile images
@@ -1070,7 +1136,7 @@ if __name__ == "__main__":
 
             mask_video.write((contact_mask * 255).astype(np.uint8))
             render_mask_video.write((render_contact_mask * 255).astype(np.uint8))
-            curvature_video.write(height2laplacian(raw_height_map).astype(np.uint8))
+            curvature_video.write(height2laplacian(raw_height_map, mask=footprint_mask).astype(np.uint8))
 
             if press_idx == num_step - 1:
                 if 'sim' in modalities:
@@ -1100,7 +1166,7 @@ if __name__ == "__main__":
             dy = 0
 
             # generate height map
-            height_map, gel_map, render_contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map = sim.generateHeightMap(gelpad_model_path, press_depth, dx, dy, rot_mtx, contact_point=contact_point, contact_theta=args.contact_theta)
+            height_map, gel_map, render_contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map, footprint_mask = sim.generateHeightMap(gelpad_model_path, press_depth, dx, dy, rot_mtx, contact_point=contact_point, contact_theta=args.contact_theta)
             # approximate the soft deformation
             heightMap, contact_mask, contact_height = sim.deformApprox(press_depth, height_map, gel_map, render_contact_mask)
             # simulate tactile images
@@ -1167,7 +1233,7 @@ if __name__ == "__main__":
 
             mask_video.write((contact_mask * 255).astype(np.uint8))
             render_mask_video.write((render_contact_mask * 255).astype(np.uint8))
-            curvature_video.write(height2laplacian(raw_height_map).astype(np.uint8))
+            curvature_video.write(height2laplacian(raw_height_map, mask=footprint_mask).astype(np.uint8))
 
             if press_idx == num_step - 1:
                 if 'sim' in modalities:
@@ -1191,7 +1257,7 @@ if __name__ == "__main__":
         for press_idx, (dx, dy) in tqdm(enumerate(zip(slide_x, slide_y)), total=num_step):
 
             # generate height map
-            height_map, gel_map, render_contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map = sim.generateHeightMap(gelpad_model_path, press_depth, dx, dy, contact_point=contact_point, contact_theta=args.contact_theta)
+            height_map, gel_map, render_contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map, footprint_mask = sim.generateHeightMap(gelpad_model_path, press_depth, dx, dy, contact_point=contact_point, contact_theta=args.contact_theta)
             # approximate the soft deformation
             heightMap, contact_mask, contact_height = sim.deformApprox(press_depth, height_map, gel_map, render_contact_mask)
             # simulate tactile images
@@ -1258,7 +1324,7 @@ if __name__ == "__main__":
 
             mask_video.write((contact_mask * 255).astype(np.uint8))
             render_mask_video.write((render_contact_mask * 255).astype(np.uint8))
-            curvature_video.write(height2laplacian(raw_height_map).astype(np.uint8))
+            curvature_video.write(height2laplacian(raw_height_map, mask=footprint_mask).astype(np.uint8))
 
             if press_idx == num_step - 1:
                 if 'sim' in modalities:

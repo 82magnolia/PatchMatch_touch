@@ -202,7 +202,32 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
             height_map, sensor_z_hmap, valid_depth_remap, mask_crop)
 
 
-def height2laplacian(H):
+def _normalize_field(L, valid, clip_percentile):
+    """Zero-anchored uint8 encoding of L (see height2laplacian), with the
+    min/max (or percentile) stats computed only from L[valid] -- so a region
+    with a different curvature scale than the rest of the image (e.g. a
+    boundary artifact ring) can be normalized on its own terms.
+    """
+    L_valid = L[valid]
+    if L_valid.size == 0:
+        return np.full(L.shape, 128, dtype=np.uint8)
+
+    if clip_percentile > 0:
+        Lmin = float(np.percentile(L_valid, clip_percentile))
+        Lmax = float(np.percentile(L_valid, 100 - clip_percentile))
+    else:
+        Lmin, Lmax = float(L_valid.min()), float(L_valid.max())
+
+    out = np.where(
+        L < 0,
+        0.5 * (L - Lmin) / (-Lmin + 1e-8),
+        0.5 + 0.5 * L / (Lmax + 1e-8),
+    )
+    out = np.clip(out, 0.0, 1.0)
+    return (255 * out).astype(np.uint8)
+
+
+def height2laplacian(H, mask=None, mask_erode_px=4, clip_percentile=1.0):
     """Height map -> per-image zero-anchored curvature map (uint8, L=0 pinned
     to pixel 128). Local copy of Taxim/OpticalSimulation/simOptical.py's
     height2laplacian, kept in sync by hand rather than imported -- importing
@@ -211,17 +236,42 @@ def height2laplacian(H):
     docstring). The normalization is per-image adaptive (uses only H's own
     gradient min/max), so it works unchanged regardless of height_map's units
     (meters here vs. Taxim's internal scale).
+
+    :param mask: optional (H, W) bool/uint8; nonzero marks valid object-surface
+        pixels (as opposed to background/out-of-view, e.g. `valid_depth_remap
+        & (mask_crop > 0)` from ortho_project_raw). H has a hard step to 0
+        outside this region (depth_sampled collapses to 0 there), which the
+        double np.gradient + Gaussian blur turns into a spurious high-magnitude
+        curvature ring for a few pixels inward of the true silhouette --
+        left alone, that ring's huge magnitude dominates a single global
+        min/max and compresses genuine interior curvature toward mid-gray.
+        When `mask` is given, the interior (an eroded copy of `mask`, see
+        `mask_erode_px`) and the boundary-ring-plus-background (everything
+        else) are each normalized against their *own* min/max/percentile
+        stats and then composited back together -- both regions keep their
+        real curvature values (nothing is zeroed or discarded), they just
+        no longer share one dynamic range.
+    :param mask_erode_px: erosion radius in px, matching the ~4px spread of
+        the double-gradient + 5x5 blur, i.e. how far inward of `mask` the
+        boundary artifact reaches. Only used when `mask` is given.
+    :param clip_percentile: use the [clip_percentile, 100-clip_percentile]
+        percentiles of each region instead of its raw min()/max() for
+        normalization, so a handful of outlier pixels can't dominate that
+        region's own dynamic range. 0 recovers raw-min/max behavior.
     """
     gy, gx = np.gradient(H)
     L = np.gradient(gx, axis=1) + np.gradient(gy, axis=0)
     L = cv2.GaussianBlur(L, (5, 5), 0)
-    Lmin, Lmax = float(L.min()), float(L.max())
-    out = np.where(
-        L < 0,
-        0.5 * (L - Lmin) / (-Lmin + 1e-8),
-        0.5 + 0.5 * L / (Lmax + 1e-8),
-    )
-    return (255 * out).astype(np.uint8)
+
+    if mask is None:
+        return _normalize_field(L, np.ones_like(L, dtype=bool), clip_percentile)
+
+    mask_u8 = (np.asarray(mask) != 0).astype(np.uint8)
+    k = 2 * mask_erode_px + 1
+    interior = cv2.erode(mask_u8, np.ones((k, k), np.uint8)) != 0
+    interior_encoded = _normalize_field(L, interior, clip_percentile)
+    boundary_encoded = _normalize_field(L, ~interior, clip_percentile)
+    return np.where(interior, interior_encoded, boundary_encoded)
 
 
 # ── Video helpers ─────────────────────────────────────────────────────────────

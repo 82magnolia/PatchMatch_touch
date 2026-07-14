@@ -119,7 +119,7 @@ if __name__ == "__main__":
             normal_map_save_path = os.path.join(save_path, f"{contact_idx}_scale_{int(args.max_len_value)}_normal.npz")
             if args.only_render:
                 # generate height map
-                height_map, gel_map, contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map = sim.generateHeightMap(gelpad_model_path, press_depth, 0, 0, contact_point=contact_point, contact_theta=args.contact_theta)
+                height_map, gel_map, contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map, _ = sim.generateHeightMap(gelpad_model_path, press_depth, 0, 0, contact_point=contact_point, contact_theta=args.contact_theta)
 
                 # Save images
                 raw_color_img = (raw_color_map * 255).astype(np.uint8)
@@ -139,7 +139,7 @@ if __name__ == "__main__":
                 np.savez_compressed(normal_map_save_path, raw_normal_map)
             else:
                 # generate height map
-                height_map, gel_map, contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map = sim.generateHeightMap(gelpad_model_path, press_depth, 0, 0, contact_point=contact_point, contact_theta=args.contact_theta)
+                height_map, gel_map, contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map, _ = sim.generateHeightMap(gelpad_model_path, press_depth, 0, 0, contact_point=contact_point, contact_theta=args.contact_theta)
                 # approximate the soft deformation
                 heightMap, contact_mask, contact_height = sim.deformApprox(press_depth, height_map, gel_map, contact_mask)
                 # simulate tactile images

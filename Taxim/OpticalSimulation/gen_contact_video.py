@@ -115,7 +115,7 @@ if __name__ == "__main__":
         writers_initialized = False
 
         for press_idx, press_depth in enumerate(tqdm(press_depth_arr, desc=f"  [{idx}] Press", leave=False)):
-            height_map, gel_map, render_contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map = \
+            height_map, gel_map, render_contact_mask, raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map, footprint_mask = \
                 sims[0].generateHeightMap(gelpad_model_path, press_depth, dx=0, dy=0,
                                           contact_point=contact_point,
                                           contact_theta=contact_theta)
@@ -149,10 +149,10 @@ if __name__ == "__main__":
                     cv2.VideoWriter_fourcc(*"mp4v"), 5., (w_out, h_out), isColor=False)
 
                 # Static outputs at each scale (RGB, normal, height, curvature)
-                for scale_mm, sim_s, (scale_color_map, scale_normal_map, scale_vis_normal_map, scale_height_map) in zip(
+                for scale_mm, sim_s, (scale_color_map, scale_normal_map, scale_vis_normal_map, scale_height_map, scale_footprint_mask) in zip(
                     args.obj_scale_factor,
                     sims,
-                    [(raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map)]
+                    [(raw_color_map, raw_normal_map, vis_raw_normal_map, raw_height_map, footprint_mask)]
                     + [extra_sim.generateHeightMap(gelpad_model_path, press_depth, dx=0, dy=0,
                                                    contact_point=contact_point,
                                                    contact_theta=contact_theta)[3:]
@@ -178,7 +178,7 @@ if __name__ == "__main__":
                     np.savez_compressed(osp.join(args.save_dir, f"{tag}_height.npz"), height=scale_height_map)
 
                     cv2.imwrite(osp.join(args.save_dir, f"{tag}_curvature.jpg"),
-                                height2laplacian(scale_height_map))
+                                height2laplacian(scale_height_map, mask=scale_footprint_mask))
                     cv2.imwrite(osp.join(args.save_dir, f"{tag}_shapeindex.jpg"),
                                 height2shapeindex(scale_height_map))
 
