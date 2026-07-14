@@ -804,8 +804,8 @@ def height_map_to_normals(height_map):
     bot = height_map[2:h, 1:w - 1]
     left = height_map[1:h - 1, 0:w - 2]
     right = height_map[1:h - 1, 2:w]
-    dzdx = (bot - top) / 2.0
-    dzdy = (right - left) / 2.0
+    dzdx = (right - left) / 2.0
+    dzdy = (bot - top) / 2.0
 
     denom = np.sqrt(dzdx ** 2 + dzdy ** 2 + 1.0)
     normal = np.stack([-dzdx / denom, -dzdy / denom, 1.0 / denom], axis=-1)
