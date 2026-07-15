@@ -188,18 +188,29 @@ def compute_imcui_sparse_matches(image_left, image_right, method):
 
 
 def compute_imcui_nnf(image_left, image_right, method,
-                      reproj_threshold, transform_type):
+                      reproj_threshold, transform_type,
+                      photometric_refine=False, photometric_refine_loss="l1",
+                      photometric_refine_iters=100, photometric_refine_lr=1e-2,
+                      photometric_refine_huber_delta=1.0):
     """Dense correspondence NNF via an IMCUI sparse/dense matcher + the same
     RANSAC-inlier-selection/geometric-fit stage dinov3.dense_match uses.
     Mirrors dinov3.dense_match.compute_dinov3_nnf's contract exactly (same
     left/right convention, same return: (H_right, W_right, 2) int32 NNF).
+
+    photometric_refine: if set, refines the fitted affine/homography matrix
+    via dense photometric gradient descent before building the field (see
+    dinov3.dense_match._refine_transform_photometric / _fit_dense_field).
     """
     pts_l, pts_r = compute_imcui_sparse_matches(image_left, image_right, method)
 
     from dinov3.dense_match import _fit_dense_field
     h2, w2 = image_right.shape[:2]
     src_row, src_col, inlier_count, total = _fit_dense_field(
-        pts_l, pts_r, h2, w2, transform_type, reproj_threshold)
+        pts_l, pts_r, h2, w2, transform_type, reproj_threshold,
+        image_left=image_left, image_right=image_right,
+        refine=photometric_refine, refine_loss=photometric_refine_loss,
+        refine_iters=photometric_refine_iters, refine_lr=photometric_refine_lr,
+        refine_huber_delta=photometric_refine_huber_delta)
 
     nnf = np.zeros((h2, w2, 2), dtype=np.int32)
     nnf[..., 0] = np.clip(np.round(src_col), 0, image_left.shape[1] - 1)

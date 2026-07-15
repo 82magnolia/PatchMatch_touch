@@ -245,11 +245,18 @@ def compute_dinov3_transfer_nnf(query_dir, ref_dir, query_idx, ref_idx, modaliti
                                 base_scale, match_scale, convention,
                                 dinov3_model, dinov3_weights,
                                 num_points, stratify_threshold, reproj_threshold,
-                                transform_type):
+                                transform_type,
+                                photometric_refine=False, photometric_refine_loss="l1",
+                                photometric_refine_iters=100, photometric_refine_lr=1e-2,
+                                photometric_refine_huber_delta=1.0):
     """Compute the DINOv3 correspondence NNF used for the entire transfer.
 
     transform_type: one of "affine", "homography", "rbf_affine",
     "rbf_homography" (see dinov3/dense_match.py:TRANSFORM_TYPES).
+
+    photometric_refine: if set, refines the RANSAC-fit affine/homography
+    matrix via dense photometric gradient descent (Adam) before it's used —
+    see dinov3/dense_match.py's _refine_transform_photometric.
 
     Returns a full (H, W, 2) int32 NNF in the base resolution's coordinate
     space.
@@ -263,12 +270,18 @@ def compute_dinov3_transfer_nnf(query_dir, ref_dir, query_idx, ref_idx, modaliti
         image_left=r, image_right=q,  # left=REF (sampled), right=QUERY (output grid)
         model_name=dinov3_model, weights_path=dinov3_weights,
         num_points=num_points, stratify_threshold=stratify_threshold,
-        reproj_threshold=reproj_threshold, transform_type=transform_type)
+        reproj_threshold=reproj_threshold, transform_type=transform_type,
+        photometric_refine=photometric_refine, photometric_refine_loss=photometric_refine_loss,
+        photometric_refine_iters=photometric_refine_iters, photometric_refine_lr=photometric_refine_lr,
+        photometric_refine_huber_delta=photometric_refine_huber_delta)
 
 
 def compute_imcui_transfer_nnf(query_dir, ref_dir, query_idx, ref_idx, modalities,
                                base_scale, match_scale, convention,
-                               matcher, reproj_threshold, transform_type):
+                               matcher, reproj_threshold, transform_type,
+                               photometric_refine=False, photometric_refine_loss="l1",
+                               photometric_refine_iters=100, photometric_refine_lr=1e-2,
+                               photometric_refine_huber_delta=1.0):
     """Compute a correspondence NNF via one of image-matching-webui's local
     feature matchers (see imcui_match.py), as an alternative to DINOv3.
 
@@ -277,7 +290,9 @@ def compute_imcui_transfer_nnf(query_dir, ref_dir, query_idx, ref_idx, modalitie
     "sift_lightglue"). reproj_threshold/transform_type feed the same
     RANSAC-inlier-selection + geometric-fit stage the DINOv3 backend uses
     (dinov3/dense_match.py's _fit_dense_field), so the two backends' warps
-    are directly comparable.
+    are directly comparable. photometric_refine likewise mirrors the DINOv3
+    backend's refinement stage exactly (dinov3/dense_match.py's
+    _refine_transform_photometric).
 
     Returns a full (H, W, 2) int32 NNF in the base resolution's coordinate
     space.
@@ -289,7 +304,10 @@ def compute_imcui_transfer_nnf(query_dir, ref_dir, query_idx, ref_idx, modalitie
     from imcui_match import compute_imcui_nnf
     return compute_imcui_nnf(
         image_left=r, image_right=q,  # left=REF (sampled), right=QUERY (output grid)
-        method=matcher, reproj_threshold=reproj_threshold, transform_type=transform_type)
+        method=matcher, reproj_threshold=reproj_threshold, transform_type=transform_type,
+        photometric_refine=photometric_refine, photometric_refine_loss=photometric_refine_loss,
+        photometric_refine_iters=photometric_refine_iters, photometric_refine_lr=photometric_refine_lr,
+        photometric_refine_huber_delta=photometric_refine_huber_delta)
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +652,29 @@ def main():
                              "same RANSAC fit only to select inliers, then interpolate a "
                              "non-rigid thin-plate-spline warp through them (default: "
                              "rbf_homography).")
+    parser.add_argument("--photometric_refine", action="store_true",
+                        help="Refine the RANSAC-fit affine/homography matrix via dense "
+                             "photometric gradient descent (Adam) before it's used, warm-"
+                             "started from the RANSAC fit -- minimizes a photometric loss "
+                             "between the warped reference static image and the query "
+                             "static image (dinov3/dense_match.py's "
+                             "_refine_transform_photometric). For --transform_type "
+                             "rbf_affine/rbf_homography, the RBF inlier set is also "
+                             "recomputed under the refined matrix before RBF interpolation "
+                             "runs. Applies to whichever --matcher is selected. Disabled "
+                             "by default.")
+    parser.add_argument("--photometric_refine_loss", default="l1",
+                        choices=["l1", "l2", "huber", "gradient", "ncc"],
+                        help="Photometric loss used by --photometric_refine (default: l1). "
+                             "'gradient' compares Sobel image gradients instead of raw "
+                             "pixels; 'ncc' minimizes 1 - normalized cross-correlation "
+                             "(robust to global brightness/contrast offsets).")
+    parser.add_argument("--photometric_refine_iters", default=100, type=int,
+                        help="Adam iterations for --photometric_refine (default: 100).")
+    parser.add_argument("--photometric_refine_lr", default=1e-2, type=float,
+                        help="Adam learning rate for --photometric_refine (default: 0.01).")
+    parser.add_argument("--photometric_refine_huber_delta", default=1.0, type=float,
+                        help="Delta for --photometric_refine_loss huber (default: 1.0).")
     parser.add_argument("--save_dir", default="./log/transfer_feat_match", type=str,
                         help="Output directory for transferred videos.")
     parser.add_argument("--eval", action="store_true",
@@ -709,12 +750,18 @@ def main():
                     args.scale, args.dinov3_match_scale, args.dinov3_match_scale_convention,
                     args.dinov3_model, args.dinov3_weights,
                     args.dinov3_num_points, args.dinov3_stratify_threshold,
-                    args.reproj_threshold, args.transform_type)
+                    args.reproj_threshold, args.transform_type,
+                    args.photometric_refine, args.photometric_refine_loss,
+                    args.photometric_refine_iters, args.photometric_refine_lr,
+                    args.photometric_refine_huber_delta)
             else:
                 nnf = compute_imcui_transfer_nnf(
                     args.query_dir, args.ref_dir, query_idx, ref_idx, args.modality,
                     args.scale, args.dinov3_match_scale, args.dinov3_match_scale_convention,
-                    args.matcher, args.reproj_threshold, args.transform_type)
+                    args.matcher, args.reproj_threshold, args.transform_type,
+                    args.photometric_refine, args.photometric_refine_loss,
+                    args.photometric_refine_iters, args.photometric_refine_lr,
+                    args.photometric_refine_huber_delta)
         except (ValueError, RuntimeError, np.linalg.LinAlgError) as e:
             print(f"  {args.matcher} matching failed ({e}); falling back to identity transform.")
             h2, w2 = query_static.shape[:2]
