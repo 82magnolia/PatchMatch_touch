@@ -186,13 +186,21 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
 
     color_crop[render_mask_crop == 0] = 0
     normal_bgr = normals_to_colormap(normals_filled)
-    normal_bgr[render_mask_crop == 0] = 0
+    # normals_np (object_cache) is raw, full-frame ZED normals -- real data
+    # exists across the whole scene (background/table included), not just the
+    # object footprint. inpaint_normals fills *any* NaN hole though, including
+    # spans where the source genuinely had no data (stereo failure); when
+    # unmasked, render_mask_crop (valid_proj) no longer bounds that void, so
+    # the final output must also require valid_remap (real source data) to
+    # avoid showing a hallucinated surface where none was ever measured.
+    normal_valid_out = (render_mask_crop > 0) & (valid_remap > 0)
+    normal_bgr[~normal_valid_out] = 0
     raw_norm = normals_filled[:, :, :3].copy()
     # Re-normalize: bilinear remap and inpainting can break unit length
     norms = np.linalg.norm(raw_norm, axis=-1, keepdims=True)
-    valid_px = (norms[..., 0] > 1e-6) & (render_mask_crop > 0)
+    valid_px = (norms[..., 0] > 1e-6) & normal_valid_out
     raw_norm[valid_px] /= norms[valid_px]
-    raw_norm[render_mask_crop == 0] = 0.0
+    raw_norm[~normal_valid_out] = 0.0
 
     contact_mask = (height_map < HEIGHT_MASK_THRES_M) & valid_depth_remap & (mask_crop > 0)
     h_u8 = (np.clip(-height_map / HEIGHT_CUTOFF_M, 0, 1) * 255).astype(np.uint8)
