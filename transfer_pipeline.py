@@ -459,6 +459,28 @@ def main():
                            "transform; 'rbf_affine'/'rbf_homography' use that RANSAC fit only for "
                            "inlier selection, then interpolate a non-rigid thin-plate-spline warp "
                            "(default: rbf_homography).")
+    g_tr.add_argument("--photometric_refine", action="store_true",
+                      help="dinov3_feat_match backend only: refine the RANSAC-fit affine/"
+                           "homography matrix via dense photometric gradient descent (Adam) "
+                           "before it's used -- see main_retrieval_transfer_feat_match.py's "
+                           "--photometric_refine / dinov3/dense_match.py's "
+                           "_refine_transform_photometric. Disabled by default; a comparison "
+                           "sweep (test_scripts/compare_photometric_refine.py) found this helps "
+                           "on some scale/modality settings and regresses on others -- check "
+                           "before enabling for a new dataset.")
+    g_tr.add_argument("--photometric_refine_loss", default="l1",
+                      choices=["l1", "l2", "huber", "gradient", "ncc"],
+                      help="dinov3_feat_match backend only: loss used by --photometric_refine "
+                           "(default: l1).")
+    g_tr.add_argument("--photometric_refine_iters", type=int, default=100,
+                      help="dinov3_feat_match backend only: Adam iterations for "
+                           "--photometric_refine (default: 100).")
+    g_tr.add_argument("--photometric_refine_lr", type=float, default=1e-2,
+                      help="dinov3_feat_match backend only: Adam learning rate for "
+                           "--photometric_refine (default: 0.01).")
+    g_tr.add_argument("--photometric_refine_huber_delta", type=float, default=1.0,
+                      help="dinov3_feat_match backend only: delta for "
+                           "--photometric_refine_loss huber (default: 1.0).")
 
     # ── Stage 3: Refine ───────────────────────────────────────────────────────
     g_ref = p.add_argument_group("Stage 3 — ReBotNet Refinement")
@@ -651,6 +673,12 @@ def main():
             if args.dinov3_match_scale is not None:
                 cmd += ["--dinov3_match_scale", f"{args.dinov3_match_scale:g}",
                         "--dinov3_match_scale_convention", args.dinov3_match_scale_convention]
+            if args.photometric_refine:
+                cmd += ["--photometric_refine",
+                        "--photometric_refine_loss", args.photometric_refine_loss,
+                        "--photometric_refine_iters", str(args.photometric_refine_iters),
+                        "--photometric_refine_lr", str(args.photometric_refine_lr),
+                        "--photometric_refine_huber_delta", str(args.photometric_refine_huber_delta)]
             if not args.skip_eval:
                 cmd.append("--eval")
             _run(cmd, f"Stage 2: {args.transfer_matcher} Feature-Match Transfer")
