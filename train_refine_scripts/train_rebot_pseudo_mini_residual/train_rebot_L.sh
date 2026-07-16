@@ -1,25 +1,37 @@
 #!/usr/bin/env bash
 # Train ReBotNet L variant on gelsight_pseudo_mini transferred data in residual mode.
-# Usage: bash train_refine_scripts/train_rebot_pseudo_mini_residual/train_rebot_L.sh <gpu_id> [matcher]
+# Usage: bash train_refine_scripts/train_rebot_pseudo_mini_residual/train_rebot_L.sh <gpu_id> [matcher] [masked]
 #   from the PatchMatch_touch project root.
 #   matcher: one of loftr (default), disk_lightglue, sift_lightglue,
 #            superpoint_lightglue, superpoint_superglue -- matches the
 #            --matcher backends swept in transfer_all_multi_pseudo_mini/,
 #            each of which writes to its own log/transfer_feat_match_pseudo_mini* dir.
+#   masked: pass the literal 'masked' to train on the render-mask-blended
+#           log/transfer_feat_match_pseudo_mini*_masked dir (from
+#           postprocess_mask_transfer.py) instead of the unmasked one.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-GPU=${1:?Usage: bash train_rebot_L.sh <gpu_id> [matcher]}
+GPU=${1:?Usage: bash train_rebot_L.sh <gpu_id> [matcher] [masked]}
 MATCHER="${2:-loftr}"
+USE_MASK="${3:-}"
 MODEL_SIZE=rebot_L
 
 case "$MATCHER" in
     loftr|disk_lightglue|sift_lightglue|superpoint_lightglue|superpoint_superglue) ;;
     *)
         echo "Unknown matcher '$MATCHER'. Expected one of: loftr, disk_lightglue, sift_lightglue, superpoint_lightglue, superpoint_superglue" >&2
+        exit 1
+        ;;
+esac
+
+case "$USE_MASK" in
+    ""|masked) ;;
+    *)
+        echo "Unknown mask option '$USE_MASK'. Expected empty or 'masked'." >&2
         exit 1
         ;;
 esac
@@ -34,6 +46,13 @@ if [ "$MATCHER" = "loftr" ]; then
 else
     TRANSFER_SUFFIX="_${MATCHER}"
     NAME_SUFFIX="_residual_${MATCHER}"
+fi
+
+# masked runs against the postprocess_mask_transfer.py output dir, which
+# appends _masked after the matcher suffix.
+if [ "$USE_MASK" = "masked" ]; then
+    TRANSFER_SUFFIX="${TRANSFER_SUFFIX}_masked"
+    NAME_SUFFIX="${NAME_SUFFIX}_masked"
 fi
 
 CUDA_VISIBLE_DEVICES=$GPU python "$PROJECT_ROOT/rebot_net/train.py" \
