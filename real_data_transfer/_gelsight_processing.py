@@ -87,7 +87,8 @@ def _rotate_rvec_z(rvec, R_z):
 # ── Orthographic projection ───────────────────────────────────────────────────
 
 def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
-                      rvec=None, tvec=None, render_scale=1.0, apply_mask=True):
+                      rvec=None, tvec=None, render_scale=1.0, apply_mask=True,
+                      offset=None):
     """
     True orthographic projection of the GelSight Mini FoV using sensor pose.
     Returns (normal_bgr, raw_normals_hw3, color_bgr_crop, height_vis,
@@ -98,9 +99,18 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
     mask (still clipped to valid_proj, i.e. in front of the camera) -- but
     contact_mask and the returned mask_crop are unaffected, still using the
     real mask, so contact/render-mask detection stays exactly as before.
+
+    offset: (ox, oy, oz) marker->contact translation in the marker's local
+    frame, metres. Defaults to (0, 0, ARUCO_TO_CONTACT_M) -- the production
+    Z-only offset. Overridden by calibrate_sensor_offset.py while sweeping
+    x/y/z to find the true marker->gel-contact translation.
     """
     if rvec is None or tvec is None:
         return None
+
+    if offset is None:
+        offset = (0.0, 0.0, ARUCO_TO_CONTACT_M)
+    ox, oy, oz = offset
 
     out_h, out_w = GELSIGHT_H, GELSIGHT_W
 
@@ -110,7 +120,7 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
     R_z_align       = _make_Rz(90)
     R_sensor_normals = R @ R_z_align.T @ R_flip
 
-    p_contact = R @ np.array([0.0, 0.0, -ARUCO_TO_CONTACT_M]) + tvec
+    p_contact = R @ np.array([ox, oy, -oz]) + tvec
 
     x_axis = R_sensor[:, 0]
     y_axis = R_sensor[:, 1]
