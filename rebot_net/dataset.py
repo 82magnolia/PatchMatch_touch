@@ -82,7 +82,7 @@ class TactileTransferDataset(data.Dataset):
         # Build flat sample index: list of (obj_id, pair_idx, frame_idx)
         self.samples = []
         for obj_id in object_ids:
-            obj_dir = os.path.join(transfer_dir, str(obj_id))
+            obj_dir = self._obj_dir(obj_id)
             for pair_idx in range(self.NUM_PAIRS):
                 vid_path = _resolve_lq_path(obj_dir, pair_idx)
                 if vid_path is None:
@@ -95,12 +95,16 @@ class TactileTransferDataset(data.Dataset):
                 for t in range(n_frames):
                     self.samples.append((obj_id, pair_idx, t))
 
+    def _obj_dir(self, obj_id):
+        """Directory holding this object's videos. Overridable for other layouts."""
+        return os.path.join(self.transfer_dir, str(obj_id))
+
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, index):
         obj_id, pair_idx, t = self.samples[index]
-        obj_dir = os.path.join(self.transfer_dir, str(obj_id))
+        obj_dir = self._obj_dir(obj_id)
 
         lq_path = _resolve_lq_path(obj_dir, pair_idx)
         gt_path = os.path.join(obj_dir, f"{pair_idx}_query_shadow.mp4")
@@ -133,7 +137,7 @@ class TactileTransferDataset(data.Dataset):
         return {'lq': lq, 'gt': gt, 'meta': (obj_id, pair_idx, t)}
 
     def lq_video_exists(self, obj_id, pair_idx):
-        obj_dir = os.path.join(self.transfer_dir, str(obj_id))
+        obj_dir = self._obj_dir(obj_id)
         return _resolve_lq_path(obj_dir, pair_idx) is not None
 
     def iter_video_pairs(self, obj_id, pair_idx):
@@ -142,7 +146,7 @@ class TactileTransferDataset(data.Dataset):
         blank_or_None is a (3,H,W) float tensor when residual=True, else None.
         lq and gt are in residual space when residual=True.
         """
-        obj_dir = os.path.join(self.transfer_dir, str(obj_id))
+        obj_dir = self._obj_dir(obj_id)
         lq_path = _resolve_lq_path(obj_dir, pair_idx)
         gt_path = os.path.join(obj_dir, f"{pair_idx}_query_shadow.mp4")
 
