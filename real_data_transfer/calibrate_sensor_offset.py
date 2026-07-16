@@ -78,26 +78,69 @@ def _ticks_to_mm(ticks, lo_mm):
     return lo_mm + ticks * TRACKBAR_STEP_MM
 
 
+TRACKBAR_X_NAME = "X offset mm (marker right = +)"
+TRACKBAR_Y_NAME = "Y offset mm (marker down  = +)"
+TRACKBAR_Z_NAME = "Z offset mm (marker->gel = +)"
+
+
+def _build_legend_image():
+    # Many OpenCV GUI backends (GTK/Qt-less builds) never render the trackbar
+    # name string next to the slider -- only the slider itself. Rather than
+    # depend on that, draw the labels into an image and show it in the same
+    # window; imshow content always renders regardless of backend.
+    legend = np.zeros((110, 640, 3), dtype=np.uint8)
+    lines = [
+        "Slider 1 (top)    = X offset  (marker right = +)",
+        "Slider 2 (middle) = Y offset  (marker down  = +)",
+        "Slider 3 (bottom) = Z offset  (marker -> gel = +)",
+        "Or press x / y / z in the dashboard window to type an exact value.",
+    ]
+    for i, line in enumerate(lines):
+        cv2.putText(legend, line, (8, 22 + i * 24), cv2.FONT_HERSHEY_SIMPLEX,
+                   0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    return legend
+
+
 def _setup_trackbars(win, init_x_mm, init_y_mm, init_z_mm,
                      xy_range_mm, z_max_mm):
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(win, 480, 140)
+    cv2.resizeWindow(win, 640, 220)
     x_max_ticks = _mm_to_ticks(xy_range_mm, -xy_range_mm)
     y_max_ticks = _mm_to_ticks(xy_range_mm, -xy_range_mm)
     z_max_ticks = _mm_to_ticks(z_max_mm, 0.0)
-    cv2.createTrackbar("X (mm)", win, _mm_to_ticks(init_x_mm, -xy_range_mm),
+    cv2.createTrackbar(TRACKBAR_X_NAME, win, _mm_to_ticks(init_x_mm, -xy_range_mm),
                        x_max_ticks, lambda v: None)
-    cv2.createTrackbar("Y (mm)", win, _mm_to_ticks(init_y_mm, -xy_range_mm),
+    cv2.createTrackbar(TRACKBAR_Y_NAME, win, _mm_to_ticks(init_y_mm, -xy_range_mm),
                        y_max_ticks, lambda v: None)
-    cv2.createTrackbar("Z (mm)", win, _mm_to_ticks(init_z_mm, 0.0),
+    cv2.createTrackbar(TRACKBAR_Z_NAME, win, _mm_to_ticks(init_z_mm, 0.0),
                        z_max_ticks, lambda v: None)
+    print(f"  Trackbar order in '{win}' window (top to bottom): "
+          f"1) {TRACKBAR_X_NAME}  2) {TRACKBAR_Y_NAME}  3) {TRACKBAR_Z_NAME}")
+
+    legend = _build_legend_image()
+    cv2.imshow(win, legend)
+    cv2.waitKey(1)
+    return legend
 
 
 def _read_trackbars(win, xy_range_mm):
-    x_mm = _ticks_to_mm(cv2.getTrackbarPos("X (mm)", win), -xy_range_mm)
-    y_mm = _ticks_to_mm(cv2.getTrackbarPos("Y (mm)", win), -xy_range_mm)
-    z_mm = _ticks_to_mm(cv2.getTrackbarPos("Z (mm)", win), 0.0)
+    x_mm = _ticks_to_mm(cv2.getTrackbarPos(TRACKBAR_X_NAME, win), -xy_range_mm)
+    y_mm = _ticks_to_mm(cv2.getTrackbarPos(TRACKBAR_Y_NAME, win), -xy_range_mm)
+    z_mm = _ticks_to_mm(cv2.getTrackbarPos(TRACKBAR_Z_NAME, win), 0.0)
     return x_mm, y_mm, z_mm
+
+
+def _set_trackbar_mm(win, axis, value_mm, xy_range_mm, z_range_mm):
+    """Clamp value_mm to the axis's valid range, push it to the trackbar, and
+    return the clamped value."""
+    if axis in ("x", "y"):
+        value_mm = float(np.clip(value_mm, -xy_range_mm, xy_range_mm))
+        name = TRACKBAR_X_NAME if axis == "x" else TRACKBAR_Y_NAME
+        cv2.setTrackbarPos(name, win, _mm_to_ticks(value_mm, -xy_range_mm))
+    else:
+        value_mm = float(np.clip(value_mm, 0.0, z_range_mm))
+        cv2.setTrackbarPos(TRACKBAR_Z_NAME, win, _mm_to_ticks(value_mm, 0.0))
+    return value_mm
 
 
 # ── Contact-point projection (mirrors compute_contact_pixel, offset-aware) ──
@@ -118,6 +161,18 @@ def _project_point(p_cam, intr, w, h):
 
 # ── Red-box overlay: where does the scale=1 footprint fall in a scale=N crop ─
 
+def _titled_panel(img, title):
+    """Like _label_panel, but stacks the title bar above the image instead of
+    overlaying it onto the top rows -- the scale panels below carry a red
+    footprint box centered on the *full* render, so overwriting rows would
+    make the box look off-center relative to what's actually visible."""
+    h, w = img.shape[:2]
+    bar = np.zeros((24, w, 3), dtype=np.uint8)
+    cv2.putText(bar, title, (8, 17), cv2.FONT_HERSHEY_SIMPLEX,
+               0.5, (230, 230, 230), 1, cv2.LINE_AA)
+    return np.vstack([bar, img])
+
+
 def _draw_footprint_box(img, scale):
     out = img.copy()
     h, w = out.shape[:2]
@@ -128,6 +183,31 @@ def _draw_footprint_box(img, scale):
     p2 = (int(round(cx + half_w)), int(round(cy + half_h)))
     cv2.rectangle(out, p1, p2, (0, 0, 255), 2)
     return out
+
+
+# ── Tactile/normal overlay: place the live GelSight frame at its true ───────
+# physical size within a scale-N crop (shrunk + centered, same box the red
+# footprint outline marks), then alpha-blend with the rendered normals.
+
+def _embed_gs_frame(gs_frame, out_w, out_h, scale):
+    if gs_frame is None:
+        return np.zeros((out_h, out_w, 3), dtype=np.uint8)
+    if np.isclose(scale, 1.0):
+        return cv2.resize(gs_frame, (out_w, out_h))
+    inner_w = max(1, int(round(out_w / scale)))
+    inner_h = max(1, int(round(out_h / scale)))
+    resized = cv2.resize(gs_frame, (inner_w, inner_h))
+    canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+    x0 = (out_w - inner_w) // 2
+    y0 = (out_h - inner_h) // 2
+    canvas[y0:y0 + inner_h, x0:x0 + inner_w] = resized
+    return canvas
+
+
+def _tactile_normal_overlay(normal_img, gs_frame, scale, gs_alpha=0.75):
+    h, w = normal_img.shape[:2]
+    gs_embed = _embed_gs_frame(gs_frame, w, h, scale)
+    return cv2.addWeighted(normal_img, 1.0 - gs_alpha, gs_embed, gs_alpha, 0)
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────
@@ -314,6 +394,11 @@ def main():
 
             _setup_trackbars(TRACKBAR_WIN, args.init_x_mm, args.init_y_mm,
                              args.init_z_mm, args.xy_range_mm, args.z_range_mm)
+            print("  Press x/y/z in the dashboard window to type an exact "
+                  "offset (mm) for that axis; Enter=commit  Esc=cancel.")
+
+            typing_axis = None  # None, or 'x'/'y'/'z' while in numeric-entry mode
+            typing_buf = ""
 
             recapture = False
             while not recapture:
@@ -359,29 +444,31 @@ def main():
                             intr, args.inpaint_method, rvec=aligned_rvec, tvec=tvec,
                             render_scale=scale, apply_mask=False, offset=offset_m)
                         if res is None:
-                            normal_img = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
-                            color_img = normal_img.copy()
+                            normal_raw = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
                         else:
-                            normal_img, color_img = res[0], res[2]
-                            if scale > 1.0:
-                                normal_img = _draw_footprint_box(normal_img, scale)
-                                color_img = _draw_footprint_box(color_img, scale)
+                            normal_raw = res[0]
+                        overlay_raw = _tactile_normal_overlay(normal_raw, gs_disp, scale)
+                        if scale > 1.0:
+                            normal_img = _draw_footprint_box(normal_raw, scale)
+                            overlay_img = _draw_footprint_box(overlay_raw, scale)
+                        else:
+                            normal_img, overlay_img = normal_raw, overlay_raw
                         tag = f"{scale:g}"
-                        scale_panels.append(_label_panel(normal_img, f"\xd7{tag} normal"))
-                        scale_panels.append(_label_panel(color_img, f"\xd7{tag} color"))
+                        scale_panels.append(_titled_panel(normal_img, f"x{tag} normal"))
+                        scale_panels.append(_titled_panel(overlay_img, f"x{tag} tactile overlay"))
                 else:
                     cv2.putText(vis, "Marker ID=6 not found",
                                 (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                     for scale in args.render_scales:
                         tag = f"{scale:g}"
                         blank = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
-                        scale_panels.append(_label_panel(blank, f"\xd7{tag} normal"))
-                        scale_panels.append(_label_panel(blank, f"\xd7{tag} color"))
+                        scale_panels.append(_titled_panel(blank, f"x{tag} normal"))
+                        scale_panels.append(_titled_panel(blank, f"x{tag} tactile overlay"))
 
                 zed_disp = cv2.resize(vis, (ZED_DISPLAY_W, ZED_DISPLAY_H))
                 cv2.putText(zed_disp, f"offset  X={x_mm:+.1f}mm  Y={y_mm:+.1f}mm  Z={z_mm:.1f}mm",
                             (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 0), 1)
-                cv2.putText(zed_disp, "r=recapture  s=save  q=quit",
+                cv2.putText(zed_disp, "r=recapture  s=save  q=quit  x/y/z=type value",
                             (10, ZED_DISPLAY_H - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
 
@@ -391,14 +478,56 @@ def main():
                 ])
                 mid_panels = []
                 if gs_disp is not None:
-                    mid_panels.append(_label_panel(gs_disp, "GelSight live"))
+                    mid_panels.append(_titled_panel(gs_disp, "GelSight live"))
                 mid_panels.extend(scale_panels)
                 mid_row = _hstack_padded(mid_panels)
                 dashboard = _vstack_padded([top_row, mid_row])
+
+                # Legend/typing banner -- drawn into the image itself (not the
+                # trackbar window) so it renders identically on every OpenCV
+                # GUI backend, regardless of whether trackbar name labels do.
+                banner_h = 26
+                banner = np.zeros((banner_h, dashboard.shape[1], 3), dtype=np.uint8)
+                if typing_axis is not None:
+                    text = (f"Type {typing_axis.upper()} offset (mm): {typing_buf}_"
+                           f"   [Enter=commit  Esc=cancel]")
+                    color = (0, 255, 255)
+                else:
+                    text = ("Trackbars top->bottom = X, Y, Z (mm)   |   "
+                           "press x/y/z then type a number + Enter to set exactly")
+                    color = (200, 200, 200)
+                cv2.putText(banner, text, (8, 18), cv2.FONT_HERSHEY_SIMPLEX,
+                           0.55, color, 1, cv2.LINE_AA)
+                dashboard = np.vstack([banner, dashboard])
                 cv2.imshow(DASHBOARD_WIN, dashboard)
 
                 key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
+
+                if typing_axis is not None:
+                    if key in (13, 10):  # Enter
+                        if typing_buf not in ("", "-", "."):
+                            try:
+                                val = float(typing_buf)
+                                clamped = _set_trackbar_mm(
+                                    TRACKBAR_WIN, typing_axis, val,
+                                    args.xy_range_mm, args.z_range_mm)
+                                print(f"  {typing_axis.upper()} offset set to {clamped:.2f}mm")
+                            except ValueError:
+                                print(f"  Could not parse '{typing_buf}' as a number.")
+                        typing_axis = None
+                        typing_buf = ""
+                    elif key == 27:  # Esc
+                        typing_axis = None
+                        typing_buf = ""
+                    elif key in (8, 127):  # Backspace
+                        typing_buf = typing_buf[:-1]
+                    elif key == ord('-') and typing_buf == "":
+                        typing_buf += "-"
+                    elif key == ord('.') and '.' not in typing_buf:
+                        typing_buf += "."
+                    elif ord('0') <= key <= ord('9'):
+                        typing_buf += chr(key)
+                elif key == ord('q'):
                     raise KeyboardInterrupt
                 elif key == ord('r'):
                     recapture = True
@@ -412,6 +541,9 @@ def main():
                         json.dump(result, f, indent=2)
                     print(f"  Saved offset to {args.save_path}: "
                           f"X={x_mm:.2f}mm  Y={y_mm:.2f}mm  Z={z_mm:.2f}mm")
+                elif key in (ord('x'), ord('y'), ord('z')):
+                    typing_axis = chr(key)
+                    typing_buf = ""
 
             cv2.destroyWindow(DASHBOARD_WIN)
             cv2.destroyWindow(TRACKBAR_WIN)
