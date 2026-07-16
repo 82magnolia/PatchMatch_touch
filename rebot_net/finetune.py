@@ -38,6 +38,7 @@ Usage:
 
 import argparse
 import os
+import random
 import sys
 
 import lpips
@@ -127,6 +128,7 @@ def parse_args():
                    help="Log training loss every log_interval steps")
     p.add_argument('--weight_decay', type=float, default=1e-4)
     p.add_argument('--num_workers', type=int, default=4)
+    p.add_argument('--seed', type=int, default=0, help="Random seed for reproducibility")
     p.add_argument('--resume', default=None,
                    help="Path to a fine-tuning checkpoint to resume from")
     p.add_argument('--video_save', action='store_true',
@@ -144,6 +146,8 @@ def parse_args():
 def main():
     args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # --- Data split: first num_eval objects for eval, remainder for fine-tuning ---
