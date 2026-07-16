@@ -32,7 +32,7 @@ Usage:
         --model_size   rebot_S \
         --residual \
         --finetune_mode decoder_bottleneck \
-        --epochs 50 --batch_size 4 --lr 5e-5 \
+        --epochs 8 --batch_size 4 --lr 5e-5 \
         --wandb_run_name finetune_real_S
 """
 
@@ -121,7 +121,7 @@ def parse_args():
                    help="Cap the number of fine-tuning objects (for short runs)")
     p.add_argument('--max_eval_objects', type=int, default=None,
                    help="Cap the number of evaluation objects (for short runs)")
-    p.add_argument('--epochs', type=int, default=50)
+    p.add_argument('--epochs', type=int, default=8)
     p.add_argument('--batch_size', type=int, default=4)
     p.add_argument('--lr', type=float, default=5e-5)
     p.add_argument('--log_interval', type=int, default=10,
@@ -179,7 +179,10 @@ def main():
 
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr,
                                   weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    # Flat LR for fine-tuning: eval PSNR plateaus after ~1 epoch, so a constant
+    # rate is used instead of cosine annealing. LambdaLR with a unit multiplier
+    # keeps the scheduler.step()/state-dict interface a no-op.
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
 
     lpips_model = lpips.LPIPS(net='alex').to(device)
     for p in lpips_model.parameters():
