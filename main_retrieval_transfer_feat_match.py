@@ -675,6 +675,13 @@ def main():
                         help="Adam learning rate for --photometric_refine (default: 0.01).")
     parser.add_argument("--photometric_refine_huber_delta", default=1.0, type=float,
                         help="Delta for --photometric_refine_loss huber (default: 1.0).")
+    parser.add_argument("--use_mask", action="store_true",
+                        help="Composite transferred frames with the query's render mask video "
+                             "(same convention/compositing as main_retrieval_transfer_accel.py's "
+                             "--use_mask): output = mask * transferred + (1 - mask) * base_frame, "
+                             "where base_frame is frame 0 of the reference touch video (assumed "
+                             "pre-contact background). Requires {query_idx}_render_mask.mp4 in "
+                             "--query_dir.")
     parser.add_argument("--save_dir", default="./log/transfer_feat_match", type=str,
                         help="Output directory for transferred videos.")
     parser.add_argument("--eval", action="store_true",
@@ -778,6 +785,23 @@ def main():
         # -- Transfer each frame using the single DINOv3 NNF ---------------
         transferred = [reconstruct_avg(nnf, frame, patch_size=1)
                       for frame in tqdm(ref_frames, desc="Transferring frames", leave=False)]
+
+        # -- Optionally composite with the query's render mask -------------
+        if args.use_mask:
+            mask_path = osp.join(args.query_dir, f"{query_idx}_render_mask.mp4")
+            if not osp.exists(mask_path):
+                print(f"  Warning: mask video not found, ignoring mask: {mask_path}")
+            else:
+                mask_frames, _ = read_video(mask_path)
+                # Mask may be stored as 3-channel grayscale; collapse to single channel
+                if mask_frames[0].ndim == 3:
+                    mask_frames = [f.mean(axis=-1, keepdims=True) for f in mask_frames]
+                base_frame = ref_frames[0]  # pre-contact background from reference
+                transferred = [
+                    (mask_frames[i] if i < len(mask_frames) else mask_frames[-1]) * frame
+                    + (1.0 - (mask_frames[i] if i < len(mask_frames) else mask_frames[-1])) * base_frame
+                    for i, frame in enumerate(transferred)
+                ]
 
         # -- NNF figure -------------------------------------------------------
         if not args.no_nnf_figures:

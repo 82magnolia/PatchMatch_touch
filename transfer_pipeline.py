@@ -679,6 +679,8 @@ def main():
                         "--photometric_refine_iters", str(args.photometric_refine_iters),
                         "--photometric_refine_lr", str(args.photometric_refine_lr),
                         "--photometric_refine_huber_delta", str(args.photometric_refine_huber_delta)]
+            if args.use_mask:
+                cmd.append("--use_mask")
             if not args.skip_eval:
                 cmd.append("--eval")
             _run(cmd, f"Stage 2: {args.transfer_matcher} Feature-Match Transfer")

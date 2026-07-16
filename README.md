@@ -157,7 +157,7 @@ With `--save_nnf_figures`, this saves `{query_idx}_dinov3_init_nnf.png` instead 
 
 **vii) DINOv3-only transfer, no PatchMatch (`main_retrieval_transfer_feat_match.py` / `--transfer_backend dinov3_feat_match`)**
 
-`main_retrieval_transfer_feat_match.py` is a standalone alternative to `main_retrieval_transfer_accel.py` that has no PatchMatch/CUDA dependency at all. Rather than using DINOv3 to *seed* a PatchMatch EM loop, it computes **one** DINOv3 correspondence field per query/ref pair (same matching logic as `--init_dinov3_match_scale`, via `dinov3/dense_match.py`) and applies that single NNF to warp every frame of the touch video directly — no iterative refinement, keyframe propagation, acceleration, or downsampling. It keeps NNF diagnostic figures and `--eval` metrics from the main script, but has no masking of any kind (no render mask, no reference contact mask, no static mask) — every warped frame is written out as-is.
+`main_retrieval_transfer_feat_match.py` is a standalone alternative to `main_retrieval_transfer_accel.py` that has no PatchMatch/CUDA dependency at all. Rather than using DINOv3 to *seed* a PatchMatch EM loop, it computes **one** DINOv3 correspondence field per query/ref pair (same matching logic as `--init_dinov3_match_scale`, via `dinov3/dense_match.py`) and applies that single NNF to warp every frame of the touch video directly — no iterative refinement, keyframe propagation, acceleration, or downsampling. It keeps NNF diagnostic figures and `--eval` metrics from the main script; it has no reference contact mask or static mask (those are PatchMatch-EM-specific), but does support `--use_mask` (see section x below) for compositing with the query's render mask.
 
 Because it never touches PatchMatch, running `--help` (or the script itself) doesn't require a CUDA context — useful on machines without a GPU set up for `pycuda`.
 
@@ -281,3 +281,54 @@ Parameter/backend sweeps across sampled objects on both Taxim synthetic data and
 </details>
 
 Reference implementations: `train_refine_scripts/transfer_all_multi_pseudo_mini/run.sh` (Taxim) and `train_refine_scripts/transfer_all_real_data_gt_retrieval/run.sh` (real GelSight, via `transfer_pipeline.py --retrieval_mode real_gt_retrieval --transfer_backend dinov3_feat_match`, looping every session in `log/real_data_gt_retrieval`).
+
+**x) Render-mask compositing (`--use_mask`) and post-hoc masking (`postprocess_mask_transfer.py`)**
+
+`main_retrieval_transfer_accel.py` has always supported `--use_mask`: composite each transferred frame with the query's render mask video, `{query_idx}_render_mask.mp4` (present alongside the touch videos in both Taxim's `gen_contact_video.py` output and real GelSight captures via `real_data_transfer/render_masks.py`). `main_retrieval_transfer_feat_match.py` now supports the same flag, with identical compositing:
+
+```
+output = mask * transferred_frame + (1 - mask) * base_frame
+```
+
+where `base_frame` is frame 0 of the *reference* touch video (the pre-contact background, assumed static/unwarped) and `mask` is read frame-by-frame from `{query_idx}_render_mask.mp4` in `--query_dir` (a 3-channel grayscale mask video is collapsed to 1 channel by averaging). If the mask video is missing, a warning is printed and the query's frames are left unmasked rather than failing the run. `transfer_pipeline.py` forwards `--use_mask` to whichever `--transfer_backend` is selected, so it works the same way through the pipeline:
+
+```bash
+python main_retrieval_transfer_feat_match.py \
+    --query_dir log/RealData/box_norm_fix \
+    --ref_dir   log/RealData/box_norm_fix \
+    --retrieval_pkl log/pipeline_box_residual_dino/retrieval/results.pkl \
+    --modality curvature --scale 8 --video_type shadow \
+    --matcher loftr --use_mask \
+    --save_dir log/transfer_feat_match_masked
+```
+
+**Post-hoc masking of an already-transferred output (`postprocess_mask_transfer.py`)**
+
+If you already have a transfer output directory (or a whole sweep of them) produced *without* `--use_mask`, `postprocess_mask_transfer.py` adds masking after the fact — without re-running the (potentially expensive) correspondence + warp pipeline. It mirrors an existing output directory into a new one, byte-for-byte identical except that every `{query_idx}_transferred*.mp4` is replaced with a masked version (same compositing formula as `--use_mask` above, reading `{query_idx}_ref_{video_type}.mp4`'s frame 0 for `base_frame` and looking up `{query_idx}_render_mask.mp4` from the original source query directory, since that mask video is never copied into transfer output directories).
+
+It auto-detects two output-directory shapes by walking `--src_dir` for `{idx}_transferred*.mp4` files:
+
+| Shape | Example | Query dir argument |
+|---|---|---|
+| Flat | `main_retrieval_transfer_feat_match.py --save_dir` output — all `{idx}_*.mp4` directly in one directory | `--query_dir <path>` |
+| Nested | `transfer_pipeline.py` output — `<out_base>/<session>/transfer/{idx}_*.mp4` | `--query_dir_root <sessions_base>` (each output session subfolder name is looked up under this root, e.g. `log/real_data_gt_retrieval/<session>`) |
+
+Example — a single flat directory (Taxim synthetic data):
+
+```bash
+python postprocess_mask_transfer.py \
+    --src_dir log/transfer_feat_match \
+    --query_dir Taxim/results/gen_contact_full_pseudo_mini/52 \
+    --out_dir log/transfer_feat_match_masked
+```
+
+Example — a full `transfer_pipeline.py` sweep tree (real GelSight data, all 100 sessions at once):
+
+```bash
+python postprocess_mask_transfer.py \
+    --src_dir log/transfer_pipeline_real_data_gt_retrieval_sift_lightglue \
+    --query_dir_root log/real_data_gt_retrieval \
+    --out_dir log/transfer_pipeline_real_data_gt_retrieval_sift_lightglue_masked
+```
+
+`--out_dir` must not already exist (the script refuses to overwrite/merge into an existing directory). Any session/query for which the reference video or render mask can't be found is copied through unmasked, with a warning — the run never aborts partway through a large sweep over a single missing file.
