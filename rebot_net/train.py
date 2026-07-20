@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from models.archs import rebotnet as ReBotNet
 from dataset import TactileTransferDataset
 from trainer import Trainer
+import cond_utils
 
 
 MODEL_CONFIGS = {
@@ -55,9 +56,9 @@ MODEL_CONFIGS = {
 }
 
 
-def build_model(model_size):
+def build_model(model_size, cond_chans=0, film_chans=0):
     cfg = MODEL_CONFIGS[model_size]
-    return ReBotNet(**cfg)
+    return ReBotNet(**cfg, cond_chans=cond_chans, film_chans=film_chans)
 
 
 def parse_args():
@@ -85,11 +86,13 @@ def parse_args():
                    help="Train in residual space: subtract blank (frame 0 of the transferred "
                         "video) from LQ and GT; model predicts refined residuals, added back "
                         "to blank for absolute output")
+    cond_utils.add_cond_args(p)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+    cond_utils.check_cond_args(args)
     os.makedirs(args.save_dir, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -100,10 +103,11 @@ def main():
     val_ids   = all_ids[930:950]
     print(f"Split: {len(train_ids)} train, {len(val_ids)} val objects")
 
+    cond_kw = cond_utils.dataset_cond_kwargs(args)
     train_dataset = TactileTransferDataset(args.transfer_dir, train_ids, split='train',
-                                           residual=args.residual)
+                                           residual=args.residual, **cond_kw)
     val_dataset   = TactileTransferDataset(args.transfer_dir, val_ids,   split='val',
-                                           residual=args.residual)
+                                           residual=args.residual, **cond_kw)
     print(f"Train samples: {len(train_dataset)}, Val objects: {len(val_ids)}")
 
     train_loader = data.DataLoader(
@@ -111,8 +115,10 @@ def main():
         num_workers=args.num_workers, pin_memory=True, drop_last=True)
 
     # --- Model ---
-    model = build_model(args.model_size).to(device)
-    print(f"Model: {args.model_size}  |  Device: {device}")
+    cond_chans, film_chans = cond_utils.cond_dims(args)
+    model = build_model(args.model_size, cond_chans, film_chans).to(device)
+    print(f"Model: {args.model_size}  |  Device: {device}  |  "
+          f"cond_chans={cond_chans} film_chans={film_chans}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                   weight_decay=args.weight_decay)

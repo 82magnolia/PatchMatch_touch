@@ -50,6 +50,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from train import MODEL_CONFIGS, build_model
 from dataset_real import RealTactileTransferDataset
 from trainer import Trainer
+import cond_utils
 
 
 # Parameter-name prefixes for each functional block of the network.
@@ -61,12 +62,15 @@ BOTTLENECK_PREFIXES = ('to_patch_embedding', 'big_embedding1', 'big_embedding2',
 DECODER_PREFIXES = ('upsample1', 'upsample2', 'upsample3', 'upsample4',
                     'upsamplef1', 'upsamplef2', 'chchange1', 'chchange2',
                     'chchange3', 'conv_last')
+# The FiLM conditioning encoder is always fine-tuned (it is the whole point of
+# conditioning); it is frozen at identity from pretraining otherwise.
+FILM_PREFIXES = ('film_encoder',)
 
 FINETUNE_TRAINABLE = {
-    'full':               ENCODER_PREFIXES + BOTTLENECK_PREFIXES + DECODER_PREFIXES,
-    'decoder_bottleneck': BOTTLENECK_PREFIXES + DECODER_PREFIXES,
-    'decoder':            DECODER_PREFIXES,
-    'last':               ('conv_last',),
+    'full':               ENCODER_PREFIXES + BOTTLENECK_PREFIXES + DECODER_PREFIXES + FILM_PREFIXES,
+    'decoder_bottleneck': BOTTLENECK_PREFIXES + DECODER_PREFIXES + FILM_PREFIXES,
+    'decoder':            DECODER_PREFIXES + FILM_PREFIXES,
+    'last':               ('conv_last',) + FILM_PREFIXES,
 }
 
 
@@ -140,11 +144,13 @@ def parse_args():
     p.add_argument('--wandb_project', default='tactile_enhance')
     p.add_argument('--wandb_run_name', default=None)
     p.add_argument('--wandb_offline', action='store_true')
+    cond_utils.add_cond_args(p)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+    cond_utils.check_cond_args(args)
     os.makedirs(args.save_dir, exist_ok=True)
     torch.manual_seed(args.seed)
     random.seed(args.seed)
@@ -161,10 +167,11 @@ def main():
         train_ids = train_ids[:args.max_train_objects]
     print(f"Split: {len(train_ids)} fine-tune, {len(eval_ids)} eval objects")
 
+    cond_kw = cond_utils.dataset_cond_kwargs(args)
     train_dataset = RealTactileTransferDataset(args.transfer_dir, train_ids, split='train',
-                                               residual=args.residual)
+                                               residual=args.residual, **cond_kw)
     eval_dataset = RealTactileTransferDataset(args.transfer_dir, eval_ids, split='val',
-                                              residual=args.residual)
+                                              residual=args.residual, **cond_kw)
     print(f"Fine-tune frame samples: {len(train_dataset)}, eval objects: {len(eval_ids)}")
 
     train_loader = data.DataLoader(
@@ -172,10 +179,13 @@ def main():
         num_workers=args.num_workers, pin_memory=True, drop_last=True)
 
     # --- Model: build, load pretrained weights, then freeze per finetune mode ---
-    model = build_model(args.model_size).to(device)
+    # Same cond dims as sim pretraining, so the checkpoint loads with no surgery.
+    cond_chans, film_chans = cond_utils.cond_dims(args)
+    model = build_model(args.model_size, cond_chans, film_chans).to(device)
     load_pretrained(model, args.pretrained, device)
     trainable_params = set_trainable(model, args.finetune_mode)
-    print(f"Model: {args.model_size}  |  Device: {device}")
+    print(f"Model: {args.model_size}  |  Device: {device}  |  "
+          f"cond_chans={cond_chans} film_chans={film_chans}")
 
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr,
                                   weight_decay=args.weight_decay)

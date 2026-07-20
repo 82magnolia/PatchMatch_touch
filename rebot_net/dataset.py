@@ -43,6 +43,43 @@ def _load_blank(video_path):
     return _to_tensor(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
 
+# --- Conditioning helpers (render_mask concat + static-geometry FiLM) ---
+
+def _read_gray_frame(cap, idx, h, w):
+    """Read frame idx of a mask video as a normalised (h,w,1) float array.
+
+    Clamps to the mask's frame count and falls back to zeros if the frame can't
+    be read, so a mask video shorter than the transferred video is tolerated.
+    """
+    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if n > 0:
+        idx = min(idx, n - 1)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+    ret, frame = cap.read()
+    if not ret:
+        return np.zeros((h, w, 1), np.float32)
+    g = frame.astype(np.float32).mean(axis=2) / 255.0
+    if g.shape != (h, w):
+        g = cv2.resize(g, (w, h))
+    return g[..., None]
+
+
+def _read_film_image(path, h, w):
+    """Read a static conditioning image as a normalised (h,w,3) float array."""
+    im = cv2.imread(path)
+    if im is None:
+        raise RuntimeError(f"Failed to read film image {path}")
+    im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    if im.shape[:2] != (h, w):
+        im = cv2.resize(im, (w, h))
+    return im
+
+
+def _chw(arr):
+    """(H,W,C) float array -> (C,H,W) float tensor (already normalised)."""
+    return torch.from_numpy(np.ascontiguousarray(arr)).permute(2, 0, 1).float()
+
+
 class TactileTransferDataset(data.Dataset):
     """Paired dataset of PatchMatch-transferred and ground-truth tactile videos.
 
@@ -72,12 +109,22 @@ class TactileTransferDataset(data.Dataset):
     NUM_PAIRS = 8
 
     def __init__(self, transfer_dir, object_ids, split='train', use_hflip=True,
-                 residual=False):
+                 residual=False, cond_dir=None, mask_cond=False,
+                 film_modality=None, film_scale=100):
         super().__init__()
         self.transfer_dir = transfer_dir
         self.split = split
         self.use_hflip = use_hflip and (split == 'train')
         self.residual = residual
+        # Query conditioning (both sourced from cond_dir/{obj}/...):
+        #   mask_cond   -> concat the per-frame render_mask (1ch, aligned) to lq
+        #   film_modality -> load a static geometry render (3ch) returned as 'film'
+        # These are query-side signals available at deployment; do NOT use the
+        # tactile-video normals, which are derived from the GT.
+        self.cond_dir = cond_dir
+        self.mask_cond = mask_cond
+        self.film_modality = film_modality
+        self.film_scale = film_scale
 
         # Build flat sample index: list of (obj_id, pair_idx, frame_idx)
         self.samples = []
@@ -98,6 +145,23 @@ class TactileTransferDataset(data.Dataset):
     def _obj_dir(self, obj_id):
         """Directory holding this object's videos. Overridable for other layouts."""
         return os.path.join(self.transfer_dir, str(obj_id))
+
+    def _cond_base(self, obj_id):
+        """Directory holding this object's query conditioning signals."""
+        return os.path.join(self.cond_dir, str(obj_id))
+
+    def _mask_path(self, obj_id, pair_idx):
+        return os.path.join(self._cond_base(obj_id), f"{pair_idx}_render_mask.mp4")
+
+    def _film_path(self, obj_id, pair_idx):
+        return os.path.join(self._cond_base(obj_id),
+                            f"{pair_idx}_scale{self.film_scale}_{self.film_modality}.jpg")
+
+    def _load_film(self, obj_id, pair_idx, h, w, do_flip):
+        film = _read_film_image(self._film_path(obj_id, pair_idx), h, w)
+        if do_flip:
+            film = np.fliplr(film).copy()
+        return _chw(film)
 
     def __len__(self):
         return len(self.samples)
@@ -120,31 +184,52 @@ class TactileTransferDataset(data.Dataset):
             cap_lq.release()
             cap_gt.release()
 
-        if self.use_hflip and random.random() < 0.5:
+        do_flip = self.use_hflip and random.random() < 0.5
+        if do_flip:
             frame_t = np.fliplr(frame_t).copy()
             frame_t_minus_1 = np.fliplr(frame_t_minus_1).copy()
             frame_gt = np.fliplr(frame_gt).copy()
 
+        h, w = frame_t.shape[:2]
         lq = torch.stack([_to_tensor(frame_t_minus_1), _to_tensor(frame_t)], dim=0)
         gt = _to_tensor(frame_gt)
 
         if self.residual:
             blank = _load_blank(lq_path)
-            lq = lq - blank.unsqueeze(0)   # (2, 3, H, W)
+            lq = lq - blank.unsqueeze(0)   # (2, 3, H, W); only RGB is residualised
             gt = gt - blank
-            return {'lq': lq, 'gt': gt, 'blank': blank, 'meta': (obj_id, pair_idx, t)}
 
-        return {'lq': lq, 'gt': gt, 'meta': (obj_id, pair_idx, t)}
+        # Concat the per-frame render_mask (aligned, raw — never residualised).
+        if self.mask_cond:
+            cap_m = cv2.VideoCapture(self._mask_path(obj_id, pair_idx))
+            try:
+                m_t = _read_gray_frame(cap_m, t, h, w)
+                m_tm1 = _read_gray_frame(cap_m, max(0, t - 1), h, w)
+            finally:
+                cap_m.release()
+            if do_flip:
+                m_t = np.fliplr(m_t).copy(); m_tm1 = np.fliplr(m_tm1).copy()
+            mask_pair = torch.stack([_chw(m_tm1), _chw(m_t)], dim=0)  # (2,1,H,W)
+            lq = torch.cat([lq, mask_pair], dim=1)                    # (2,3+1,H,W)
+
+        out = {'lq': lq, 'gt': gt, 'meta': (obj_id, pair_idx, t)}
+        if self.residual:
+            out['blank'] = blank
+        if self.film_modality:
+            out['film'] = self._load_film(obj_id, pair_idx, h, w, do_flip)
+        return out
 
     def lq_video_exists(self, obj_id, pair_idx):
         obj_dir = self._obj_dir(obj_id)
         return _resolve_lq_path(obj_dir, pair_idx) is not None
 
     def iter_video_pairs(self, obj_id, pair_idx):
-        """Yield (lq_pair, gt_frame, blank_or_None) for every frame in order.
+        """Yield (lq_pair, gt_frame, blank_or_None, film_or_None) per frame.
 
-        blank_or_None is a (3,H,W) float tensor when residual=True, else None.
-        lq and gt are in residual space when residual=True.
+        blank is a (3,H,W) tensor when residual=True else None. film is a
+        (film_chans,H,W) tensor when film_modality is set else None. lq gains the
+        concatenated render_mask channel when mask_cond is set. lq/gt are in
+        residual space (RGB only) when residual=True.
         """
         obj_dir = self._obj_dir(obj_id)
         lq_path = _resolve_lq_path(obj_dir, pair_idx)
@@ -156,10 +241,13 @@ class TactileTransferDataset(data.Dataset):
 
         cap_lq = cv2.VideoCapture(lq_path)
         cap_gt = cv2.VideoCapture(gt_path)
+        cap_m = cv2.VideoCapture(self._mask_path(obj_id, pair_idx)) if self.mask_cond else None
         n_frames = int(cap_lq.get(cv2.CAP_PROP_FRAME_COUNT))
+        film = None
 
         try:
             prev_frame = None
+            prev_mask = None
             for t in range(n_frames):
                 ret_lq, f_lq = cap_lq.read()
                 ret_gt, f_gt = cap_gt.read()
@@ -167,6 +255,7 @@ class TactileTransferDataset(data.Dataset):
                     break
                 f_lq = cv2.cvtColor(f_lq, cv2.COLOR_BGR2RGB)
                 f_gt = cv2.cvtColor(f_gt, cv2.COLOR_BGR2RGB)
+                h, w = f_lq.shape[:2]
                 if prev_frame is None:
                     prev_frame = f_lq
                 lq = torch.stack([_to_tensor(prev_frame), _to_tensor(f_lq)], dim=0)
@@ -177,7 +266,27 @@ class TactileTransferDataset(data.Dataset):
                     lq = lq - blank.unsqueeze(0)
                     gt = gt - blank
 
-                yield lq, gt, blank
+                if self.mask_cond:
+                    ret_m, f_m = cap_m.read()
+                    if ret_m:
+                        g = f_m.astype(np.float32).mean(axis=2) / 255.0
+                        if g.shape != (h, w):
+                            g = cv2.resize(g, (w, h))
+                        cur_mask = g[..., None]
+                    else:
+                        cur_mask = prev_mask if prev_mask is not None else np.zeros((h, w, 1), np.float32)
+                    if prev_mask is None:
+                        prev_mask = cur_mask
+                    mask_pair = torch.stack([_chw(prev_mask), _chw(cur_mask)], dim=0)
+                    lq = torch.cat([lq, mask_pair], dim=1)
+                    prev_mask = cur_mask
+
+                if self.film_modality and film is None:
+                    film = self._load_film(obj_id, pair_idx, h, w, do_flip=False)
+
+                yield lq, gt, blank, film
         finally:
             cap_lq.release()
             cap_gt.release()
+            if cap_m is not None:
+                cap_m.release()

@@ -213,6 +213,34 @@ class Transformer(nn.Module):
         return x
 
 
+class FiLMEncoder(nn.Module):
+    """Encode a static conditioning image into per-stage FiLM (gamma, beta).
+
+    Modulation is global (spatially pooled), so it does NOT assume the
+    conditioning is pixel-aligned with the tactile input — appropriate for a
+    query geometry render that lives in a different frame than the sensor image.
+    The per-stage heads are zero-initialised, so the module starts as an exact
+    identity (gamma=beta=0) and only departs from it as it learns.
+    """
+
+    def __init__(self, in_chans, stage_dims):
+        super().__init__()
+        self.backbone = nn.Sequential(
+            nn.Conv2d(in_chans, 32, 3, 2, 1), nn.GELU(),
+            nn.Conv2d(32, 64, 3, 2, 1), nn.GELU(),
+            nn.Conv2d(64, 128, 3, 2, 1), nn.GELU(),
+            nn.AdaptiveAvgPool2d(1), nn.Flatten(),
+        )
+        self.heads = nn.ModuleList([nn.Linear(128, 2 * d) for d in stage_dims])
+        for h in self.heads:
+            nn.init.zeros_(h.weight)
+            nn.init.zeros_(h.bias)
+
+    def forward(self, cond):
+        z = self.backbone(cond)
+        return [h(z) for h in self.heads]        # list of (B, 2*dims[i])
+
+
 class rebotnet(nn.Module):
 
 
@@ -248,10 +276,19 @@ class rebotnet(nn.Module):
                  patch_size=2,
                  layer_scale_init_value=1e-6, 
                  out_indices=[0, 1, 2, 3],
-                 dim_head = 64
+                 dim_head = 64,
+                 cond_chans = 0,
+                 film_chans = 0
                  ):
         super().__init__()
         self.in_chans = in_chans
+        # cond_chans: per-frame channels concatenated to the input (e.g. an aligned
+        #   render_mask), fed through both the ConvNeXt and big-patch branches.
+        # film_chans: channels of a static (possibly unaligned) conditioning image
+        #   injected globally via FiLM. Both default to 0 -> unchanged network.
+        self.cond_chans = cond_chans
+        self.film_chans = film_chans
+        frame_chans = in_chans + cond_chans   # channels fed per frame to the branches
         self.upscale = upscale
         self.pa_frames = pa_frames
         self.recal_all_flows = recal_all_flows
@@ -263,7 +300,7 @@ class rebotnet(nn.Module):
        
         self.downsample_layers = nn.ModuleList() # stem and 3 intermediate downsampling conv layers
         stem = nn.Sequential(
-            nn.Conv2d(in_chans*2, dims[0], kernel_size=2, stride=2),#, padding=1),
+            nn.Conv2d(frame_chans*2, dims[0], kernel_size=2, stride=2),#, padding=1),
             LayerNorm(dims[0], eps=1e-6, data_format="channels_first")
         )
         self.downsample_layers.append(stem)
@@ -314,7 +351,7 @@ class rebotnet(nn.Module):
         )
 
         big_patch = 16
-        patch_dim_big = 3 * big_patch * big_patch
+        patch_dim_big = frame_chans * big_patch * big_patch
 
         self.big_embedding1 = nn.Sequential(
         Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = big_patch, p2 = big_patch),
@@ -355,6 +392,10 @@ class rebotnet(nn.Module):
         self.chchange2 = nn.Conv2d(num_feat1, num_feat2, kernel_size=( 3, 3), padding=(1, 1))
         self.chchange3 = nn.Conv2d(num_feat2, num_feat3, kernel_size=( 3, 3), padding=(1, 1))
 
+        # Optional global FiLM conditioning from a static geometry image.
+        if film_chans > 0:
+            self.film_encoder = FiLMEncoder(film_chans, dims)
+
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.Linear)):
@@ -362,17 +403,20 @@ class rebotnet(nn.Module):
             nn.init.constant_(m.bias, 0)
 
 
-    def forward(self, x):
-        # x: (N, 2, C, H, W) — frame pair; x[:,1,...] is the main frame for the residual
-        x_org = x[:,1,...].clone()
+    def forward(self, x, film=None):
+        # x: (N, 2, C, H, W) — frame pair (C = in_chans + cond_chans). The
+        # residual is added back on RGB channels only. film: optional static
+        # conditioning image (N, film_chans, H, W) for global FiLM modulation.
+        x_org = x[:, 1, :self.in_chans, ...].clone()   # RGB only, for the residual
 
         x = rearrange(x, 'b t c h w -> b (t c) h w')
         H_in, W_in = x.shape[2], x.shape[3]
         N_big_h, N_big_w = H_in // 16, W_in // 16
+        fc = self.in_chans + self.cond_chans      # channels per frame
 
         # big patch embeddings: tokens → 2D spatial → adaptive pool to 24×24 → flatten
-        x_1 = self.big_embedding1(x[:,0:3,...])   # (B, N_big, C)
-        x_2 = self.big_embedding2(x[:,3:6,...])
+        x_1 = self.big_embedding1(x[:, 0:fc, ...])   # (B, N_big, C) — frame 0 (+cond)
+        x_2 = self.big_embedding2(x[:, fc:2*fc, ...])  # frame 1 (+cond)
         C_emb = x_1.shape[-1]
         x_1 = F.adaptive_avg_pool2d(
             x_1.transpose(1,2).view(-1, C_emb, N_big_h, N_big_w), (24, 24)
@@ -385,10 +429,17 @@ class rebotnet(nn.Module):
         x_temp = self.pool(x_temp.transpose(1,2)).transpose(1,2)   # MaxPool1d(2,2) → (B, 576, C)
         x_temp = self.temporal_transformer(x_temp)                  # (B, 576, C)
 
+        film_params = None
+        if self.film_chans > 0 and film is not None:
+            film_params = self.film_encoder(film)   # list of (B, 2*dims[i])
+
         outs = []
         for i in range(4):
             x = self.downsample_layers[i](x)
             x = self.stages[i](x)
+            if film_params is not None:
+                gamma, beta = film_params[i].chunk(2, dim=1)   # (B, dims[i]) each
+                x = x * (1 + gamma[:, :, None, None]) + beta[:, :, None, None]
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')
                 outs.append(norm_layer(x))

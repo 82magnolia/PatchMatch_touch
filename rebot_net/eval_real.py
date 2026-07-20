@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from dataset_real import RealTactileTransferDataset
 from train import MODEL_CONFIGS, build_model
 from trainer import _write_video, _read_video_frames, _make_grid_video, _residual_to_vis
+import cond_utils
 
 
 def _frame_metrics(gt_np, pred_np, lpips_model, device):
@@ -62,11 +63,13 @@ def parse_args():
                    help="Also save transferred/GT and a 2x2 grid video")
     p.add_argument('--residual', action='store_true',
                    help="Residual-mode checkpoint (metrics still on absolute reconstructions)")
+    cond_utils.add_cond_args(p)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+    cond_utils.check_cond_args(args)
     os.makedirs(args.save_dir, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -76,9 +79,11 @@ def main():
     print(f"Eval objects: {len(eval_ids)}  |  Residual mode: {args.residual}")
 
     dataset = RealTactileTransferDataset(args.transfer_dir, eval_ids, split='test',
-                                         residual=args.residual)
+                                         residual=args.residual,
+                                         **cond_utils.dataset_cond_kwargs(args))
 
-    model = build_model(args.model_size).to(device)
+    cond_chans, film_chans = cond_utils.cond_dims(args)
+    model = build_model(args.model_size, cond_chans, film_chans).to(device)
     ckpt = torch.load(args.checkpoint, map_location=device)
     model.load_state_dict(ckpt['model_state'])
     model.eval()
@@ -108,17 +113,19 @@ def main():
                 print(f"  Object {obj_id}  contact {pair_idx}", flush=True)
 
                 pred_frames, gt_frames, transferred_frames = [], [], []
-                for lq_pair, gt_frame, blank in dataset.iter_video_pairs(obj_id, pair_idx):
-                    pred = model(lq_pair.unsqueeze(0).to(device)).squeeze(0)
+                for lq_pair, gt_frame, blank, film in dataset.iter_video_pairs(obj_id, pair_idx):
+                    film_in = film.unsqueeze(0).to(device) if film is not None else None
+                    pred = model(lq_pair.unsqueeze(0).to(device), film=film_in).squeeze(0)
+                    lq_rgb = lq_pair[1, :3]                 # transferred RGB only
                     if args.residual:
                         blank_np = blank.permute(1, 2, 0).numpy()
                         pred_np = np.clip(pred.cpu().clamp(-1, 1).permute(1, 2, 0).numpy() + blank_np, 0, 1)
                         gt_np = np.clip(gt_frame.permute(1, 2, 0).numpy() + blank_np, 0, 1)
-                        transferred_np = np.clip(lq_pair[1].permute(1, 2, 0).numpy() + blank_np, 0, 1)
+                        transferred_np = np.clip(lq_rgb.permute(1, 2, 0).numpy() + blank_np, 0, 1)
                     else:
                         pred_np = pred.cpu().clamp(0, 1).permute(1, 2, 0).numpy()
                         gt_np = gt_frame.permute(1, 2, 0).numpy()
-                        transferred_np = lq_pair[1].permute(1, 2, 0).numpy()
+                        transferred_np = lq_rgb.permute(1, 2, 0).numpy()
                     pred_frames.append(pred_np)
                     gt_frames.append(gt_np)
                     transferred_frames.append(transferred_np)

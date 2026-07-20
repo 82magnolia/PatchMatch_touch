@@ -98,14 +98,18 @@ class Trainer:
         log_interval = self.args.log_interval
 
         for i, batch in enumerate(self.train_loader):
-            lq = batch['lq'].to(self.device)   # (B, 2, 3, H, W)
+            lq = batch['lq'].to(self.device)   # (B, 2, 3(+cond), H, W)
             gt = batch['gt'].to(self.device)   # (B, 3, H, W)
+            film = batch.get('film')
+            if film is not None:
+                film = film.to(self.device)
 
-            pred = self.model(lq)              # (B, 3, H, W)
+            pred = self.model(lq, film=film)   # (B, 3, H, W)
 
             with torch.no_grad():
-                # In residual mode lq[:,1] is lq_residual; diff still identifies changed pixels
-                loss_mask = (gt - lq[:, 1]).abs().amax(dim=1, keepdim=True) > 1e-2
+                # RGB channels only (lq may carry extra conditioning channels);
+                # in residual mode lq[:,1,:3] is the transferred residual.
+                loss_mask = (gt - lq[:, 1, :3]).abs().amax(dim=1, keepdim=True) > 1e-2
             if not loss_mask.any():
                 continue
             loss = _charbonnier_loss(pred[loss_mask.expand_as(pred)],
@@ -156,9 +160,11 @@ class Trainer:
                 pred_frames, gt_frames, transferred_frames = [], [], []
                 pred_residual_frames, gt_residual_frames = [], []
 
-                for lq_pair, gt_frame, blank in dataset.iter_video_pairs(obj_id, pair_idx):
-                    lq_in = lq_pair.unsqueeze(0).to(self.device)  # (1,2,3,H,W)
-                    pred = self.model(lq_in).squeeze(0)            # (3,H,W)
+                for lq_pair, gt_frame, blank, film in dataset.iter_video_pairs(obj_id, pair_idx):
+                    lq_in = lq_pair.unsqueeze(0).to(self.device)  # (1,2,3(+cond),H,W)
+                    film_in = film.unsqueeze(0).to(self.device) if film is not None else None
+                    pred = self.model(lq_in, film=film_in).squeeze(0)   # (3,H,W)
+                    lq_rgb = lq_pair[1, :3]                              # transferred RGB
 
                     if self.residual:
                         # pred and gt_frame are residuals; reconstruct absolute
@@ -168,13 +174,13 @@ class Trainer:
                         pred_np = np.clip(pred_res_np + blank_np, 0, 1)
                         gt_np = np.clip(gt_res_np + blank_np, 0, 1)
                         transferred_np = np.clip(
-                            lq_pair[1].permute(1, 2, 0).numpy() + blank_np, 0, 1)
+                            lq_rgb.permute(1, 2, 0).numpy() + blank_np, 0, 1)
                         pred_residual_frames.append(_residual_to_vis(pred_res_np))
                         gt_residual_frames.append(_residual_to_vis(gt_res_np))
                     else:
                         pred_np = pred.cpu().clamp(0, 1).permute(1, 2, 0).numpy()
                         gt_np = gt_frame.permute(1, 2, 0).numpy()
-                        transferred_np = lq_pair[1].permute(1, 2, 0).numpy()
+                        transferred_np = lq_rgb.permute(1, 2, 0).numpy()
 
                     pred_frames.append(pred_np)
                     gt_frames.append(gt_np)
