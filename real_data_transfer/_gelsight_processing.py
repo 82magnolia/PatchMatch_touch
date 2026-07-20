@@ -22,7 +22,15 @@ HEIGHT_MASK_THRES_M      = 0.000
 RENDER_MASK_THRES_M      = -0.005
 VIDEO_FPS                = 5.0
 MASK_OPEN_PX             = 4
-ARUCO_TO_CONTACT_M       = 0.050
+# Calibrated marker->contact offset (calibrate_sensor_offset.py, 's' output).
+# X/Y are in the marker's local frame; Z is marker face -> gel tip.
+ARUCO_TO_CONTACT_X_M     = 0.0
+ARUCO_TO_CONTACT_Y_M     = -0.0033
+ARUCO_TO_CONTACT_M       = 0.0512
+# In-plane marker/sensor misalignment. The calibration GUI rotates the *tactile*
+# image by +theta to match the render, so the render must rotate by -theta to
+# come out aligned with the raw (unrotated) tactile image.
+ARUCO_TO_CONTACT_THETA_DEG = -6.6
 
 
 # ── Normal helpers ─────────────────────────────────────────────────────────────
@@ -88,7 +96,7 @@ def _rotate_rvec_z(rvec, R_z):
 
 def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
                       rvec=None, tvec=None, render_scale=1.0, apply_mask=True,
-                      offset=None):
+                      offset=None, theta_deg=None):
     """
     True orthographic projection of the GelSight Mini FoV using sensor pose.
     Returns (normal_bgr, raw_normals_hw3, color_bgr_crop, height_vis,
@@ -101,24 +109,40 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
     real mask, so contact/render-mask detection stays exactly as before.
 
     offset: (ox, oy, oz) marker->contact translation in the marker's local
-    frame, metres. Defaults to (0, 0, ARUCO_TO_CONTACT_M) -- the production
-    Z-only offset. Overridden by calibrate_sensor_offset.py while sweeping
-    x/y/z to find the true marker->gel-contact translation.
+    frame, metres. Defaults to the calibrated
+    (ARUCO_TO_CONTACT_X_M, ARUCO_TO_CONTACT_Y_M, ARUCO_TO_CONTACT_M).
+    Overridden by calibrate_sensor_offset.py while sweeping x/y/z to find the
+    true marker->gel-contact translation.
+
+    theta_deg: in-plane marker/sensor misalignment in degrees, defaulting to
+    the calibrated ARUCO_TO_CONTACT_THETA_DEG. The render is rotated by
+    -theta_deg about the sensor's own Z so it lands aligned with the raw
+    tactile image. calibrate_sensor_offset.py passes 0.0 here because it
+    instead rotates the tactile overlay by +theta -- applying both would
+    double-count the misalignment.
     """
     if rvec is None or tvec is None:
         return None
 
     if offset is None:
-        offset = (0.0, 0.0, ARUCO_TO_CONTACT_M)
+        offset = (ARUCO_TO_CONTACT_X_M, ARUCO_TO_CONTACT_Y_M, ARUCO_TO_CONTACT_M)
     ox, oy, oz = offset
+
+    if theta_deg is None:
+        theta_deg = ARUCO_TO_CONTACT_THETA_DEG
 
     out_h, out_w = GELSIGHT_H, GELSIGHT_W
 
     R, _ = cv2.Rodrigues(rvec)
     R_flip          = np.diag([1.0, -1.0, -1.0])
-    R_sensor        = R @ R_flip
+    # Post-multiplying by R_theta rotates the sensor frame about its own Z, so
+    # the in-plane correction reaches both the sampling axes (x_axis/y_axis
+    # below) and the normal re-orientation -- a grid-only rotation would move
+    # the pixels but leave each normal vector's nx/ny unrotated.
+    R_theta         = _make_Rz(-theta_deg)
+    R_sensor        = R @ R_flip @ R_theta
     R_z_align       = _make_Rz(90)
-    R_sensor_normals = R @ R_z_align.T @ R_flip
+    R_sensor_normals = R @ R_z_align.T @ R_flip @ R_theta
 
     p_contact = R @ np.array([ox, oy, -oz]) + tvec
 

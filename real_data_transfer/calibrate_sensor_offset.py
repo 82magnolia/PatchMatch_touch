@@ -47,6 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _gelsight_processing import (
     _make_Rz, _rotate_rvec_z, ortho_project_raw, normals_to_colormap,
     GELSIGHT_W, GELSIGHT_H, ARUCO_TO_CONTACT_M,
+    ARUCO_TO_CONTACT_X_M, ARUCO_TO_CONTACT_Y_M, ARUCO_TO_CONTACT_THETA_DEG,
 )
 from capture_gelsight import (
     build_aruco_detector, detect_gelsight_marker, GelSightCapture,
@@ -298,49 +299,79 @@ def parse_args():
     p.add_argument("--save_path", default="log/gelsight_sensor_offset.json",
                    help="Where 's' writes the calibrated offset (default: "
                         "log/gelsight_sensor_offset.json).")
-    p.add_argument("--no_load_saved_offset", action="store_true",
-                   help="Ignore an existing --save_path and start from built-in "
-                        "defaults unless --init_* values are supplied.")
+    p.add_argument("--load_saved_offset", action="store_true",
+                   help="Seed the sliders from the JSON at --save_path instead "
+                        "of the hardcoded ARUCO_TO_CONTACT_* constants. Off by "
+                        "default: the constants are what the pipeline actually "
+                        "renders with, so a stale save file must not silently "
+                        "shadow them. Keys missing from the JSON still fall "
+                        "back to the constants. --init_* always wins.")
     return p.parse_args()
 
 
 def _initialize_offsets(args):
-    """Resolve initial controls from CLI overrides, saved JSON, then defaults."""
-    saved = {}
-    if not args.no_load_saved_offset and os.path.isfile(args.save_path):
-        try:
-            with open(args.save_path, "r") as f:
-                saved = json.load(f)
-            print(f"Loaded saved offset from {args.save_path}.")
-        except (OSError, ValueError, TypeError) as exc:
-            print(f"WARNING: could not load saved offset {args.save_path}: {exc}")
+    """Resolve initial slider values: --init_* > saved JSON (opt-in) > constants.
 
-    defaults = {
-        "init_x_mm": 0.0,
-        "init_y_mm": 0.0,
+    The hardcoded ARUCO_TO_CONTACT_* constants are the values the pipeline
+    actually renders with -- ortho_project_raw reads them and never opens the
+    JSON. So they are the default seed here, and --save_path is consulted only
+    when --load_saved_offset is passed. Otherwise a leftover save file would
+    seed the sliders with numbers production is not using.
+    """
+    # The values production renders with.
+    constants = {
+        "init_x_mm": ARUCO_TO_CONTACT_X_M * 1000.0,
+        "init_y_mm": ARUCO_TO_CONTACT_Y_M * 1000.0,
         "init_z_mm": ARUCO_TO_CONTACT_M * 1000.0,
-        "init_theta_deg": 0.0,
+        "init_theta_deg": ARUCO_TO_CONTACT_THETA_DEG,
     }
-    def saved_number(key, scale, fallback):
-        try:
-            return float(saved[key]) * scale
-        except (KeyError, TypeError, ValueError):
-            return fallback
+    seed, source = dict(constants), "hardcoded constants"
 
-    saved_values = {
-        "init_x_mm": saved_number("offset_x_m", 1e3, defaults["init_x_mm"]),
-        "init_y_mm": saved_number("offset_y_m", 1e3, defaults["init_y_mm"]),
-        "init_z_mm": saved_number("offset_z_m", 1e3, defaults["init_z_mm"]),
-        "init_theta_deg": saved_number(
-            "offset_theta_deg", 1.0, defaults["init_theta_deg"]),
-    }
-    for name, fallback in defaults.items():
+    if args.load_saved_offset:
+        if not os.path.isfile(args.save_path):
+            print(f"WARNING: --load_saved_offset given but {args.save_path} "
+                  "does not exist; using hardcoded constants.")
+        else:
+            try:
+                with open(args.save_path, "r") as f:
+                    saved = json.load(f)
+            except (OSError, ValueError, TypeError) as exc:
+                print(f"WARNING: could not load {args.save_path}: {exc}; "
+                      "using hardcoded constants.")
+            else:
+                # (json key, scale to mm/deg) per slider.
+                keymap = {
+                    "init_x_mm": ("offset_x_m", 1e3),
+                    "init_y_mm": ("offset_y_m", 1e3),
+                    "init_z_mm": ("offset_z_m", 1e3),
+                    "init_theta_deg": ("offset_theta_deg", 1.0),
+                }
+                seed, unusable = {}, []
+                for name, (key, scale) in keymap.items():
+                    try:
+                        seed[name] = float(saved[key]) * scale
+                    except (KeyError, TypeError, ValueError):
+                        # Track by key presence, not by value -- a saved number
+                        # that happens to equal the constant is not "missing".
+                        seed[name] = constants[name]
+                        unusable.append(key)
+                source = args.save_path
+                print(f"Loaded saved offset from {args.save_path}.")
+                if unusable:
+                    print("  (keys missing or unreadable, fell back to constants: "
+                          + ", ".join(sorted(unusable)) + ")")
+
+    for name, fallback in seed.items():
         if getattr(args, name) is None:
-            setattr(args, name, float(saved_values.get(name, fallback)))
+            setattr(args, name, float(fallback))
 
-    print("Initial offset: "
+    print(f"Initial offset [{source}]: "
           f"X={args.init_x_mm:.2f}mm  Y={args.init_y_mm:.2f}mm  "
           f"Z={args.init_z_mm:.2f}mm  Theta={args.init_theta_deg:.2f}deg")
+    if source != "hardcoded constants":
+        print("  NOTE: production renders with the constants in "
+              "_gelsight_processing.py, not this file. Copy any new calibration "
+              "into ARUCO_TO_CONTACT_* there (and in capture_gelsight.py).")
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -539,7 +570,11 @@ def main():
                         res = ortho_project_raw(
                             normals_cached, color_cached, mask_full, depth_cached,
                             intr, args.inpaint_method, rvec=aligned_rvec, tvec=tvec,
-                            render_scale=scale, apply_mask=False, offset=offset_m)
+                            render_scale=scale, apply_mask=False, offset=offset_m,
+                            # theta is applied to the tactile overlay below, not
+                            # the render -- baking in the calibrated default too
+                            # would double-count it while sweeping.
+                            theta_deg=0.0)
                         if res is None:
                             normal_raw = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
                         else:

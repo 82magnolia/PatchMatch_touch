@@ -43,7 +43,11 @@ except ImportError:
 GELSIGHT_MARKER_ID = 6
 HOLDER_HEIGHT_M    = 0.030    # gsmini_holder.stl: Z range 0–30 mm
 GEL_THICKNESS_M    = 0.00425  # GelSight Mini specs: 4.25 mm gel
-ARUCO_TO_CONTACT_M = 0.050    # measured: 50 mm from marker face to gel tip
+# Calibrated marker->contact offset (calibrate_sensor_offset.py, 's' output).
+ARUCO_TO_CONTACT_X_M = 0.0
+ARUCO_TO_CONTACT_Y_M = -0.0033   # calibrated: -3.3 mm along marker Y
+ARUCO_TO_CONTACT_M   = 0.0512    # calibrated: 51.2 mm from marker face to gel tip
+ARUCO_TO_CONTACT_THETA_DEG = -6.6  # in-plane marker/sensor misalignment
 
 ZED_DISPLAY_W, ZED_DISPLAY_H = 640, 360
 ZED_W, ZED_H                 = 1280, 720
@@ -98,7 +102,9 @@ def detect_gelsight_marker(color_bgr, detector, camera_matrix, dist_coeffs, mark
 def compute_contact_pixel(rvec, tvec, intr):
     """Map ARuCO pose to the gel contact point in ZED pixel coordinates."""
     R, _ = cv2.Rodrigues(rvec)
-    p = R @ np.array([0.0, 0.0, -ARUCO_TO_CONTACT_M]) + tvec
+    p = R @ np.array([ARUCO_TO_CONTACT_X_M,
+                      ARUCO_TO_CONTACT_Y_M,
+                      -ARUCO_TO_CONTACT_M]) + tvec
     if p[2] <= 0:
         return None
     px = int(intr["fx"] * p[0] / p[2] + intr["cx"])
@@ -198,12 +204,18 @@ def ortho_project_raw(normals_np, color_bgr, mask, depth_m, intr, method,
     # R_sensor_normals (without R_z) = R_orig @ R_flip is used for normal re-orientation.
     R, _ = cv2.Rodrigues(rvec)
     R_flip   = np.diag([1.0, -1.0, -1.0])  # marker frame → sensor frame (180° around X)
-    R_sensor = R @ R_flip                   # for spatial sampling (includes R_z)
+    # Rotate the sensor frame about its own Z by the calibrated in-plane
+    # misalignment, so both the sampling axes and the normal re-orientation
+    # below pick it up.
+    R_theta  = _make_Rz(-ARUCO_TO_CONTACT_THETA_DEG)
+    R_sensor = R @ R_flip @ R_theta         # for spatial sampling (includes R_z)
     R_z_align = _make_Rz(90)               # the hardcoded alignment rotation
-    R_sensor_normals = R @ R_z_align.T @ R_flip  # = R_orig @ R_flip, for normal rotation
+    R_sensor_normals = R @ R_z_align.T @ R_flip @ R_theta  # for normal rotation
 
     # Contact point in camera frame
-    p_contact = R @ np.array([0.0, 0.0, -ARUCO_TO_CONTACT_M]) + tvec  # (3,)
+    p_contact = R @ np.array([ARUCO_TO_CONTACT_X_M,
+                              ARUCO_TO_CONTACT_Y_M,
+                              -ARUCO_TO_CONTACT_M]) + tvec  # (3,)
 
     # Sensor-plane basis vectors in camera frame
     x_axis = R_sensor[:, 0]  # sensor X in camera frame
