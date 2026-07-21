@@ -24,6 +24,7 @@ import wandb
 sys.path.insert(0, os.path.dirname(__file__))
 from models.archs import rebotnet as ReBotNet
 from dataset import TactileTransferDataset
+from dataset_real import RealTactileTransferDataset
 from trainer import Trainer
 import cond_utils
 
@@ -86,6 +87,14 @@ def parse_args():
                    help="Train in residual space: subtract blank (frame 0 of the transferred "
                         "video) from LQ and GT; model predicts refined residuals, added back "
                         "to blank for absolute output")
+    p.add_argument('--real_data', action='store_true',
+                   help="Train from scratch on the real-data transfer tree "
+                        "(RealTactileTransferDataset: nested {obj}/transfer/ layout, odd query "
+                        "indices). Uses the same first-num_eval / rest split as finetune.py so a "
+                        "from-scratch run is directly comparable to a fine-tune on identical data.")
+    p.add_argument('--num_eval', type=int, default=20,
+                   help="With --real_data: number of leading (sorted) objects held out for "
+                        "validation; the rest are used for training.")
     cond_utils.add_cond_args(p)
     return p.parse_args()
 
@@ -99,15 +108,22 @@ def main():
     # --- Data split ---
     all_ids = sorted(int(d) for d in os.listdir(args.transfer_dir)
                      if os.path.isdir(os.path.join(args.transfer_dir, d)))
-    train_ids = all_ids[:930]
-    val_ids   = all_ids[930:950]
+    # Real-data from-scratch runs mirror finetune.py's split (first num_eval held
+    # out) so they are a controlled comparison; the sim path keeps its 930/20 split.
+    Dataset = RealTactileTransferDataset if args.real_data else TactileTransferDataset
+    if args.real_data:
+        val_ids   = all_ids[:args.num_eval]
+        train_ids = all_ids[args.num_eval:]
+    else:
+        train_ids = all_ids[:930]
+        val_ids   = all_ids[930:950]
     print(f"Split: {len(train_ids)} train, {len(val_ids)} val objects")
 
     cond_kw = cond_utils.dataset_cond_kwargs(args)
-    train_dataset = TactileTransferDataset(args.transfer_dir, train_ids, split='train',
-                                           residual=args.residual, **cond_kw)
-    val_dataset   = TactileTransferDataset(args.transfer_dir, val_ids,   split='val',
-                                           residual=args.residual, **cond_kw)
+    train_dataset = Dataset(args.transfer_dir, train_ids, split='train',
+                            residual=args.residual, **cond_kw)
+    val_dataset   = Dataset(args.transfer_dir, val_ids,   split='val',
+                            residual=args.residual, **cond_kw)
     print(f"Train samples: {len(train_dataset)}, Val objects: {len(val_ids)}")
 
     train_loader = data.DataLoader(
