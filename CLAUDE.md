@@ -5,6 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Core Development Rules
 1. Do not commit / push code on your own.
 2. When running scripts, use 'conda activate pm_touch', except for scripts living inside @real_data_transfer: here use 'conda activate pm_real' instead.
+3. When training networks, don't use wandb offline. Always log them online. Ask the user again if prompted for login.
 
 ## Reporting Visualization Results
 1. Publish findings in html, inside log/
