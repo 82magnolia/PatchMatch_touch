@@ -63,6 +63,11 @@ DEFAULT_NORMAL_NN_MODEL_PATH = os.path.join(
 # background speckle. See test_scripts/sweep_normal_mask_thr.py.
 NORMAL_CONTACT_THRESHOLD = 0.025
 
+# Poisson-blend the normal field within this many pixels of the contact-mask
+# boundary, softening the hard foreground/background seam while leaving the
+# interior detail untouched. See test_scripts/compare_boundary_blend.py.
+NORMAL_POISSON_BAND_PX = 8
+
 
 # ── Per-segment save (mirrors capture_gelsight_single_shot._save_segment) ────
 
@@ -210,7 +215,8 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
                 f.astype(np.float32) / 255.0, normal_base,
                 threshold=NORMAL_CONTACT_THRESHOLD)[..., 0] > 0.5
             tactile_normal_frames.append(normals_to_colormap(frame_to_normals(
-                f, normal_net, normal_device, contact_mask=cmask)))
+                f, normal_net, normal_device, contact_mask=cmask,
+                poisson_band_px=NORMAL_POISSON_BAND_PX)))
         write_video(f"{prefix}_tactile_normal.mp4", tactile_normal_frames, VIDEO_FPS)
 
     if hmap_0 is not None:
