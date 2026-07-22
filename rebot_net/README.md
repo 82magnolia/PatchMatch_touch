@@ -350,6 +350,32 @@ bash train_refine_scripts/eval_rebot_pseudo_mini_tactile_normal/eval_rebot_S.sh 
 bash train_refine_scripts/eval_rebot_pseudo_mini_tactile_normal_residual/eval_rebot_S.sh <gpu_id>
 ```
 
+### Conditioned variant
+
+Query-conditioned counterparts of the four scripts above (`--cond_dir` /
+`--mask_cond` / `--film_modality` / `--film_scale`, see
+`rebot_net/cond_utils.py`), mirroring
+`train_rebot_pseudo_mini_cond`/`train_rebot_pseudo_mini_residual_cond`/
+`eval_rebot_pseudo_mini_cond` but for the tactile_normal transfer dir. Unlike
+those, there is only one transfer config here (no matcher/masked-data sweep),
+so the scripts take just `<gpu_id> [cond_mode]`. `--cond_dir` points at
+`gen_contact_full_query_tactile_normal_pseudo_mini`'s static
+`render_mask.mp4`/`scale100_{modality}.jpg` files (written by
+`gen_contact_video.py` regardless of `--modalities`) — never the
+`tactile_normal.mp4` video itself, which is the GT and must not leak in as
+conditioning (see `rebot_net/cond_utils.py`).
+
+```bash
+bash train_refine_scripts/train_rebot_pseudo_mini_tactile_normal_cond/train_rebot_S.sh <gpu_id> [cond_mode]
+bash train_refine_scripts/train_rebot_pseudo_mini_tactile_normal_residual_cond/train_rebot_S.sh <gpu_id> [cond_mode]
+bash train_refine_scripts/eval_rebot_pseudo_mini_tactile_normal_cond/eval_rebot_S.sh <gpu_id> [cond_mode]
+bash train_refine_scripts/eval_rebot_pseudo_mini_tactile_normal_residual_cond/eval_rebot_S.sh <gpu_id> [cond_mode]
+```
+`cond_mode` (default `both-normal`): `mask`, `film-{normal,curvature,height}`,
+`both-{normal,curvature,height}`. Also available for `XS`, `M`, `L`.
+Checkpoints land in
+`log/rebot_checkpoints_{SIZE}_pseudo_mini_tactile_normal[_residual]_cond-{cond_mode}/`.
+
 ---
 
 ## Metrics
