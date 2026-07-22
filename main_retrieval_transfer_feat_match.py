@@ -592,13 +592,15 @@ def main():
                              "disk_lightglue). 'dinov3' uses DINOv3 patch-feature matching "
                              "(requires --dinov3_weights); the rest are image-matching-webui "
                              "backends (imcui_match.py) -- see README.md for setup.")
-    parser.add_argument("--offset_matcher", default="dinov3",
+    parser.add_argument("--offset_matcher", default="disk_lightglue",
                         choices=list(SPARSE_MATCHERS),
                         help="Matcher for the OFFSET stage, run at --video_scale between the "
-                             "zero-offset-warped reference and the query (default: dinov3). "
-                             "Independent of --matcher: the two stages solve different problems "
-                             "(wide-context geometry vs. a residual translation) and are not "
-                             "necessarily best served by the same matcher.")
+                             "zero-offset-warped reference and the query (default: disk_lightglue; "
+                             "it localises the residual translation better than dinov3 on both "
+                             "sim and real data, where dinov3's patch-quantised displacements "
+                             "under-shoot). Independent of --matcher: the two stages solve "
+                             "different problems (wide-context geometry vs. a residual "
+                             "translation) and are not necessarily best served by the same matcher.")
     parser.add_argument("--offset_method", default="median", choices=list(OFFSET_METHODS),
                         help="How the OFFSET stage turns the matcher's displacements into a "
                              "translation (default: median). 'median' takes the component-wise "
@@ -679,7 +681,7 @@ def main():
     _active = [args.matcher] + ([] if args.offset_method == "none" else [args.offset_matcher])
     if "dinov3" in _active and args.dinov3_weights is None:
         parser.error("--dinov3_weights is required when either --matcher or --offset_matcher "
-                     "is dinov3 (--offset_matcher defaults to dinov3).")
+                     "is dinov3.")
 
     os.makedirs(args.save_dir, exist_ok=True)
 

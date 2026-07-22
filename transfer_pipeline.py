@@ -436,13 +436,14 @@ def main():
                            "--match_scale (default: disk_lightglue). --transfer_offset_matcher "
                            "selects the OFFSET stage's matcher separately. Only 'dinov3' requires "
                            "--dinov3_weights. See main_retrieval_transfer_feat_match.py and README.md.")
-    g_tr.add_argument("--transfer_offset_matcher", default="dinov3",
+    g_tr.add_argument("--transfer_offset_matcher", default="disk_lightglue",
                       choices=["dinov3", "disk_lightglue", "superpoint_superglue", "loftr",
                                "superpoint_lightglue", "sift_lightglue"],
                       help="dinov3_feat_match backend only: matcher for the OFFSET stage, run at "
                            "--scale between the zero-offset-warped reference and the query "
-                           "(default: dinov3). --transfer_matcher selects the LINEAR stage's "
-                           "matcher instead; the two are independent.")
+                           "(default: disk_lightglue; it localises the residual translation "
+                           "better than dinov3 on both sim and real data). --transfer_matcher "
+                           "selects the LINEAR stage's matcher instead; the two are independent.")
     g_tr.add_argument("--transfer_offset_method", default="median",
                       choices=["none", "median", "ransac"],
                       help="dinov3_feat_match backend only: how the OFFSET stage reduces match "
@@ -540,8 +541,7 @@ def main():
             _active.append(args.transfer_offset_matcher)
         if "dinov3" in _active and not args.dinov3_weights:
             p.error("--transfer_backend dinov3_feat_match requires --dinov3_weights "
-                    "when --transfer_matcher or --transfer_offset_matcher is dinov3 "
-                    "(--transfer_offset_matcher defaults to dinov3).")
+                    "when --transfer_matcher or --transfer_offset_matcher is dinov3.")
         if args.match_scale is not None and args.match_scale_convention is None:
             p.error("--match_scale requires --match_scale_convention to be set.")
 

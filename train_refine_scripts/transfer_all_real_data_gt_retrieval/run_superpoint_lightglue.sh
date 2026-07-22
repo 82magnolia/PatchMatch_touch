@@ -52,7 +52,6 @@ for session_dir in "$SESSIONS_BASE"/*/; do
         --transfer_backend   dinov3_feat_match \
         --transfer_modality  curvature \
         --transfer_matcher   superpoint_lightglue \
-        --transfer_offset_matcher  disk_lightglue \
         --transfer_offset_method  median \
         --video_type         shadow \
         --skip_refine \
