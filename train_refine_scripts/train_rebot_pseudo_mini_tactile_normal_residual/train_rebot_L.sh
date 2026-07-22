@@ -5,20 +5,36 @@
 # transferred video: the true no-contact tactile_normal reading is a
 # universal constant, unlike the shadow/appearance domain's per-video blank
 # (see rebot_net/dataset.py's _FLAT_NORMAL_RGB).
-# Usage: bash train_refine_scripts/train_rebot_pseudo_mini_tactile_normal_residual/train_rebot_L.sh <gpu_id>
-#   from the PatchMatch_touch project root.
+# Usage: bash train_refine_scripts/train_rebot_pseudo_mini_tactile_normal_residual/train_rebot_L.sh <gpu_id> [matcher]
+#   matcher: disk_lightglue (default), loftr, sift_lightglue, superpoint_lightglue, superpoint_superglue
+#            -- must match a completed transfer_all_multi_pseudo_mini_tactile_normal run.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-GPU=${1:?Usage: bash train_rebot_L.sh <gpu_id>}
+GPU=${1:?Usage: bash train_rebot_L.sh <gpu_id> [matcher]}
+MATCHER="${2:-disk_lightglue}"
 MODEL_SIZE=rebot_L
 
+case "$MATCHER" in
+    loftr|disk_lightglue|sift_lightglue|superpoint_lightglue|superpoint_superglue) ;;
+    *)
+        echo "Unknown matcher '$MATCHER'. Expected one of: loftr, disk_lightglue, sift_lightglue, superpoint_lightglue, superpoint_superglue" >&2
+        exit 1
+        ;;
+esac
+
+if [ "$MATCHER" = "disk_lightglue" ]; then
+    SUFFIX=""
+else
+    SUFFIX="_${MATCHER}"
+fi
+
 CUDA_VISIBLE_DEVICES=$GPU python "$PROJECT_ROOT/rebot_net/train.py" \
-    --transfer_dir  "$PROJECT_ROOT/log/transfer_feat_match_pseudo_mini_tactile_normal" \
-    --save_dir      "$PROJECT_ROOT/log/rebot_checkpoints_L_pseudo_mini_tactile_normal_residual" \
+    --transfer_dir  "$PROJECT_ROOT/log/transfer_feat_match_pseudo_mini_tactile_normal${SUFFIX}" \
+    --save_dir      "$PROJECT_ROOT/log/rebot_checkpoints_L_pseudo_mini_tactile_normal_residual${SUFFIX}" \
     --model_size    $MODEL_SIZE \
     --video_type    tactile_normal \
     --epochs        100 \
@@ -28,4 +44,4 @@ CUDA_VISIBLE_DEVICES=$GPU python "$PROJECT_ROOT/rebot_net/train.py" \
     --residual \
     --normal_blank \
     --wandb_project tactile_enhance \
-    --wandb_run_name "${MODEL_SIZE}_pseudo_mini_tactile_normal_residual_bs8_lr2e-4"
+    --wandb_run_name "${MODEL_SIZE}_pseudo_mini_tactile_normal_residual${SUFFIX}_bs8_lr2e-4"

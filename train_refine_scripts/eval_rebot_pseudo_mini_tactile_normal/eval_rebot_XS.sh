@@ -1,22 +1,36 @@
 #!/usr/bin/env bash
 # Evaluate ReBotNet XS variant trained on gelsight_pseudo_mini
 # tactile_normal-domain transferred data.
-# Usage: bash train_refine_scripts/eval_rebot_pseudo_mini_tactile_normal/eval_rebot_XS.sh <gpu_id>
-#   from the PatchMatch_touch project root.
+# Usage: bash train_refine_scripts/eval_rebot_pseudo_mini_tactile_normal/eval_rebot_XS.sh <gpu_id> [matcher]
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-GPU=${1:?Usage: bash eval_rebot_XS.sh <gpu_id>}
+GPU=${1:?Usage: bash eval_rebot_XS.sh <gpu_id> [matcher]}
+MATCHER="${2:-disk_lightglue}"
 MODEL_SIZE=rebot_XS
 
+case "$MATCHER" in
+    loftr|disk_lightglue|sift_lightglue|superpoint_lightglue|superpoint_superglue) ;;
+    *)
+        echo "Unknown matcher '$MATCHER'. Expected one of: loftr, disk_lightglue, sift_lightglue, superpoint_lightglue, superpoint_superglue" >&2
+        exit 1
+        ;;
+esac
+
+if [ "$MATCHER" = "disk_lightglue" ]; then
+    SUFFIX=""
+else
+    SUFFIX="_${MATCHER}"
+fi
+
 CUDA_VISIBLE_DEVICES=$GPU python "$PROJECT_ROOT/rebot_net/eval.py" \
-    --transfer_dir "$PROJECT_ROOT/log/transfer_feat_match_pseudo_mini_tactile_normal" \
-    --checkpoint   "$PROJECT_ROOT/log/rebot_checkpoints_XS_pseudo_mini_tactile_normal/best.pth" \
+    --transfer_dir "$PROJECT_ROOT/log/transfer_feat_match_pseudo_mini_tactile_normal${SUFFIX}" \
+    --checkpoint   "$PROJECT_ROOT/log/rebot_checkpoints_XS_pseudo_mini_tactile_normal${SUFFIX}/best.pth" \
     --model_size   $MODEL_SIZE \
     --video_type   tactile_normal \
-    --save_dir     "$PROJECT_ROOT/log/rebot_eval_XS_pseudo_mini_tactile_normal" \
+    --save_dir     "$PROJECT_ROOT/log/rebot_eval_XS_pseudo_mini_tactile_normal${SUFFIX}" \
     --video_save \
     --save_gt

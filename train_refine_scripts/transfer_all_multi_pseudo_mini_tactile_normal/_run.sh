@@ -8,20 +8,40 @@
 # rendered from the same picked_points_query.ply/picked_points_fps.ply
 # contact locations, see gen_contact_query_tactile_normal_pseudo_mini/_run.sh
 # and gen_contact_ref_tactile_normal_pseudo_mini/_run.sh).
-# Usage: bash _run.sh <WORKER_ID (0-5)> <GPU_ID>
-#   WORKER_ID fixes which 1/6 of objects this worker handles (0-5, always
-#   matching run_gpu0.sh..run_gpu5.sh); GPU_ID is the physical CUDA device to
-#   run on and can be any value, independent of WORKER_ID.
+# Usage: bash _run.sh <WORKER_ID> <GPU_ID> [MATCHER] [NUM_WORKERS]
+#   WORKER_ID fixes which 1/NUM_WORKERS of objects this worker handles (always
+#   matching run_gpu0.sh..run_gpu5.sh when NUM_WORKERS=6, the default); GPU_ID
+#   is the physical CUDA device to run on and can be any value, independent of
+#   WORKER_ID. MATCHER (default disk_lightglue) selects the feature-matcher
+#   backend for both the linear and offset stages (mirrors
+#   transfer_all_multi_pseudo_mini/run_<matcher>.sh); output goes to
+#   log/transfer_feat_match_pseudo_mini_tactile_normal[_<matcher>] (no suffix
+#   for disk_lightglue, the default/canonical matcher for this pipeline).
 
 set -euo pipefail
 
-WORKER_ID="${1:?Usage: $0 <WORKER_ID (0-5)> <GPU_ID>}"
-GPU_ID="${2:?Usage: $0 <WORKER_ID (0-5)> <GPU_ID>}"
-NUM_WORKERS=6
+WORKER_ID="${1:?Usage: $0 <WORKER_ID> <GPU_ID> [MATCHER] [NUM_WORKERS]}"
+GPU_ID="${2:?Usage: $0 <WORKER_ID> <GPU_ID> [MATCHER] [NUM_WORKERS]}"
+MATCHER="${3:-disk_lightglue}"
+NUM_WORKERS="${4:-6}"
+
+case "$MATCHER" in
+    loftr|disk_lightglue|sift_lightglue|superpoint_lightglue|superpoint_superglue) ;;
+    *)
+        echo "Unknown matcher '$MATCHER'. Expected one of: loftr, disk_lightglue, sift_lightglue, superpoint_lightglue, superpoint_superglue" >&2
+        exit 1
+        ;;
+esac
 
 if [ "$WORKER_ID" -lt 0 ] || [ "$WORKER_ID" -ge "$NUM_WORKERS" ]; then
     echo "Error: WORKER_ID must be in [0, $((NUM_WORKERS - 1))], got $WORKER_ID" >&2
     exit 1
+fi
+
+if [ "$MATCHER" = "disk_lightglue" ]; then
+    OUT_SUFFIX=""
+else
+    OUT_SUFFIX="_${MATCHER}"
 fi
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
@@ -44,7 +64,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REF_BASE="$PROJECT_ROOT/Taxim/results/gen_contact_full_tactile_normal_pseudo_mini"
 QUERY_BASE="$PROJECT_ROOT/Taxim/results/gen_contact_full_query_tactile_normal_pseudo_mini"
 RETRIEVAL_BASE="$PROJECT_ROOT/log/touch_retrieval"
-OUT_BASE="$PROJECT_ROOT/log/transfer_feat_match_pseudo_mini_tactile_normal"
+OUT_BASE="$PROJECT_ROOT/log/transfer_feat_match_pseudo_mini_tactile_normal${OUT_SUFFIX}"
 TRANSFER_SCRIPT="$PROJECT_ROOT/main_retrieval_transfer_feat_match.py"
 # Same decomposed-transfer config as transfer_all_multi_pseudo_mini/run.sh
 # (video_scale/match_scale/matcher/offset_method); only --video_type and the
@@ -101,7 +121,8 @@ for ref_dir in "$REF_BASE"/*/; do
         --video_scale          100. \
         --match_scale          25. \
         --match_scale_convention obj_scale_factor \
-        --matcher        disk_lightglue \
+        --matcher        "$MATCHER" \
+        --offset_matcher "$MATCHER" \
         --offset_method         median \
         --save_dir       "$save_dir" \
         --no_nnf_figures \
