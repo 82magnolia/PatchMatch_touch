@@ -87,6 +87,16 @@ def parse_args():
                    help="Train in residual space: subtract blank (frame 0 of the transferred "
                         "video) from LQ and GT; model predicts refined residuals, added back "
                         "to blank for absolute output")
+    p.add_argument('--video_type', default='shadow',
+                   help="Appearance domain of the videos to load: {pair}_query_{video_type}.mp4 "
+                        "/ {pair}_ref_{video_type}.mp4, matching "
+                        "main_retrieval_transfer_feat_match.py's output naming. Use "
+                        "'tactile_normal' for the surface-normal-encoded domain.")
+    p.add_argument('--normal_blank', action='store_true',
+                   help="With --residual: use the fixed flat-surface-normal (0,0,1) encoding "
+                        "as the blank instead of frame 0 of the transferred video. Physically "
+                        "correct for --video_type tactile_normal, where the no-contact reading "
+                        "is a universal constant rather than something to read per-video.")
     p.add_argument('--real_data', action='store_true',
                    help="Train from scratch on the real-data transfer tree "
                         "(RealTactileTransferDataset: nested {obj}/transfer/ layout, odd query "
@@ -121,9 +131,11 @@ def main():
 
     cond_kw = cond_utils.dataset_cond_kwargs(args)
     train_dataset = Dataset(args.transfer_dir, train_ids, split='train',
-                            residual=args.residual, **cond_kw)
+                            residual=args.residual, video_type=args.video_type,
+                            normal_blank=args.normal_blank, **cond_kw)
     val_dataset   = Dataset(args.transfer_dir, val_ids,   split='val',
-                            residual=args.residual, **cond_kw)
+                            residual=args.residual, video_type=args.video_type,
+                            normal_blank=args.normal_blank, **cond_kw)
     print(f"Train samples: {len(train_dataset)}, Val objects: {len(val_ids)}")
 
     train_loader = data.DataLoader(

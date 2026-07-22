@@ -333,7 +333,7 @@ def main():
                    help="Scale suffix(es) for file matching, e.g. 100 for Taxim or "
                         "0.5 1 2 for GelSight multi-scale. First value is used for "
                         "PatchMatch transfer; all values are used for retrieval features.")
-    p.add_argument("--video_type", default="shadow", choices=["shadow", "sim"],
+    p.add_argument("--video_type", default="shadow", choices=["shadow", "sim", "tactile_normal"],
                    help="Touch video variant to transfer (default: shadow).")
 
     # ── Stage 1: Retrieval ────────────────────────────────────────────────────

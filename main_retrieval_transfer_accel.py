@@ -625,7 +625,7 @@ def main():
                              "Prefix with 'raw_' to load raw .npz values instead "
                              "of color-coded JPGs (e.g. raw_normal, raw_height).")
     parser.add_argument("--video_type", required=True,
-                        choices=["shadow", "sim"],
+                        choices=["shadow", "sim", "tactile_normal"],
                         help="Touch video variant to transfer.")
     parser.add_argument("--scale", default=None, type=float,
                         help="Scale suffix for static images (e.g. 100 for Taxim, 0.5 for GelSight). "

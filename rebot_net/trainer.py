@@ -232,8 +232,9 @@ class Trainer:
                         _write_video(
                             os.path.join(video_save_dir, f"{obj_id}_{pair_idx}_transferred.mp4"),
                             transferred_frames)
+                        video_type = getattr(dataset, 'video_type', 'shadow')
                         ref_path = os.path.join(dataset.transfer_dir, str(obj_id),
-                                                f"{pair_idx}_ref_shadow.mp4")
+                                                f"{pair_idx}_ref_{video_type}.mp4")
                         ref_frames = _read_video_frames(ref_path)
                         _make_grid_video(
                             os.path.join(video_save_dir, f"{obj_id}_{pair_idx}_grid.mp4"),

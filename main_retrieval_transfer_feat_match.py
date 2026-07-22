@@ -573,8 +573,11 @@ def main():
                              "'raw_normal'). Prefix with 'raw_' to load raw .npz values "
                              "instead of color-coded JPGs.")
     parser.add_argument("--video_type", required=True,
-                        choices=["shadow", "sim"],
-                        help="Touch video variant to transfer.")
+                        choices=["shadow", "sim", "tactile_normal"],
+                        help="Touch video variant to transfer. 'tactile_normal' is the "
+                             "surface-normal-encoded domain (see gen_contact_video.py's "
+                             "tactile_normal modality); read/write naming is otherwise "
+                             "identical (just a filename component).")
     parser.add_argument("--video_scale", "--scale", default=None, type=float,
                         dest="video_scale",
                         help="Scale suffix of the static images that share the tactile video's "
