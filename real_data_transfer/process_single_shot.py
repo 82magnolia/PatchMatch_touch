@@ -65,7 +65,8 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
                   seg_cs_abs, seg_ce_abs, seg_peak_abs,
                   num_frames, render_mask_type, mask_temperature,
                   render_mask_thres, output_dir, view_idx, unmasked=False,
-                  normal_net=None, normal_device=None, normal_marker_range=(0, 70)):
+                  normal_net=None, normal_device=None, normal_marker_range=(0, 70),
+                  render_mask_depth_mode="aruco"):
     """Process one detected segment and write all outputs.
 
     gs_frames_seg: frames[seg_cs_abs : seg_ce_abs+1]
@@ -132,6 +133,22 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
         depth_cached, intr, inpaint_method,
         rvec=_rotate_rvec_z(cs_rvec, R_z), tvec=cs_tvec, apply_mask=not unmasked)
 
+    # Trim first: the render mask needs this segment's diff curve and contact
+    # window, so that it can be put on the same time axis as the shadow video
+    # it is written alongside (see render_mask_eval_positions).
+    resampled, peak_rel, cs_rel, ce_rel, diffs_seg, smooth_seg, trim_thres = \
+        trim_and_resample(gs_frames_seg, blank_frame, num_frames)
+    trimmed = resampled is not None
+    if not trimmed:
+        idx = np.linspace(0, len(gs_frames_seg) - 1, num_frames).round().astype(int)
+        resampled = [gs_frames_seg[i] for i in idx]
+
+    # Sample the render mask over the same contact window the shadow video was
+    # trimmed to, so frame t of both videos refers to the same instant. When
+    # trim_and_resample takes its fallback path (no contact found) the shadow
+    # spans the whole segment, so leave the mask spanning it too.
+    contact_window = (cs_rel, ce_rel) if trimmed else None
+
     hmap_0 = sz_0 = vdr_0 = mc_0 = None
     if cs_res is not None:
         hmap_0, sz_0, vdr_0, mc_0 = cs_res[5], cs_res[6], cs_res[7], cs_res[8]
@@ -140,17 +157,14 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
             pose_buffer_seg, num_frames,
             render_mask_thres=render_mask_thres,
             render_mask_type=render_mask_type,
-            mask_temperature=mask_temperature)
+            mask_temperature=mask_temperature,
+            depth_mode=render_mask_depth_mode,
+            diffs=diffs_seg,
+            contact_window=contact_window)
     else:
         rm_vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
         rm_vis[rcm_out] = 255
         rm_frames = [rm_vis] * num_frames
-
-    resampled, peak_rel, cs_rel, ce_rel, diffs_seg, smooth_seg, trim_thres = \
-        trim_and_resample(gs_frames_seg, blank_frame, num_frames)
-    if resampled is None:
-        idx = np.linspace(0, len(gs_frames_seg) - 1, num_frames).round().astype(int)
-        resampled = [gs_frames_seg[i] for i in idx]
 
     os.makedirs(output_dir, exist_ok=True)
     prefix = os.path.join(output_dir, str(touch_idx))
@@ -243,7 +257,8 @@ def reprocess(session_dir, output_dir, seg_threshold, min_gap_frames,
               dry_run, smooth_sigma=2.0, merge_gap=0, boundary_pad=0,
               unmasked=False, tactile_normal_video=True,
               normal_nn_model_path=DEFAULT_NORMAL_NN_MODEL_PATH,
-              normal_marker_range=(0, 70), normal_net_device=None):
+              normal_marker_range=(0, 70), normal_net_device=None,
+              render_mask_depth_mode="aruco"):
     """Load saved session and re-process with the given parameters."""
     from scipy.ndimage import gaussian_filter1d
 
@@ -384,7 +399,8 @@ def reprocess(session_dir, output_dir, seg_threshold, min_gap_frames,
             num_frames, render_mask_type, mask_temperature,
             render_mask_thres, output_dir, view_idx=vid, unmasked=unmasked,
             normal_net=normal_net, normal_device=normal_device,
-            normal_marker_range=normal_marker_range)
+            normal_marker_range=normal_marker_range,
+            render_mask_depth_mode=render_mask_depth_mode)
         if ok:
             saved += 1
             print("saved.")
@@ -446,6 +462,16 @@ def parse_args():
     p.add_argument("--normal_net_device", default=None,
                    help="Device for the normal net, e.g. 'cuda' or 'cpu' "
                         "(default: cuda if available)")
+    p.add_argument("--render_mask_depth_mode", default="aruco",
+                   choices=["aruco", "diff_scaled", "diff_affine"],
+                   help="What drives the per-frame render-mask height threshold. "
+                        "'aruco' (default) is the original RBF fit to the marker "
+                        "pressing depth; 'diff_scaled' takes the temporal shape "
+                        "from the tactile diff-from-blank and the magnitude from "
+                        "the peak marker depth; 'diff_affine' uses the diff alone "
+                        "and ignores --render_mask_thres. The diff modes make the "
+                        "mask depend on the tactile image rather than geometry "
+                        "alone -- see _gelsight_processing.make_render_mask_video.")
     p.add_argument("--dry_run", action="store_true",
                    help="Print detected segments without writing files.")
     return p.parse_args()
@@ -473,7 +499,8 @@ def main():
         tactile_normal_video=args.tactile_normal_video,
         normal_nn_model_path=args.normal_nn_model_path,
         normal_marker_range=(args.normal_marker_mask_min, args.normal_marker_mask_max),
-        normal_net_device=args.normal_net_device)
+        normal_net_device=args.normal_net_device,
+        render_mask_depth_mode=args.render_mask_depth_mode)
 
 
 if __name__ == "__main__":

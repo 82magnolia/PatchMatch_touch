@@ -76,6 +76,34 @@ def inpaint_normals(crop: np.ndarray, method: str = "telea") -> np.ndarray:
     return out
 
 
+# ── Tactile-image contact mask ────────────────────────────────────────────────
+
+def compute_contact_mask(ref_frame, base_frame, threshold=0.05,
+                         blur_sigma=3.0, morph_radius=5):
+    """Binary mask of pixels where contact has occurred, from the tactile image.
+
+    Ported from main_retrieval_transfer_accel.py (also copied in
+    test_scripts/aggregate_midframe_metrics.py) so the capture pipeline can
+    score its geometry-derived render masks against an image-derived reference
+    without importing that module's pycuda/PatchMatchCuda chain.
+
+    Pipeline: L2 diff magnitude -> Gaussian blur -> threshold -> morphological
+    open (denoise) -> close (fill holes).
+
+    ref_frame/base_frame: (H, W, 3) float in [0, 1].
+    Returns float32 (H, W, 1).
+    """
+    diff = np.abs(ref_frame - base_frame)
+    magnitude = np.linalg.norm(diff, axis=-1).astype(np.float32)
+    blurred = cv2.GaussianBlur(magnitude, (0, 0), blur_sigma)
+    binary = (blurred > threshold).astype(np.uint8)
+    k = morph_radius * 2 + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN,  kernel)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    return binary[..., np.newaxis].astype(np.float32)
+
+
 # ── Rotation helpers ──────────────────────────────────────────────────────────
 
 def _make_Rz(degrees):
@@ -343,14 +371,89 @@ def read_video_frames(path):
 
 # ── Contact mask video ────────────────────────────────────────────────────────
 
+# For depth_mode="diff_affine":
+#   threshold = DIFF_AFFINE_INTERCEPT
+#             + DIFF_AFFINE_SLOPE * max(diff - min(diff over segment), 0)
+#
+# WARNING -- this mode scores best on the pseudo-GT benchmark but does so
+# degenerately, and is kept mainly as a documented reference point.
+#
+# Fitted on a train split of log/real_data_real_retrieval, it reaches held-out
+# IoU 0.391 against 0.283 for the ARuCO baseline. But its median mask covers
+# 99% of the valid region during contact: it has learned to switch the whole
+# footprint on and off in time, not to place a mask in space. A trivial
+# reference that marks the *entire* valid region whenever the diff exceeds a
+# fixed threshold scores 0.391 / 0.154 -- indistinguishable from this mode's
+# 0.391 / 0.155 -- so none of the gain comes from the height map.
+# See test_scripts/sweep_render_mask.py and the report in
+# log/render_mask_study.html.
+#
+# The diff is anchored to each segment's own no-contact minimum because
+# absolute diff-from-blank levels shift with the blank frame, gel condition and
+# lighting; a map fitted on raw values does not transfer between sessions.
+# (Anchoring makes the fit session-relative but does not stop the saturation.)
+DIFF_AFFINE_SLOPE     = 5.0
+DIFF_AFFINE_INTERCEPT = -0.035
+
+
+def render_mask_eval_positions(n_raw, num_frames, contact_window=None):
+    """Normalized segment positions at which to sample the pressing-depth curve.
+
+    With contact_window=None the mask spans the whole segment uniformly, which
+    is what the pipeline has always done. But the shadow video it is paired
+    with in `{i}_shadow_render_mask.mp4` is trim_and_resample'd to the contact
+    window [cs_idx, ce_idx], which covers only ~64% of the segment on average
+    (median 51%) -- so frame t of the two videos refers to a different instant
+    for 71% of touches. Passing contact_window=(cs_idx, ce_idx) samples the
+    same window and puts both videos on one clock.
+    """
+    if contact_window is None:
+        return np.linspace(0.0, 1.0, num_frames)
+    cs, ce = contact_window
+    n = max(n_raw - 1, 1)
+    return np.linspace(cs / n, ce / n, num_frames)
+
+
 def make_render_mask_video(height_map_0, valid_depth_remap, mask_crop,
                            sensor_z_0, tvec_0, pose_contact_slice, num_frames,
                            render_mask_thres=RENDER_MASK_THRES_M,
-                           render_mask_type="hard", mask_temperature=0.002):
+                           render_mask_type="hard", mask_temperature=0.002,
+                           depth_mode="aruco", diffs=None,
+                           contact_window=None):
     """Generate per-frame render mask BGR images.
 
     pose_contact_slice: list of (rvec, tvec) tuples with tvec=None for missing poses.
     render_mask_type: "hard" (binary) or "soft" (sigmoid grayscale).
+
+    depth_mode selects what drives the per-frame height threshold:
+      "aruco"       RBF fit to the ARuCO pressing depth (the original, default)
+      "diff_scaled" temporal shape from `diffs`, magnitude from the peak ARuCO
+                    depth -- keeps the geometric scale but stops trusting the
+                    marker frame-to-frame
+      "diff_affine" threshold affine in `diffs` alone; ignores ARuCO and
+                    render_mask_thres entirely. Scores best on the benchmark
+                    but degenerates to a temporal on/off gate over the whole
+                    footprint -- read the DIFF_AFFINE_* comment before using it.
+
+    The diff modes exist because the marker turns out to carry no information
+    about the per-touch threshold *level* (correlation with the oracle
+    threshold across touches r = -0.08) even though that level is ~52% of the
+    variance to explain, while the tactile diff-from-blank predicts both the
+    level (r = +0.47) and the within-touch shape (r = +0.64). See
+    test_scripts/analyze_oracle_thr.py.
+
+    "diff_scaled" is the conservative choice: it keeps the geometric height
+    threshold and only replaces the frame-to-frame marker jitter, improving
+    held-out IoU 0.283 -> 0.336 without saturating.
+
+    Note the diff modes make the mask depend on the tactile image, not on
+    geometry alone -- appropriate if the mask is a contact-region annotation,
+    but not if it is meant as tactile-independent supervision.
+
+    diffs: per-frame diff-from-blank over the same segment as
+    pose_contact_slice. Required for the diff modes.
+    contact_window: optional (cs_idx, ce_idx); see render_mask_eval_positions.
+
     Returns list of num_frames BGR uint8 images.
     """
     from scipy.interpolate import RBFInterpolator
@@ -363,21 +466,43 @@ def make_render_mask_video(height_map_0, valid_depth_remap, mask_crop,
             raw_x.append(i / max(n_contact - 1, 1))
             raw_y.append(d)
 
-    eval_x = np.linspace(0, 1, num_frames)
-    if len(raw_x) >= 2:
-        rbf = RBFInterpolator(
-            np.array(raw_x)[:, None], np.array(raw_y),
-            kernel="thin_plate_spline", smoothing=0.1)
-        depths = rbf(eval_x[:, None])
+    eval_x = render_mask_eval_positions(n_contact, num_frames, contact_window)
+
+    if depth_mode != "aruco" and diffs is None:
+        raise ValueError(f"depth_mode={depth_mode!r} requires `diffs`")
+
+    # `thresholds` is absolute; `depths` (ARuCO modes) still adds render_mask_thres.
+    thresholds = None
+    if depth_mode == "aruco":
+        if len(raw_x) >= 2:
+            rbf = RBFInterpolator(
+                np.array(raw_x)[:, None], np.array(raw_y),
+                kernel="thin_plate_spline", smoothing=0.1)
+            depths = rbf(eval_x[:, None])
+        else:
+            depths = np.zeros(num_frames)
     else:
-        depths = np.zeros(num_frames)
+        s = np.asarray(diffs, dtype=np.float64)
+        s_i = np.interp(eval_x, np.arange(len(s)) / max(len(s) - 1, 1), s)
+        if depth_mode == "diff_scaled":
+            s0, smax = float(s[0]), float(np.max(s))
+            shape = np.clip((s_i - s0) / (smax - s0), 0.0, None) \
+                if smax - s0 > 1e-12 else np.zeros(num_frames)
+            depths = (max(raw_y) if raw_y else 0.0) * shape
+        elif depth_mode == "diff_affine":
+            thresholds = DIFF_AFFINE_INTERCEPT + DIFF_AFFINE_SLOPE * np.clip(
+                s_i - float(np.min(s)), 0.0, None)
+            depths = np.zeros(num_frames)
+        else:
+            raise ValueError(f"unknown depth_mode: {depth_mode!r}")
 
     invalid = ~valid_depth_remap | (mask_crop == 0)
     morph_kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, (2 * MASK_OPEN_PX + 1, 2 * MASK_OPEN_PX + 1))
     frames_out = []
-    for d in depths:
-        threshold = float(d) + render_mask_thres
+    for k, d in enumerate(depths):
+        threshold = (float(thresholds[k]) if thresholds is not None
+                     else float(d) + render_mask_thres)
         if render_mask_type == "soft":
             penetration = (threshold - height_map_0) / max(mask_temperature, 1e-9)
             soft = 1.0 / (1.0 + np.exp(-penetration))

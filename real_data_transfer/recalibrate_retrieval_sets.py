@@ -39,8 +39,11 @@ from process_single_shot import reprocess
 
 DEFAULT_SRCS = ["log/real_data_gt_retrieval", "log/real_data_real_retrieval"]
 
-# Parameters verified to reproduce the existing outputs bit-exactly under the
-# old constants; do not change these without re-running that check.
+# Parameters verified to reproduce the existing .npz outputs bit-exactly under
+# the old constants; do not change these without re-running that check. The
+# {i}_render_mask.mp4 frames now differ from the committed ones: reprocess
+# aligns the mask to the shadow contact window by default (see
+# render_mask_eval_positions), which the old outputs predate.
 REPROCESS_KWARGS = dict(
     seg_threshold=None,          # from each session_meta.json
     min_gap_frames=10,
@@ -57,7 +60,6 @@ REPROCESS_KWARGS = dict(
     unmasked=False,
     tactile_normal_video=True,
     render_mask_depth_mode="aruco",
-    align_render_mask=False,
 )
 
 # Per-touch artifacts are regenerated; everything else is a session input.

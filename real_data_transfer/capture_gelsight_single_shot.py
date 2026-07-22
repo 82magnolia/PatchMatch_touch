@@ -189,6 +189,23 @@ def _save_segment(touch_idx, gs_buffer, pose_buffer, blank_frame,
         rvec=_rotate_rvec_z(cs_rvec, R_z), tvec=cs_tvec, apply_mask=not unmasked)
 
     pose_contact = pose_buffer[seg_cs: seg_ce + 1]
+
+    # Trim first: the render mask samples over the same contact window the
+    # shadow video is trimmed to, so frame t of both videos refers to the same
+    # instant (see render_mask_eval_positions).
+    seg_frames = gs_buffer[seg_cs: seg_ce + 1]
+    resampled, peak_rel, cs_rel, ce_rel, diffs_seg, smooth_seg, trim_thres = \
+        trim_and_resample(seg_frames, blank_frame, num_frames)
+    trimmed = resampled is not None
+    if not trimmed:
+        # fall back: uniform subsample
+        idx = np.linspace(0, len(seg_frames) - 1, num_frames).round().astype(int)
+        resampled = [seg_frames[i] for i in idx]
+
+    # Only align when trim_and_resample found a window; on its fallback path
+    # the shadow spans the whole segment, so leave the mask spanning it too.
+    contact_window = (cs_rel, ce_rel) if trimmed else None
+
     hmap_0 = sz_0 = vdr_0 = mc_0 = None
     if cs_res is not None:
         hmap_0, sz_0, vdr_0, mc_0 = cs_res[5], cs_res[6], cs_res[7], cs_res[8]
@@ -197,20 +214,12 @@ def _save_segment(touch_idx, gs_buffer, pose_buffer, blank_frame,
             pose_contact, num_frames,
             render_mask_thres=render_mask_thres,
             render_mask_type=render_mask_type,
-            mask_temperature=mask_temperature)
+            mask_temperature=mask_temperature,
+            contact_window=contact_window)
     else:
         rm_vis = np.zeros((GELSIGHT_H, GELSIGHT_W, 3), dtype=np.uint8)
         rm_vis[rcm_out] = 255
         rm_frames = [rm_vis] * num_frames
-
-    # Resample GelSight frames within the segment window
-    seg_frames = gs_buffer[seg_cs: seg_ce + 1]
-    resampled, peak_rel, cs_rel, ce_rel, diffs_seg, smooth_seg, trim_thres = \
-        trim_and_resample(seg_frames, blank_frame, num_frames)
-    if resampled is None:
-        # fall back: uniform subsample
-        idx = np.linspace(0, len(seg_frames) - 1, num_frames).round().astype(int)
-        resampled = [seg_frames[i] for i in idx]
 
     prefix = os.path.join(save_dir, str(touch_idx))
     cv2.imwrite(f"{prefix}_normal.jpg", normal_bgr_out)
