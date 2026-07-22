@@ -12,11 +12,11 @@
 # Decomposed transfer (offset o linear); see main_retrieval_transfer_feat_match.py
 # and decomposed_match.py. GelSight videos live at the raw sensor FOV, so
 # --scale 1 (the pipeline forwards this as --video_scale); the linear stage is
-# fit at the wider --dinov3_match_scale 8 footprint (convention render_scale ->
+# fit at the wider --match_scale 8 footprint (convention render_scale ->
 # ratio 8). The offset stage runs at video scale with disk_lightglue + median.
 #   linear matcher = disk_lightglue (the per-matcher run_*.sh scripts sweep this).
 # Historical note: an earlier single-stage sweep picked matcher=loftr + scale=8,
-# but that "scale" was the matching scale, now expressed as --dinov3_match_scale
+# but that "scale" was the matching scale, now expressed as --match_scale
 # (with --scale=1 the true video scale).
 #
 # Usage: bash run.sh
@@ -60,8 +60,8 @@ for session_dir in "$SESSIONS_BASE"/*/; do
         --ref_dir            "$session_dir" \
         --query_dir          "$session_dir" \
         --scale              1 \
-        --dinov3_match_scale              8 \
-        --dinov3_match_scale_convention render_scale \
+        --match_scale              8 \
+        --match_scale_convention render_scale \
         --retrieval_mode     real_gt_retrieval \
         --transfer_backend   dinov3_feat_match \
         --transfer_modality  curvature \

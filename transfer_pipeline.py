@@ -433,7 +433,7 @@ def main():
                       choices=["dinov3", "disk_lightglue", "superpoint_superglue", "loftr",
                                "superpoint_lightglue", "sift_lightglue"],
                       help="dinov3_feat_match backend only: matcher for the LINEAR stage, run at "
-                           "--dinov3_match_scale (default: disk_lightglue). --transfer_offset_matcher "
+                           "--match_scale (default: disk_lightglue). --transfer_offset_matcher "
                            "selects the OFFSET stage's matcher separately. Only 'dinov3' requires "
                            "--dinov3_weights. See main_retrieval_transfer_feat_match.py and README.md.")
     g_tr.add_argument("--transfer_offset_matcher", default="dinov3",
@@ -449,36 +449,38 @@ def main():
                            "displacements to a translation (default: median). 'ransac' is a "
                            "translation-only RANSAC; 'none' disables the offset stage, leaving "
                            "the centred zero-offset linear warp.")
-    g_tr.add_argument("--dinov3_match_scale", type=float, default=None,
+    g_tr.add_argument("--match_scale", "--dinov3_match_scale", type=float, default=None,
                       help="dinov3_feat_match backend only: scale at which the LINEAR stage is "
                            "fit -- a wider physical footprint than --scale (the video scale), "
                            "giving the matcher more object structure. The fitted transform is "
                            "conjugated back into --scale's coordinate space (no image cropping); "
                            "the offset is then re-estimated at --scale. Forwarded to "
                            "main_retrieval_transfer_feat_match.py as --match_scale. Requires "
-                           "--dinov3_match_scale_convention. (Applies to whichever "
-                           "--transfer_matcher is selected, despite the historical name.)")
-    g_tr.add_argument("--dinov3_match_scale_convention", default=None,
+                           "--match_scale_convention. Applies to whichever --transfer_matcher "
+                           "is selected. (--dinov3_match_scale is a deprecated alias.)")
+    g_tr.add_argument("--match_scale_convention", "--dinov3_match_scale_convention", default=None,
                       choices=["render_scale", "obj_scale_factor"],
-                      help="How to read --scale/--dinov3_match_scale as a physical footprint "
+                      help="How to read --scale/--match_scale as a physical footprint "
                            "ratio. 'render_scale' (GelSight): FOV proportional to scale. "
                            "'obj_scale_factor' (Taxim): FOV fixed, larger scale = finer detail. "
-                           "Required when --dinov3_match_scale is set.")
+                           "Required when --match_scale is set. "
+                           "(--dinov3_match_scale_convention is a deprecated alias.)")
     g_tr.add_argument("--dinov3_num_points", type=int, default=100,
                       help="dinov3_feat_match backend only: max sparse DINOv3 keypoints (default: 100).")
     g_tr.add_argument("--dinov3_stratify_threshold", type=float, default=20.0,
                       help="dinov3_feat_match backend only: spatial stratification threshold in px "
                            "(default: 20.0).")
-    g_tr.add_argument("--dinov3_reproj_threshold", type=float, default=8.0,
+    g_tr.add_argument("--reproj_threshold", "--dinov3_reproj_threshold", type=float, default=8.0,
                       help="dinov3_feat_match backend only: RANSAC reprojection threshold in px, "
-                           "used to fit/select inliers for --dinov3_transform_type (default: 8.0, "
+                           "used to fit/select inliers for --transform_type (default: 8.0, "
                            "found to beat the previous 3.0 default on both synthetic and real "
-                           "data when warp quality is measured directly on the static image).")
-    g_tr.add_argument("--dinov3_transform_type", default="homography",
+                           "data when warp quality is measured directly on the static image). "
+                           "(--dinov3_reproj_threshold is a deprecated alias.)")
+    g_tr.add_argument("--transform_type", "--dinov3_transform_type", default="homography",
                       choices=["affine", "homography"],
                       help="dinov3_feat_match backend only: the LINEAR component of the "
-                           "decomposed (offset + linear) warp, RANSAC-fit at --dinov3_match_scale "
-                           "(default: homography).")
+                           "decomposed (offset + linear) warp, RANSAC-fit at --match_scale "
+                           "(default: homography). (--dinov3_transform_type is a deprecated alias.)")
     # (photometric refinement was removed along with the RBF transform types
     # when the dinov3_feat_match backend moved to the decomposed offset+linear
     # approach; main_retrieval_transfer_feat_match.py no longer accepts those
@@ -540,8 +542,8 @@ def main():
             p.error("--transfer_backend dinov3_feat_match requires --dinov3_weights "
                     "when --transfer_matcher or --transfer_offset_matcher is dinov3 "
                     "(--transfer_offset_matcher defaults to dinov3).")
-        if args.dinov3_match_scale is not None and args.dinov3_match_scale_convention is None:
-            p.error("--dinov3_match_scale requires --dinov3_match_scale_convention to be set.")
+        if args.match_scale is not None and args.match_scale_convention is None:
+            p.error("--match_scale requires --match_scale_convention to be set.")
 
     if args.retrieval_mode == "dinov3" and not args.dino_weights:
         p.error("--retrieval_mode dinov3 requires --dino_weights to be set.")
@@ -664,8 +666,8 @@ def main():
                 "--matcher", args.transfer_matcher,
                 "--dinov3_num_points", str(args.dinov3_num_points),
                 "--dinov3_stratify_threshold", str(args.dinov3_stratify_threshold),
-                "--reproj_threshold", str(args.dinov3_reproj_threshold),
-                "--transform_type", args.dinov3_transform_type,
+                "--reproj_threshold", str(args.reproj_threshold),
+                "--transform_type", args.transform_type,
                 "--offset_matcher", args.transfer_offset_matcher,
                 "--offset_method", args.transfer_offset_method,
             ]
@@ -678,9 +680,9 @@ def main():
                 cmd.append("--save_match_figures")
             if transfer_scale is not None:
                 cmd += ["--video_scale", f"{transfer_scale:g}"]
-            if args.dinov3_match_scale is not None:
-                cmd += ["--match_scale", f"{args.dinov3_match_scale:g}",
-                        "--match_scale_convention", args.dinov3_match_scale_convention]
+            if args.match_scale is not None:
+                cmd += ["--match_scale", f"{args.match_scale:g}",
+                        "--match_scale_convention", args.match_scale_convention]
             if args.use_mask:
                 cmd.append("--use_mask")
             if not args.skip_eval:
