@@ -3,12 +3,40 @@ Retrieval-based touch video transfer using local feature matching.
 
 For each query contact point, loads the top-1 retrieved reference from a
 results.pkl (produced by retrieve_touch.py), computes a Nearest-Neighbor
-Field (NNF) between their static modality images via one of several
-correspondence backends (sparse matches -> RANSAC homography inliers ->
-thin-plate-spline RBF dense warp), and uses that single NNF to warp every
-frame of the query's touch video into the reference's coordinate layout.
+Field (NNF) between their static modality images, and uses that single NNF to
+warp every frame of the reference's touch video into the query's layout.
 
---matcher selects the backend (default "dinov3"):
+The correspondence is estimated as a DECOMPOSITION -- offset ∘ linear -- with
+each component estimated at the scale where it is best conditioned
+(decomposed_match.py):
+
+  linear part  affine or homography, RANSAC-fit at --match_scale, whose wider
+               physical footprint gives the matcher much more object structure
+               to work with. Matcher selected by --matcher.
+  offset part  estimated at --video_scale (the tactile video's own scale) as the
+               median displacement between the zero-offset-warped reference
+               and the query. Matcher selected by --offset_matcher.
+
+Why split them: a translation fitted at the match scale is measured in pixels
+that are `ratio` times coarser than the video's, so converting it into video
+coordinates multiplies it -- and its error -- by that ratio, while leaving the
+linear part exactly unchanged. Estimating the offset natively at the video
+scale avoids the amplification entirely. When the offset would place the
+reference's centre outside the query region (the two touch patches simply do
+not overlap), it is zeroed, keeping the linear part and handing a centred warp
+to the downstream refinement network.
+
+--video_scale must name the scale the VIDEO was rendered at, since that is the space
+the NNF is produced in. For GelSight that is 1 (the raw sensor FOV); for Taxim
+it is the FIRST --obj_scale_factor given to gen_contact_video.py, because
+videos there are always rendered from sims[0] while statics are written for
+every requested scale.
+
+The thin-plate-spline variants (rbf_affine / rbf_homography) and photometric
+refinement have been removed from this script. dinov3/dense_match.py still
+provides both for main_retrieval_transfer_accel.py.
+
+Matchers available for either stage:
   dinov3                DINOv3 patch-feature matching (dinov3/dense_match.py,
                         requires --dinov3_weights, a gated checkpoint).
   disk_lightglue        DISK keypoints + LightGlue         (image-matching-webui)
@@ -21,32 +49,32 @@ backends (extra pip installs + a third-party clone), and imcui_match.py for
 the implementation.
 
 Unlike main_retrieval_transfer_accel.py, this script has no PatchMatch/CUDA
-dependency at all -- the selected matcher is the entire correspondence
-mechanism, computed once per query/ref pair and applied directly to every
-touch frame (no iterative EM refinement, keyframe propagation, acceleration,
-or downsampling).
+dependency at all -- the matchers are the entire correspondence mechanism,
+computed once per query/ref pair and applied directly to every touch frame (no
+iterative EM refinement, keyframe propagation, acceleration, or downsampling).
 
-Example usage (DINOv3, the default backend):
+Example usage (real GelSight: video at scale 1, linear part fitted at scale 8):
     python main_retrieval_transfer_feat_match.py \
-        --query_dir log/gelsight_captures/session_01 \
-        --ref_dir   log/gelsight_captures/session_01 \
-        --retrieval_pkl log/touch_retrieval/results.pkl \
-        --modality normal \
-        --scale 1 \
+        --query_dir log/real_data_gt_retrieval/10 \
+        --ref_dir   log/real_data_gt_retrieval/10 \
+        --retrieval_pkl log/touch_retrieval/10/results.pkl \
+        --modality curvature \
+        --video_scale 1 --match_scale 8 --match_scale_convention render_scale \
         --video_type shadow \
+        --matcher disk_lightglue --offset_matcher dinov3 \
         --dinov3_weights dinov3/pretrained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth \
         --save_dir log/transfer_feat_match
 
-Example usage (an image-matching-webui backend instead):
+Example usage (Taxim: video at obj_scale_factor[0]=100, linear part at 25):
     python main_retrieval_transfer_feat_match.py \
-        --query_dir log/gelsight_captures/session_01 \
-        --ref_dir   log/gelsight_captures/session_01 \
-        --retrieval_pkl log/touch_retrieval/results.pkl \
-        --modality normal \
-        --scale 1 \
+        --query_dir Taxim/results/gen_contact_full_query_pseudo_mini/0 \
+        --ref_dir   Taxim/results/gen_contact_full_pseudo_mini/0 \
+        --retrieval_pkl log/touch_retrieval/0/results.pkl \
+        --modality curvature \
+        --video_scale 100 --match_scale 25 --match_scale_convention obj_scale_factor \
         --video_type shadow \
-        --matcher superpoint_lightglue \
-        --save_dir log/transfer_feat_match_spg_lg
+        --dinov3_weights dinov3/pretrained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth \
+        --save_dir log/transfer_feat_match_pseudo_mini
 """
 
 import argparse
@@ -65,6 +93,8 @@ import lpips
 from skimage.metrics import mean_squared_error as compute_mse
 from skimage.metrics import peak_signal_noise_ratio as compute_psnr
 from skimage.metrics import structural_similarity as compute_ssim
+
+from decomposed_match import SPARSE_MATCHERS, LINEAR_TRANSFORM_TYPES, OFFSET_METHODS
 
 # cv2's own thread pool doesn't respect OMP_NUM_THREADS/MKL_NUM_THREADS, so it needs
 # to be capped separately when several instances of this script run side by side
@@ -177,137 +207,96 @@ def compute_scale_ratio(base_scale, match_scale, convention):
     return base_scale / match_scale  # "obj_scale_factor"
 
 
-def _prepare_init_scale_static(query_dir, ref_dir, query_idx, ref_idx, modalities,
-                                base_scale, match_scale, convention):
-    """Load a higher-res static pair and align it to the base canvas's FOV.
-
-    Loads the match-scale static variant of the query/ref images, relates it
-    back to the base (--scale) resolution's field of view via the physical
-    ratio implied by `convention`, and returns (q_rs, r_rs, H, W): both
-    arrays resized/cropped to the base resolution (H, W), ready for DINOv3
-    matching.
-    """
-    q_hi = build_combined_static(query_dir, query_idx, modalities, match_scale)
-    r_hi = build_combined_static(ref_dir, ref_idx, modalities, match_scale)
-    if q_hi.shape != r_hi.shape:
-        raise ValueError("match-scale query/ref static shape mismatch: "
-                          f"{q_hi.shape} vs {r_hi.shape}")
-    H, W = q_hi.shape[:2]
-    r = compute_scale_ratio(base_scale, match_scale, convention)
-    if r < 1.0:
+def _check_rgb(img, label):
+    if img.shape[-1] != 3:
         raise ValueError(
-            f"match scale must cover at least as much physical area as --scale "
-            f"(got ratio {r:.4f} < 1.0 for convention={convention!r}); a smaller "
-            f"physical footprint can't seed the full base field of view.")
-
-    if abs(r - 1.0) < 1e-6:
-        return q_hi, r_hi, H, W
-
-    # match canvas covers MORE physical area than base -> base FOV is a
-    # center crop of the match canvas; crop then upsample to full res so
-    # the resulting NNF is directly usable with no coordinate offset.
-    ch, cw = max(1, round(H / r)), max(1, round(W / r))
-    y0, x0 = (H - ch) // 2, (W - cw) // 2
-    q_rs = cv2.resize(q_hi[y0:y0 + ch, x0:x0 + cw], (W, H), interpolation=cv2.INTER_LINEAR)
-    r_rs = cv2.resize(r_hi[y0:y0 + ch, x0:x0 + cw], (W, H), interpolation=cv2.INTER_LINEAR)
-    return q_rs, r_rs, H, W
-
-
-def _load_query_ref_static_for_matching(query_dir, ref_dir, query_idx, ref_idx, modalities,
-                                        base_scale, match_scale, convention, matcher_label):
-    """Shared static-image loading/validation for every correspondence backend.
-
-    If match_scale is None, loads directly at the base --scale. Otherwise
-    reuses _prepare_init_scale_static to align a higher-res variant to the
-    base canvas's field of view first. All of the matchers in this script
-    (DINOv3 and the image-matching-webui backends) require RGB-like input,
-    so the combined modalities must total exactly 3 channels.
-    """
-    if match_scale is None:
-        q = build_combined_static(query_dir, query_idx, modalities, base_scale)
-        r = build_combined_static(ref_dir, ref_idx, modalities, base_scale)
-        if q.shape != r.shape:
-            raise ValueError(f"query/ref static shape mismatch: {q.shape} vs {r.shape}")
-    else:
-        q, r, _, _ = _prepare_init_scale_static(
-            query_dir, ref_dir, query_idx, ref_idx, modalities,
-            base_scale, match_scale, convention)
-
-    if q.shape[-1] != 3:
-        raise ValueError(
-            f"{matcher_label} matching requires modalities that combine to exactly "
-            f"3 channels (got {q.shape[-1]}); pick a single RGB-like modality "
+            f"{label} matching requires modalities that combine to exactly "
+            f"3 channels (got {img.shape[-1]}); pick a single RGB-like modality "
             f"(e.g. normal, raw_normal).")
-    return q, r
+    return img
 
 
-def compute_dinov3_transfer_nnf(query_dir, ref_dir, query_idx, ref_idx, modalities,
-                                base_scale, match_scale, convention,
-                                dinov3_model, dinov3_weights,
-                                num_points, stratify_threshold, reproj_threshold,
-                                transform_type,
-                                photometric_refine=False, photometric_refine_loss="l1",
-                                photometric_refine_iters=100, photometric_refine_lr=1e-2,
-                                photometric_refine_huber_delta=1.0):
-    """Compute the DINOv3 correspondence NNF used for the entire transfer.
+def load_static_pairs(query_dir, ref_dir, query_idx, ref_idx, modalities,
+                      video_scale, match_scale, convention):
+    """Load both static pairs the decomposed pipeline needs, plus their ratio.
 
-    transform_type: one of "affine", "homography", "rbf_affine",
-    "rbf_homography" (see dinov3/dense_match.py:TRANSFORM_TYPES).
+    Returns (q_video, r_video, q_match, r_match, ratio):
+      *_video : statics at --video_scale, the scale the tactile video lives at. The
+                offset stage runs here, and the NNF is produced in this space.
+      *_match : statics at --match_scale, full resolution and *uncropped* --
+                the linear stage runs here precisely to get the wider
+                footprint's extra structure. When --match_scale is omitted
+                these are the same arrays as *_video and ratio is 1.0.
+      ratio   : match footprint / video footprint (>= 1).
 
-    photometric_refine: if set, refines the RANSAC-fit affine/homography
-    matrix via dense photometric gradient descent (Adam) before it's used —
-    see dinov3/dense_match.py's _refine_transform_photometric.
-
-    Returns a full (H, W, 2) int32 NNF in the base resolution's coordinate
-    space.
+    Unlike the previous implementation, the match-scale pair is never cropped
+    down to the video's field of view. Cropping discarded exactly the extra
+    context the higher scale was loaded for (and, since every scale variant is
+    rendered at the same pixel resolution, cost detail on top). The
+    match->video reconciliation now happens on the fitted transform instead
+    (decomposed_match._rescale_transform).
     """
-    q, r = _load_query_ref_static_for_matching(
-        query_dir, ref_dir, query_idx, ref_idx, modalities,
-        base_scale, match_scale, convention, "DINOv3")
+    q_video = _check_rgb(build_combined_static(query_dir, query_idx, modalities, video_scale),
+                         "static")
+    r_video = _check_rgb(build_combined_static(ref_dir, ref_idx, modalities, video_scale),
+                         "static")
+    if q_video.shape != r_video.shape:
+        raise ValueError(f"query/ref static shape mismatch: "
+                         f"{q_video.shape} vs {r_video.shape}")
 
-    from dinov3.dense_match import compute_dinov3_nnf
-    return compute_dinov3_nnf(
-        image_left=r, image_right=q,  # left=REF (sampled), right=QUERY (output grid)
-        model_name=dinov3_model, weights_path=dinov3_weights,
-        num_points=num_points, stratify_threshold=stratify_threshold,
-        reproj_threshold=reproj_threshold, transform_type=transform_type,
-        photometric_refine=photometric_refine, photometric_refine_loss=photometric_refine_loss,
-        photometric_refine_iters=photometric_refine_iters, photometric_refine_lr=photometric_refine_lr,
-        photometric_refine_huber_delta=photometric_refine_huber_delta)
+    if match_scale is None:
+        return q_video, r_video, q_video, r_video, 1.0
+
+    q_match = _check_rgb(build_combined_static(query_dir, query_idx, modalities, match_scale),
+                         "static")
+    r_match = _check_rgb(build_combined_static(ref_dir, ref_idx, modalities, match_scale),
+                         "static")
+    if q_match.shape != r_match.shape:
+        raise ValueError("match-scale query/ref static shape mismatch: "
+                         f"{q_match.shape} vs {r_match.shape}")
+    if q_match.shape != q_video.shape:
+        raise ValueError("match-scale and video-scale statics must share pixel "
+                         f"dimensions (got {q_match.shape} vs {q_video.shape})")
+
+    ratio = compute_scale_ratio(video_scale, match_scale, convention)
+    if ratio < 1.0:
+        raise ValueError(
+            f"--match_scale must cover at least as much physical area as --video_scale "
+            f"(got ratio {ratio:.4f} for convention={convention!r}); a smaller "
+            f"physical footprint gives the linear stage less context, not more.")
+    return q_video, r_video, q_match, r_match, ratio
 
 
-def compute_imcui_transfer_nnf(query_dir, ref_dir, query_idx, ref_idx, modalities,
-                               base_scale, match_scale, convention,
-                               matcher, reproj_threshold, transform_type,
-                               photometric_refine=False, photometric_refine_loss="l1",
-                               photometric_refine_iters=100, photometric_refine_lr=1e-2,
-                               photometric_refine_huber_delta=1.0):
-    """Compute a correspondence NNF via one of image-matching-webui's local
-    feature matchers (see imcui_match.py), as an alternative to DINOv3.
+def compute_transfer_nnf(query_dir, ref_dir, query_idx, ref_idx, modalities,
+                         video_scale, match_scale, convention,
+                         transform_type, reproj_threshold,
+                         linear_matcher, offset_matcher, offset_method="median",
+                         dinov3_model=None, dinov3_weights=None,
+                         num_points=100, stratify_threshold=20.0):
+    """Compute the correspondence NNF used for the entire transfer.
 
-    matcher: one of imcui_match.METHOD_TO_ZOO_KEY's keys (e.g.
-    "disk_lightglue", "superpoint_superglue", "loftr", "superpoint_lightglue",
-    "sift_lightglue"). reproj_threshold/transform_type feed the same
-    RANSAC-inlier-selection + geometric-fit stage the DINOv3 backend uses
-    (dinov3/dense_match.py's _fit_dense_field), so the two backends' warps
-    are directly comparable. photometric_refine likewise mirrors the DINOv3
-    backend's refinement stage exactly (dinov3/dense_match.py's
-    _refine_transform_photometric).
+    Decomposes the warp into a linear part (affine or homography, RANSAC-fit
+    at --match_scale, where the wider footprint gives the matcher more object
+    structure) and an offset (estimated separately at --video_scale, the video's own
+    scale, from matches between the zero-offset-warped reference and the
+    query). See decomposed_match.py for the rationale and the algebra.
 
-    Returns a full (H, W, 2) int32 NNF in the base resolution's coordinate
-    space.
+    Returns (nnf, info): an (H, W, 2) int32 NNF in the *video's* coordinate
+    space, plus a diagnostics dict.
     """
-    q, r = _load_query_ref_static_for_matching(
+    q_video, r_video, q_match, r_match, ratio = load_static_pairs(
         query_dir, ref_dir, query_idx, ref_idx, modalities,
-        base_scale, match_scale, convention, "IMCUI")
+        video_scale, match_scale, convention)
 
-    from imcui_match import compute_imcui_nnf
-    return compute_imcui_nnf(
-        image_left=r, image_right=q,  # left=REF (sampled), right=QUERY (output grid)
-        method=matcher, reproj_threshold=reproj_threshold, transform_type=transform_type,
-        photometric_refine=photometric_refine, photometric_refine_loss=photometric_refine_loss,
-        photometric_refine_iters=photometric_refine_iters, photometric_refine_lr=photometric_refine_lr,
-        photometric_refine_huber_delta=photometric_refine_huber_delta)
+    from decomposed_match import compute_decomposed_nnf
+    return compute_decomposed_nnf(
+        ref_match=r_match, query_match=q_match,      # left=REF (sampled), right=QUERY (grid)
+        ref_video=r_video, query_video=q_video, ratio=ratio,
+        transform_type=transform_type, reproj_threshold=reproj_threshold,
+        linear_matcher=linear_matcher, offset_matcher=offset_matcher,
+        offset_method=offset_method,
+        dinov3_model=dinov3_model, dinov3_weights=dinov3_weights,
+        num_points=num_points, stratify_threshold=stratify_threshold)
 
 
 # ---------------------------------------------------------------------------
@@ -429,29 +418,20 @@ def _compute_sparse_matches_and_inliers(q, r, matcher, dinov3_model, dinov3_weig
       status: "ok" | "fit_fail" | "sparse_fail".
       reason: human-readable failure explanation, "" if status == "ok".
     """
+    from decomposed_match import sparse_match
     try:
-        if matcher == "dinov3":
-            from dinov3.dense_match import _find_sparse_matches, _load_model, MODEL_N_LAYERS
-            from PIL import Image
-            model, device = _load_model(dinov3_model, dinov3_weights)
-            n_layers = MODEL_N_LAYERS[dinov3_model]
-            pil_left = Image.fromarray((np.clip(r, 0, 1) * 255).astype(np.uint8))
-            pil_right = Image.fromarray((np.clip(q, 0, 1) * 255).astype(np.uint8))
-            pts_l, pts_r = _find_sparse_matches(
-                pil_left, pil_right, model, n_layers, device, num_points, stratify_threshold)
-        else:
-            from imcui_match import compute_imcui_sparse_matches
-            pts_l, pts_r = compute_imcui_sparse_matches(r, q, matcher)
+        pts_l, pts_r = sparse_match(
+            r, q, matcher, dinov3_model=dinov3_model, dinov3_weights=dinov3_weights,
+            num_points=num_points, stratify_threshold=stratify_threshold)
     except Exception as e:
         return None, None, None, "sparse_fail", f"{type(e).__name__}: {e}"
 
-    # Same RANSAC call dense_match.py's _dense_field_from_affine/_homography (and
-    # _dense_field_from_rbf's inlier-selection step) use -- just also keeping the mask.
+    # Same RANSAC call decomposed_match.fit_linear makes -- just also keeping the mask.
     pts_l_xy = pts_l[:, ::-1].astype(np.float32)
     pts_r_xy = pts_r[:, ::-1].astype(np.float32)
-    min_needed = 3 if transform_type in ("affine", "rbf_affine") else 4
+    min_needed = 3 if transform_type == "affine" else 4
     try:
-        if transform_type in ("affine", "rbf_affine"):
+        if transform_type == "affine":
             M_init, mask = cv2.estimateAffine2D(
                 pts_l_xy, pts_r_xy, method=cv2.RANSAC, ransacReprojThreshold=reproj_threshold)
         else:
@@ -576,7 +556,8 @@ def evaluate_video_metrics(frames_gt, frames_pred, lpips_model, device):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Transfer query touch videos to reference layout via a DINOv3 feature-match NNF."
+        description="Transfer reference touch videos into the query layout via a "
+                    "decomposed (offset ∘ linear) feature-match NNF."
     )
     parser.add_argument("--query_dir", required=True, type=str,
                         help="Folder with query touch data.")
@@ -594,35 +575,57 @@ def main():
     parser.add_argument("--video_type", required=True,
                         choices=["shadow", "sim"],
                         help="Touch video variant to transfer.")
-    parser.add_argument("--scale", default=None, type=float,
-                        help="Scale suffix for static images (e.g. 100 for Taxim, 0.5 for GelSight). "
-                             "Omit to use base-resolution files. Tag formatted with :g (100.0→'100', 0.5→'0.5').")
-    parser.add_argument("--matcher", default="dinov3",
-                        choices=["dinov3", "disk_lightglue", "superpoint_superglue", "loftr",
-                                 "superpoint_lightglue", "sift_lightglue"],
-                        help="Correspondence backend used to compute the NNF (default: dinov3). "
-                             "'dinov3' uses DINOv3 patch-feature matching (dinov3/dense_match.py, "
-                             "requires --dinov3_weights). The other five run a local feature "
-                             "matcher from image-matching-webui (imcui_match.py) instead -- see "
-                             "README.md for setup. All backends share the same RANSAC-inlier-"
-                             "selection + geometric-fit stage (dinov3/dense_match.py's "
-                             "_fit_dense_field), configured uniformly via --reproj_threshold/"
-                             "--transform_type regardless of --matcher.")
-    parser.add_argument("--dinov3_match_scale", default=None, type=float,
-                        help="Optional additional scale suffix used to compute the correspondence "
-                             "(with --matcher dinov3 or any of the image-matching-webui backends) "
-                             "from a higher-resolution static variant, aligned back to --scale's "
-                             "field of view. Omit to match directly on the --scale images. Requires "
-                             "--dinov3_match_scale_convention. (Named --dinov3_match_scale for "
-                             "historical reasons; applies regardless of --matcher.)")
-    parser.add_argument("--dinov3_match_scale_convention", default=None,
+    parser.add_argument("--video_scale", "--scale", default=None, type=float,
+                        dest="video_scale",
+                        help="Scale suffix of the static images that share the tactile video's "
+                             "coordinate space -- i.e. the scale the VIDEO was rendered at "
+                             "(GelSight: 1, the raw sensor FOV; Taxim: the first "
+                             "--obj_scale_factor passed to gen_contact_video.py, since videos "
+                             "are always rendered from sims[0]). The offset stage runs here and "
+                             "the output NNF lives in this space, so getting it wrong silently "
+                             "misaligns every transfer. Omit to use base-resolution files. Tag "
+                             "formatted with :g (100.0→'100', 0.5→'0.5'). (--scale is accepted "
+                             "as a deprecated alias.)")
+    parser.add_argument("--matcher", default="disk_lightglue",
+                        choices=list(SPARSE_MATCHERS),
+                        help="Matcher for the LINEAR stage, run at --match_scale (default: "
+                             "disk_lightglue). 'dinov3' uses DINOv3 patch-feature matching "
+                             "(requires --dinov3_weights); the rest are image-matching-webui "
+                             "backends (imcui_match.py) -- see README.md for setup.")
+    parser.add_argument("--offset_matcher", default="dinov3",
+                        choices=list(SPARSE_MATCHERS),
+                        help="Matcher for the OFFSET stage, run at --video_scale between the "
+                             "zero-offset-warped reference and the query (default: dinov3). "
+                             "Independent of --matcher: the two stages solve different problems "
+                             "(wide-context geometry vs. a residual translation) and are not "
+                             "necessarily best served by the same matcher.")
+    parser.add_argument("--offset_method", default="median", choices=list(OFFSET_METHODS),
+                        help="How the OFFSET stage turns the matcher's displacements into a "
+                             "translation (default: median). 'median' takes the component-wise "
+                             "median of every match. 'ransac' runs a translation-only RANSAC "
+                             "(--reproj_threshold as the inlier radius), rejecting outliers "
+                             "outright rather than down-weighting them. 'none' disables the "
+                             "offset stage entirely, leaving the centred zero-offset linear "
+                             "warp -- the ablation that isolates how much the offset is "
+                             "actually contributing.")
+    parser.add_argument("--match_scale", "--dinov3_match_scale", default=None, type=float,
+                        dest="match_scale",
+                        help="Scale suffix of the static variant used for the LINEAR stage -- "
+                             "must cover at least as much physical area as --video_scale. The wider "
+                             "footprint gives the matcher more object structure to fit the "
+                             "linear part from; the fitted matrix is then conjugated back into "
+                             "--video_scale's coordinate space (decomposed_match._rescale_transform), "
+                             "so the images themselves are never cropped. Omit to run both "
+                             "stages on the --video_scale images. Requires --match_scale_convention. "
+                             "(--dinov3_match_scale is accepted as a deprecated alias.)")
+    parser.add_argument("--match_scale_convention", "--dinov3_match_scale_convention",
+                        default=None, dest="match_scale_convention",
                         choices=["render_scale", "obj_scale_factor"],
-                        help="How to interpret --scale/--dinov3_match_scale to compute the "
-                             "physical-size ratio between them. 'render_scale' (GelSight real "
+                        help="How to interpret --video_scale/--match_scale to compute the physical "
+                             "footprint ratio between them. 'render_scale' (GelSight real "
                              "capture): physical FOV is proportional to the scale value. "
-                             "'obj_scale_factor' (Taxim): physical FOV is fixed and a larger "
-                             "scale renders finer detail. Required when --dinov3_match_scale "
-                             "is set.")
+                             "'obj_scale_factor' (Taxim): the sensor FOV is fixed and a larger "
+                             "scale renders finer detail. Required when --match_scale is set.")
     parser.add_argument("--dinov3_model", default="dinov3_vitb16",
                         choices=["dinov3_vits16", "dinov3_vits16plus",
                                  "dinov3_vitb16", "dinov3_vitl16", "dinov3_vith16plus"],
@@ -637,44 +640,18 @@ def main():
                         help="Spatial stratification threshold in px, avoids redundant nearby "
                              "keypoints (default: 20.0). Only used with --matcher dinov3.")
     parser.add_argument("--reproj_threshold", default=8.0, type=float,
-                        help="RANSAC reprojection threshold in px, used to fit/select inliers "
-                             "for --transform_type (default: 8.0 -- found to beat the previous "
-                             "3.0 default on both synthetic and real data once warp quality is "
-                             "measured directly on the static image instead of via reconstructed "
-                             "video). Applies to whichever "
-                             "--matcher is selected -- every backend's sparse matches are fit "
-                             "with the same dinov3/dense_match.py:_fit_dense_field stage.")
-    parser.add_argument("--transform_type", default="rbf_homography",
-                        choices=["affine", "homography", "rbf_affine", "rbf_homography"],
-                        help="Geometric warp fitted from the selected --matcher's sparse "
-                             "matches. 'affine'/'homography' fit a single global RANSAC-robust "
-                             "transform over all matches. 'rbf_affine'/'rbf_homography' use that "
-                             "same RANSAC fit only to select inliers, then interpolate a "
-                             "non-rigid thin-plate-spline warp through them (default: "
-                             "rbf_homography).")
-    parser.add_argument("--photometric_refine", action="store_true",
-                        help="Refine the RANSAC-fit affine/homography matrix via dense "
-                             "photometric gradient descent (Adam) before it's used, warm-"
-                             "started from the RANSAC fit -- minimizes a photometric loss "
-                             "between the warped reference static image and the query "
-                             "static image (dinov3/dense_match.py's "
-                             "_refine_transform_photometric). For --transform_type "
-                             "rbf_affine/rbf_homography, the RBF inlier set is also "
-                             "recomputed under the refined matrix before RBF interpolation "
-                             "runs. Applies to whichever --matcher is selected. Disabled "
-                             "by default.")
-    parser.add_argument("--photometric_refine_loss", default="l1",
-                        choices=["l1", "l2", "huber", "gradient", "ncc"],
-                        help="Photometric loss used by --photometric_refine (default: l1). "
-                             "'gradient' compares Sobel image gradients instead of raw "
-                             "pixels; 'ncc' minimizes 1 - normalized cross-correlation "
-                             "(robust to global brightness/contrast offsets).")
-    parser.add_argument("--photometric_refine_iters", default=100, type=int,
-                        help="Adam iterations for --photometric_refine (default: 100).")
-    parser.add_argument("--photometric_refine_lr", default=1e-2, type=float,
-                        help="Adam learning rate for --photometric_refine (default: 0.01).")
-    parser.add_argument("--photometric_refine_huber_delta", default=1.0, type=float,
-                        help="Delta for --photometric_refine_loss huber (default: 1.0).")
+                        help="RANSAC reprojection threshold in px for the LINEAR stage's "
+                             "inlier selection (default: 8.0). Measured in --match_scale "
+                             "pixels, since that is where the linear fit runs. The offset "
+                             "stage uses a median rather than RANSAC, so this does not "
+                             "affect it.")
+    parser.add_argument("--transform_type", default="homography",
+                        choices=list(LINEAR_TRANSFORM_TYPES),
+                        help="Linear component fitted at --match_scale (default: homography). "
+                             "The full warp is always offset ∘ linear; the thin-plate-spline "
+                             "variants (rbf_affine/rbf_homography) have been removed -- see "
+                             "decomposed_match.py. Note dinov3/dense_match.py still provides "
+                             "them for main_retrieval_transfer_accel.py.")
     parser.add_argument("--use_mask", action="store_true",
                         help="Composite transferred frames with the query's render mask video "
                              "(same convention/compositing as main_retrieval_transfer_accel.py's "
@@ -697,10 +674,12 @@ def main():
                              "the sparse-matching stage, so adds runtime).")
     args = parser.parse_args()
 
-    if args.dinov3_match_scale is not None and args.dinov3_match_scale_convention is None:
-        parser.error("--dinov3_match_scale requires --dinov3_match_scale_convention to be set.")
-    if args.matcher == "dinov3" and args.dinov3_weights is None:
-        parser.error("--dinov3_weights is required when --matcher dinov3 (the default).")
+    if args.match_scale is not None and args.match_scale_convention is None:
+        parser.error("--match_scale requires --match_scale_convention to be set.")
+    _active = [args.matcher] + ([] if args.offset_method == "none" else [args.offset_matcher])
+    if "dinov3" in _active and args.dinov3_weights is None:
+        parser.error("--dinov3_weights is required when either --matcher or --offset_matcher "
+                     "is dinov3 (--offset_matcher defaults to dinov3).")
 
     os.makedirs(args.save_dir, exist_ok=True)
 
@@ -724,6 +703,8 @@ def main():
     # Process each query
     # ------------------------------------------------------------------
     all_touch_metrics = {}  # query_idx -> metric dict; populated when --eval is set
+    all_info = {}           # query_idx -> decomposed_match diagnostics dict
+    n_offset_zeroed = 0
     for entry in tqdm(retrieval_results, desc="Transferring"):
         query_idx = entry["query_idx"]
         ref_idx   = entry["topk_ref_indices"][0]  # top-1
@@ -733,9 +714,9 @@ def main():
         # -- Load static images and build combined representation ----------
         try:
             query_static = build_combined_static(
-                args.query_dir, query_idx, args.modality, args.scale)
+                args.query_dir, query_idx, args.modality, args.video_scale)
             ref_static   = build_combined_static(
-                args.ref_dir,   ref_idx,   args.modality, args.scale)
+                args.ref_dir,   ref_idx,   args.modality, args.video_scale)
         except FileNotFoundError as e:
             print(f"  Skipping (missing static image): {e}")
             continue
@@ -750,30 +731,34 @@ def main():
         # the RANSAC/shape failures already raised as ValueError/RuntimeError --
         # any of these fall back to an identity NNF rather than skipping the
         # query outright, so a video is still produced for every query.
+        info = None
         try:
-            if args.matcher == "dinov3":
-                nnf = compute_dinov3_transfer_nnf(
-                    args.query_dir, args.ref_dir, query_idx, ref_idx, args.modality,
-                    args.scale, args.dinov3_match_scale, args.dinov3_match_scale_convention,
-                    args.dinov3_model, args.dinov3_weights,
-                    args.dinov3_num_points, args.dinov3_stratify_threshold,
-                    args.reproj_threshold, args.transform_type,
-                    args.photometric_refine, args.photometric_refine_loss,
-                    args.photometric_refine_iters, args.photometric_refine_lr,
-                    args.photometric_refine_huber_delta)
-            else:
-                nnf = compute_imcui_transfer_nnf(
-                    args.query_dir, args.ref_dir, query_idx, ref_idx, args.modality,
-                    args.scale, args.dinov3_match_scale, args.dinov3_match_scale_convention,
-                    args.matcher, args.reproj_threshold, args.transform_type,
-                    args.photometric_refine, args.photometric_refine_loss,
-                    args.photometric_refine_iters, args.photometric_refine_lr,
-                    args.photometric_refine_huber_delta)
+            nnf, info = compute_transfer_nnf(
+                args.query_dir, args.ref_dir, query_idx, ref_idx, args.modality,
+                args.video_scale, args.match_scale, args.match_scale_convention,
+                args.transform_type, args.reproj_threshold,
+                args.matcher, args.offset_matcher, args.offset_method,
+                args.dinov3_model, args.dinov3_weights,
+                args.dinov3_num_points, args.dinov3_stratify_threshold)
         except (ValueError, RuntimeError, np.linalg.LinAlgError) as e:
-            print(f"  {args.matcher} matching failed ({e}); falling back to identity transform.")
+            print(f"  linear stage ({args.matcher}) failed ({e}); "
+                  f"falling back to identity transform.")
             h2, w2 = query_static.shape[:2]
             grid_col, grid_row = np.meshgrid(np.arange(w2), np.arange(h2))
             nnf = np.stack([grid_col, grid_row], axis=-1).astype(np.int32)
+
+        if info is not None:
+            tx, ty = info["offset"]
+            # "none" is the disabled-by-design ablation, not a failure to zero.
+            if info["offset_status"] not in ("ok",) and info["offset_method"] != "none":
+                n_offset_zeroed += 1
+            print(f"  linear({args.matcher}, {args.transform_type}) "
+                  f"{info['linear_inliers']}/{info['linear_matches']} inliers, ratio={info['ratio']:g} | "
+                  f"offset({args.offset_matcher}/{args.offset_method}) ({tx:+.1f}, {ty:+.1f}) "
+                  f"from {info['offset_inliers']}/{info['offset_matches']} matches "
+                  f"[{info['offset_status']}] | "
+                  f"valid {info['valid_fraction']*100:.1f}%")
+            all_info[query_idx] = {k: v for k, v in info.items() if k != "warped_ref"}
 
         # -- Load reference touch video ------------------------------------
         vid_path = osp.join(args.ref_dir, f"{ref_idx}_{args.video_type}.mp4")
@@ -809,19 +794,20 @@ def main():
                 query_idx=query_idx, ref_idx=ref_idx,
                 query_dir=args.query_dir, ref_dir=args.ref_dir,
                 modalities=args.modality,
-                scale=args.dinov3_match_scale if args.dinov3_match_scale is not None else args.scale,
+                # The NNF now lives in the video's coordinate space regardless of
+                # --match_scale, so the figure must show the --video_scale statics.
+                scale=args.video_scale,
                 nnf=nnf, ref_shape=ref_static.shape,
                 save_dir=args.save_dir,
             )
             print(f"  Saved NNF figure: {fig_path}")
 
-        # -- Match figure (raw sparse matches, inliers/outliers) ---------------
+        # -- Match figure (linear stage's raw sparse matches, inliers/outliers) --
         if args.save_match_figures:
             try:
-                q_match, r_match = _load_query_ref_static_for_matching(
+                _, _, q_match, r_match, _ = load_static_pairs(
                     args.query_dir, args.ref_dir, query_idx, ref_idx, args.modality,
-                    args.scale, args.dinov3_match_scale, args.dinov3_match_scale_convention,
-                    args.matcher)
+                    args.video_scale, args.match_scale, args.match_scale_convention)
             except ValueError as e:
                 print(f"  Skipping match figure (same load failure that triggered the "
                       f"identity fallback above): {e}")
@@ -888,6 +874,22 @@ def main():
         print(f"Average ({len(all_touch_metrics)} touch locations) — "
               f"MSE: {avg['MSE']:.5f} | PSNR: {avg['PSNR']:.2f} | "
               f"SSIM: {avg['SSIM']:.4f} | LPIPS: {avg['LPIPS']:.4f}")
+
+    # ------------------------------------------------------------------
+    # Save decomposition diagnostics
+    # ------------------------------------------------------------------
+    # How often the offset had to be zeroed is a direct read on retrieval
+    # quality: it counts pairs whose contact points are further apart than the
+    # sensor footprint, i.e. pairs with no overlap for any offset to find.
+    if all_info:
+        info_pkl_path = osp.join(args.save_dir, "decomposition.pkl")
+        with open(info_pkl_path, "wb") as f:
+            pickle.dump(all_info, f)
+        valid = [i["valid_fraction"] for i in all_info.values()]
+        print(f"\nDecomposition diagnostics saved to: {info_pkl_path}")
+        print(f"Offset zeroed on {n_offset_zeroed}/{len(all_info)} queries "
+              f"({100.0 * n_offset_zeroed / len(all_info):.1f}%) | "
+              f"mean in-bounds NNF fraction {100.0 * sum(valid) / len(valid):.1f}%")
 
     print(f"\nDone. Transferred videos saved to: {args.save_dir}")
 

@@ -69,8 +69,12 @@ for ref_dir in "$REF_BASE"/*/; do
         --retrieval_pkl  "$retrieval_pkl" \
         --modality       curvature \
         --video_type     shadow \
-        --scale          25. \
+        --video_scale          100. \
+        --match_scale          25. \
+        --match_scale_convention obj_scale_factor \
         --matcher        superpoint_superglue \
+        --offset_matcher       disk_lightglue \
+        --offset_method         median \
         --save_dir       "$save_dir" \
         --eval
 

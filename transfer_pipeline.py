@@ -5,8 +5,8 @@ Given a flat directory of N reference touches and M query touch locations, runs:
   1. retrieve_touch.py      — finds top-K reference matches per query
   2. Stage 2 transfer, backend selected via --transfer_backend:
        'patchmatch' (default) — main_retrieval_transfer_accel.py, PatchMatch/EM loop
-       'dinov3_feat_match'    — main_retrieval_transfer_feat_match.py, DINOv3-only
-                                 correspondence, no PatchMatch/CUDA dependency
+       'dinov3_feat_match'    — main_retrieval_transfer_feat_match.py, decomposed
+                                 (offset + linear) feature-match, no PatchMatch/CUDA
   3. rebot_net/infer.py     — (optional) neural refinement of transferred videos
 
 Works with both Taxim-generated data and real GelSight captures.
@@ -426,22 +426,44 @@ def main():
                       choices=["patchmatch", "dinov3_feat_match"],
                       help="Stage 2 backend: 'patchmatch' (default) runs main_retrieval_transfer_accel.py "
                            "with the EM/PatchMatch loop; 'dinov3_feat_match' runs "
-                           "main_retrieval_transfer_feat_match.py, a DINOv3-only correspondence pipeline "
-                           "with no PatchMatch/CUDA dependency.")
-    g_tr.add_argument("--transfer_matcher", default="dinov3",
+                           "main_retrieval_transfer_feat_match.py, the decomposed (offset + linear) "
+                           "feature-match pipeline with no PatchMatch/CUDA dependency (any of the "
+                           "supported matchers, not just DINOv3).")
+    g_tr.add_argument("--transfer_matcher", default="disk_lightglue",
                       choices=["dinov3", "disk_lightglue", "superpoint_superglue", "loftr",
                                "superpoint_lightglue", "sift_lightglue"],
-                      help="dinov3_feat_match backend only: correspondence backend used to compute "
-                           "the NNF (default: dinov3). The other five run a local feature matcher "
-                           "from image-matching-webui instead -- see main_retrieval_transfer_feat_match.py "
-                           "and README.md for details. Only 'dinov3' requires --dinov3_weights.")
+                      help="dinov3_feat_match backend only: matcher for the LINEAR stage, run at "
+                           "--dinov3_match_scale (default: disk_lightglue). --transfer_offset_matcher "
+                           "selects the OFFSET stage's matcher separately. Only 'dinov3' requires "
+                           "--dinov3_weights. See main_retrieval_transfer_feat_match.py and README.md.")
+    g_tr.add_argument("--transfer_offset_matcher", default="dinov3",
+                      choices=["dinov3", "disk_lightglue", "superpoint_superglue", "loftr",
+                               "superpoint_lightglue", "sift_lightglue"],
+                      help="dinov3_feat_match backend only: matcher for the OFFSET stage, run at "
+                           "--scale between the zero-offset-warped reference and the query "
+                           "(default: dinov3). --transfer_matcher selects the LINEAR stage's "
+                           "matcher instead; the two are independent.")
+    g_tr.add_argument("--transfer_offset_method", default="median",
+                      choices=["none", "median", "ransac"],
+                      help="dinov3_feat_match backend only: how the OFFSET stage reduces match "
+                           "displacements to a translation (default: median). 'ransac' is a "
+                           "translation-only RANSAC; 'none' disables the offset stage, leaving "
+                           "the centred zero-offset linear warp.")
     g_tr.add_argument("--dinov3_match_scale", type=float, default=None,
-                      help="dinov3_feat_match backend only: optional higher-res scale for DINOv3 "
-                           "matching, aligned back to --scale's field of view. Requires "
-                           "--dinov3_match_scale_convention.")
+                      help="dinov3_feat_match backend only: scale at which the LINEAR stage is "
+                           "fit -- a wider physical footprint than --scale (the video scale), "
+                           "giving the matcher more object structure. The fitted transform is "
+                           "conjugated back into --scale's coordinate space (no image cropping); "
+                           "the offset is then re-estimated at --scale. Forwarded to "
+                           "main_retrieval_transfer_feat_match.py as --match_scale. Requires "
+                           "--dinov3_match_scale_convention. (Applies to whichever "
+                           "--transfer_matcher is selected, despite the historical name.)")
     g_tr.add_argument("--dinov3_match_scale_convention", default=None,
                       choices=["render_scale", "obj_scale_factor"],
-                      help="Required when --dinov3_match_scale is set.")
+                      help="How to read --scale/--dinov3_match_scale as a physical footprint "
+                           "ratio. 'render_scale' (GelSight): FOV proportional to scale. "
+                           "'obj_scale_factor' (Taxim): FOV fixed, larger scale = finer detail. "
+                           "Required when --dinov3_match_scale is set.")
     g_tr.add_argument("--dinov3_num_points", type=int, default=100,
                       help="dinov3_feat_match backend only: max sparse DINOv3 keypoints (default: 100).")
     g_tr.add_argument("--dinov3_stratify_threshold", type=float, default=20.0,
@@ -452,35 +474,15 @@ def main():
                            "used to fit/select inliers for --dinov3_transform_type (default: 8.0, "
                            "found to beat the previous 3.0 default on both synthetic and real "
                            "data when warp quality is measured directly on the static image).")
-    g_tr.add_argument("--dinov3_transform_type", default="rbf_homography",
-                      choices=["affine", "homography", "rbf_affine", "rbf_homography"],
-                      help="dinov3_feat_match backend only: geometric warp fitted from the DINOv3 "
-                           "sparse matches -- 'affine'/'homography' fit a single global RANSAC-robust "
-                           "transform; 'rbf_affine'/'rbf_homography' use that RANSAC fit only for "
-                           "inlier selection, then interpolate a non-rigid thin-plate-spline warp "
-                           "(default: rbf_homography).")
-    g_tr.add_argument("--photometric_refine", action="store_true",
-                      help="dinov3_feat_match backend only: refine the RANSAC-fit affine/"
-                           "homography matrix via dense photometric gradient descent (Adam) "
-                           "before it's used -- see main_retrieval_transfer_feat_match.py's "
-                           "--photometric_refine / dinov3/dense_match.py's "
-                           "_refine_transform_photometric. Disabled by default; a comparison "
-                           "sweep (test_scripts/compare_photometric_refine.py) found this helps "
-                           "on some scale/modality settings and regresses on others -- check "
-                           "before enabling for a new dataset.")
-    g_tr.add_argument("--photometric_refine_loss", default="l1",
-                      choices=["l1", "l2", "huber", "gradient", "ncc"],
-                      help="dinov3_feat_match backend only: loss used by --photometric_refine "
-                           "(default: l1).")
-    g_tr.add_argument("--photometric_refine_iters", type=int, default=100,
-                      help="dinov3_feat_match backend only: Adam iterations for "
-                           "--photometric_refine (default: 100).")
-    g_tr.add_argument("--photometric_refine_lr", type=float, default=1e-2,
-                      help="dinov3_feat_match backend only: Adam learning rate for "
-                           "--photometric_refine (default: 0.01).")
-    g_tr.add_argument("--photometric_refine_huber_delta", type=float, default=1.0,
-                      help="dinov3_feat_match backend only: delta for "
-                           "--photometric_refine_loss huber (default: 1.0).")
+    g_tr.add_argument("--dinov3_transform_type", default="homography",
+                      choices=["affine", "homography"],
+                      help="dinov3_feat_match backend only: the LINEAR component of the "
+                           "decomposed (offset + linear) warp, RANSAC-fit at --dinov3_match_scale "
+                           "(default: homography).")
+    # (photometric refinement was removed along with the RBF transform types
+    # when the dinov3_feat_match backend moved to the decomposed offset+linear
+    # approach; main_retrieval_transfer_feat_match.py no longer accepts those
+    # flags. dinov3/dense_match.py still provides them for the patchmatch backend.)
 
     # ── Stage 3: Refine ───────────────────────────────────────────────────────
     g_ref = p.add_argument_group("Stage 3 — ReBotNet Refinement")
@@ -531,9 +533,13 @@ def main():
             p.error("--init_dinov3_match_scale requires --dinov3_weights to be set.")
 
     if args.transfer_backend == "dinov3_feat_match":
-        if args.transfer_matcher == "dinov3" and not args.dinov3_weights:
+        _active = [args.transfer_matcher]
+        if args.transfer_offset_method != "none":
+            _active.append(args.transfer_offset_matcher)
+        if "dinov3" in _active and not args.dinov3_weights:
             p.error("--transfer_backend dinov3_feat_match requires --dinov3_weights "
-                    "when --transfer_matcher dinov3 (the default) is used.")
+                    "when --transfer_matcher or --transfer_offset_matcher is dinov3 "
+                    "(--transfer_offset_matcher defaults to dinov3).")
         if args.dinov3_match_scale is not None and args.dinov3_match_scale_convention is None:
             p.error("--dinov3_match_scale requires --dinov3_match_scale_convention to be set.")
 
@@ -660,8 +666,10 @@ def main():
                 "--dinov3_stratify_threshold", str(args.dinov3_stratify_threshold),
                 "--reproj_threshold", str(args.dinov3_reproj_threshold),
                 "--transform_type", args.dinov3_transform_type,
+                "--offset_matcher", args.transfer_offset_matcher,
+                "--offset_method", args.transfer_offset_method,
             ]
-            if args.transfer_matcher == "dinov3":
+            if "dinov3" in (args.transfer_matcher, args.transfer_offset_matcher):
                 cmd += ["--dinov3_model", args.dinov3_model,
                         "--dinov3_weights", args.dinov3_weights]
             if not args.save_nnf_figures:
@@ -669,16 +677,10 @@ def main():
             if args.save_match_figures:
                 cmd.append("--save_match_figures")
             if transfer_scale is not None:
-                cmd += ["--scale", f"{transfer_scale:g}"]
+                cmd += ["--video_scale", f"{transfer_scale:g}"]
             if args.dinov3_match_scale is not None:
-                cmd += ["--dinov3_match_scale", f"{args.dinov3_match_scale:g}",
-                        "--dinov3_match_scale_convention", args.dinov3_match_scale_convention]
-            if args.photometric_refine:
-                cmd += ["--photometric_refine",
-                        "--photometric_refine_loss", args.photometric_refine_loss,
-                        "--photometric_refine_iters", str(args.photometric_refine_iters),
-                        "--photometric_refine_lr", str(args.photometric_refine_lr),
-                        "--photometric_refine_huber_delta", str(args.photometric_refine_huber_delta)]
+                cmd += ["--match_scale", f"{args.dinov3_match_scale:g}",
+                        "--match_scale_convention", args.dinov3_match_scale_convention]
             if args.use_mask:
                 cmd.append("--use_mask")
             if not args.skip_eval:

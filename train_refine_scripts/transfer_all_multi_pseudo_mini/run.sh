@@ -29,12 +29,15 @@ QUERY_BASE="$PROJECT_ROOT/Taxim/results/gen_contact_full_query_pseudo_mini"
 RETRIEVAL_BASE="$PROJECT_ROOT/log/touch_retrieval"
 OUT_BASE="$PROJECT_ROOT/log/transfer_feat_match_pseudo_mini"
 TRANSFER_SCRIPT="$PROJECT_ROOT/main_retrieval_transfer_feat_match.py"
-# matcher=loftr + modality=curvature + scale=25: a follow-up sweep that scores
-# the warped static image directly (instead of via reconstructed video, which
-# masked this) found DINOv3 mostly outputs a near-identity transform on this
-# data, while loftr's fallback rate on synth curvature drops sharply at lower
-# render scales (31% at scale=100 -> 13% at scale=25) with no loss in fit
-# quality (SSIM actually improves) -- see report.
+# Decomposed transfer (offset o linear); see main_retrieval_transfer_feat_match.py
+# and decomposed_match.py. Taxim videos are rendered at obj_scale_factor[0]=100
+# (sims[0]), so --video_scale 100; the linear stage is fit at the wider
+# --match_scale 25 footprint (convention obj_scale_factor -> ratio 4). The offset
+# stage runs at video scale with disk_lightglue + median.
+#   linear matcher = disk_lightglue (the per-matcher run_*.sh scripts sweep this).
+# Historical note: an earlier single-stage sweep picked matcher=loftr + scale=25,
+# but that "scale" was the matching scale, which the decomposition now expresses
+# as --match_scale (with --video_scale=100 the true video scale).
 
 TOUCHES_PER_OBJ=8
 
@@ -73,8 +76,12 @@ for ref_dir in "$REF_BASE"/*/; do
         --retrieval_pkl  "$retrieval_pkl" \
         --modality       curvature \
         --video_type     shadow \
-        --scale          25. \
-        --matcher        loftr \
+        --video_scale          100. \
+        --match_scale          25. \
+        --match_scale_convention obj_scale_factor \
+        --matcher        disk_lightglue \
+        --offset_matcher       disk_lightglue \
+        --offset_method         median \
         --save_dir       "$save_dir" \
         --eval
 

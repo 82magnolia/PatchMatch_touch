@@ -9,12 +9,15 @@
 # no PatchMatch/CUDA dependency -- despite the backend's name, the actual
 # correspondence matcher is chosen via --transfer_matcher, see below).
 #
-# modality=curvature + matcher=loftr + scale=8 (direct, no --dinov3_match_scale):
-# a follow-up sweep that scores the warped static image directly (instead of
-# via reconstructed video, which masked this) found DINOv3 mostly outputs a
-# near-identity transform on real data, while loftr reaches 0/30 fallback and
-# far higher warp accuracy (SSIM 0.985 vs. DINOv3's 0.902) at this dataset's
-# max render scale -- see report.
+# Decomposed transfer (offset o linear); see main_retrieval_transfer_feat_match.py
+# and decomposed_match.py. GelSight videos live at the raw sensor FOV, so
+# --scale 1 (the pipeline forwards this as --video_scale); the linear stage is
+# fit at the wider --dinov3_match_scale 8 footprint (convention render_scale ->
+# ratio 8). The offset stage runs at video scale with disk_lightglue + median.
+#   linear matcher = disk_lightglue (the per-matcher run_*.sh scripts sweep this).
+# Historical note: an earlier single-stage sweep picked matcher=loftr + scale=8,
+# but that "scale" was the matching scale, now expressed as --dinov3_match_scale
+# (with --scale=1 the true video scale).
 #
 # Usage: bash run.sh
 
@@ -56,11 +59,15 @@ for session_dir in "$SESSIONS_BASE"/*/; do
     python "$PIPELINE_SCRIPT" \
         --ref_dir            "$session_dir" \
         --query_dir          "$session_dir" \
-        --scale              8 \
+        --scale              1 \
+        --dinov3_match_scale              8 \
+        --dinov3_match_scale_convention render_scale \
         --retrieval_mode     real_gt_retrieval \
         --transfer_backend   dinov3_feat_match \
         --transfer_modality  curvature \
-        --transfer_matcher   loftr \
+        --transfer_matcher   disk_lightglue \
+        --transfer_offset_matcher  disk_lightglue \
+        --transfer_offset_method  median \
         --video_type         shadow \
         --skip_refine \
         --skip_viz \

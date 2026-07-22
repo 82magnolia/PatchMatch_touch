@@ -45,11 +45,15 @@ for session_dir in "$SESSIONS_BASE"/*/; do
     python "$PIPELINE_SCRIPT" \
         --ref_dir            "$session_dir" \
         --query_dir          "$session_dir" \
-        --scale              8 \
+        --scale              1 \
+        --dinov3_match_scale              8 \
+        --dinov3_match_scale_convention render_scale \
         --retrieval_mode     real_gt_retrieval \
         --transfer_backend   dinov3_feat_match \
         --transfer_modality  curvature \
         --transfer_matcher   superpoint_superglue \
+        --transfer_offset_matcher  disk_lightglue \
+        --transfer_offset_method  median \
         --video_type         shadow \
         --skip_refine \
         --skip_viz \
