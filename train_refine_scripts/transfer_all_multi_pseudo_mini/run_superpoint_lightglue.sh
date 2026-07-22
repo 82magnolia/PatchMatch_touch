@@ -73,6 +73,7 @@ for ref_dir in "$REF_BASE"/*/; do
         --match_scale          25. \
         --match_scale_convention obj_scale_factor \
         --matcher        superpoint_lightglue \
+        --offset_matcher        superpoint_lightglue \
         --offset_method         median \
         --save_dir       "$save_dir" \
         --eval
