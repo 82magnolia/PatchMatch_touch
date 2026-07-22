@@ -43,22 +43,39 @@ def load_normal_net(net_path, device):
     return net
 
 
-def frame_to_normals(frame_bgr, net, device, marker_range=(0, 70)):
+def frame_to_normals(frame_bgr, net, device, contact_mask=None,
+                     marker_range=(0, 70)):
     """GelSight BGR frame -> (H,W,3) float32 unit normal map (nx,ny,nz).
 
-    marker_range: grayscale intensity range treated as ARuCO/marker dots,
-    which are excluded from the network input and held at (0,0,1)
-    (matches Reconstruction3D.get_depthmap's markers_threshold masking).
-    Pass None to run the network on every pixel.
+    contact_mask: optional (H,W) boolean mask of pixels to run the network on.
+    When given it fully determines the gating (e.g. compute_contact_mask's
+    image-diff contact footprint) and marker_range is ignored. Pixels outside
+    the mask are held at (0,0,1).
+
+    marker_range: fallback gating when contact_mask is None -- grayscale
+    intensity range treated as ARuCO/marker dots, which are excluded from the
+    network input and held at (0,0,1) (matches Reconstruction3D.get_depthmap's
+    markers_threshold masking). Pass None (with no contact_mask) to run the
+    network on every pixel.
     """
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     h, w = frame_rgb.shape[:2]
 
-    contact_mask = np.ones((h, w), dtype=bool)
-    if marker_range is not None:
+    if contact_mask is not None:
+        contact_mask = np.asarray(contact_mask, dtype=bool)
+    elif marker_range is not None:
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         marker_mask = cv2.inRange(gray, marker_range[0], marker_range[1]) > 0
         contact_mask = ~marker_mask
+    else:
+        contact_mask = np.ones((h, w), dtype=bool)
+
+    # Empty mask (e.g. a no-contact base frame) -> flat (0,0,1) everywhere;
+    # feeding the network an empty batch would error.
+    if not contact_mask.any():
+        flat = np.zeros((h, w, 3), dtype=np.float32)
+        flat[..., 2] = 1.0
+        return flat
 
     rgb_norm = frame_rgb[contact_mask] / 255.0
     px = np.vstack(np.where(contact_mask)).T.astype(np.float64)

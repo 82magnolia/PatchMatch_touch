@@ -47,6 +47,7 @@ from _gelsight_processing import (
     ortho_project_raw, height2laplacian,
     write_video, read_video_frames,
     make_render_mask_video, normals_to_colormap,
+    compute_contact_mask,
     trim_and_resample, segment_contacts,
     GELSIGHT_W, GELSIGHT_H, VIDEO_FPS, MASK_OPEN_PX,
     RENDER_MASK_THRES_M, _format_scale,
@@ -55,6 +56,12 @@ from _tactile_normal_net import load_normal_net, frame_to_normals
 
 DEFAULT_NORMAL_NN_MODEL_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "gsnormal_models", "nnmini.pt")
+
+# Threshold for compute_contact_mask when gating the tactile normal video.
+# Looser than compute_contact_mask's own 0.05 default: at 0.05 the footprint
+# came out too tight (ragged holes); 0.025 fills it cleanly without picking up
+# background speckle. See test_scripts/sweep_normal_mask_thr.py.
+NORMAL_CONTACT_THRESHOLD = 0.025
 
 
 # ── Per-segment save (mirrors capture_gelsight_single_shot._save_segment) ────
@@ -192,11 +199,18 @@ def _save_segment(touch_idx, gs_frames_seg, pose_buffer_seg, blank_frame,
     write_video(f"{prefix}_shadow_render_mask.mp4", sbs, VIDEO_FPS)
 
     if normal_net is not None:
-        tactile_normal_frames = [
-            normals_to_colormap(frame_to_normals(
-                f, normal_net, normal_device, marker_range=normal_marker_range))
-            for f in resampled
-        ]
+        # Gate the normal net on the image-diff contact footprint
+        # (compute_contact_mask), computed exactly as the render-mask GT is:
+        # each resampled frame vs. resampled[0], in [0,1] float. resampled is
+        # what the shadow video is written from, so masks align frame-for-frame.
+        normal_base = resampled[0].astype(np.float32) / 255.0
+        tactile_normal_frames = []
+        for f in resampled:
+            cmask = compute_contact_mask(
+                f.astype(np.float32) / 255.0, normal_base,
+                threshold=NORMAL_CONTACT_THRESHOLD)[..., 0] > 0.5
+            tactile_normal_frames.append(normals_to_colormap(frame_to_normals(
+                f, normal_net, normal_device, contact_mask=cmask)))
         write_video(f"{prefix}_tactile_normal.mp4", tactile_normal_frames, VIDEO_FPS)
 
     if hmap_0 is not None:
