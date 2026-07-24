@@ -57,9 +57,9 @@ MODEL_CONFIGS = {
 }
 
 
-def build_model(model_size, cond_chans=0, film_chans=0):
+def build_model(model_size, cond_chans=0, film_chans=0, bottleneck_hw=24):
     cfg = MODEL_CONFIGS[model_size]
-    return ReBotNet(**cfg, cond_chans=cond_chans, film_chans=film_chans)
+    return ReBotNet(**cfg, cond_chans=cond_chans, film_chans=film_chans, bottleneck_hw=bottleneck_hw)
 
 
 def parse_args():
@@ -97,6 +97,21 @@ def parse_args():
                         "as the blank instead of frame 0 of the transferred video. Physically "
                         "correct for --video_type tactile_normal, where the no-contact reading "
                         "is a universal constant rather than something to read per-video.")
+    p.add_argument('--lambda_lpips', type=float, default=0.0,
+                   help="Weight for an auxiliary LPIPS perceptual loss added to the training "
+                        "objective (full frame, [0,1] absolute range -- intended for "
+                        "non-residual runs). 0 (default) disables it, matching prior behavior.")
+    p.add_argument('--lambda_edge', type=float, default=0.0,
+                   help="Weight for an auxiliary Sobel-gradient L1 loss (full frame). "
+                        "0 (default) disables it.")
+    p.add_argument('--lambda_ssim', type=float, default=0.0,
+                   help="Weight for an auxiliary (1-SSIM) structural loss (full frame). "
+                        "0 (default) disables it.")
+    p.add_argument('--bottleneck_hw', type=int, default=24,
+                   help="Spatial size of the adaptive-pooled bottleneck token grid (default: "
+                        "24, i.e. 576 tokens, matching the original architecture). Larger "
+                        "retains more spatial detail through the bottleneck transformer at "
+                        "increased compute/memory cost.")
     p.add_argument('--real_data', action='store_true',
                    help="Train from scratch on the real-data transfer tree "
                         "(RealTactileTransferDataset: nested {obj}/transfer/ layout, odd query "
@@ -144,7 +159,8 @@ def main():
 
     # --- Model ---
     cond_chans, film_chans = cond_utils.cond_dims(args)
-    model = build_model(args.model_size, cond_chans, film_chans).to(device)
+    model = build_model(args.model_size, cond_chans, film_chans,
+                        bottleneck_hw=args.bottleneck_hw).to(device)
     print(f"Model: {args.model_size}  |  Device: {device}  |  "
           f"cond_chans={cond_chans} film_chans={film_chans}")
 

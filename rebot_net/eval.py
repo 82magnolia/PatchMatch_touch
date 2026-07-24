@@ -67,6 +67,8 @@ def parse_args():
                    help="With --residual: use the fixed flat-surface-normal (0,0,1) encoding "
                         "as the blank instead of frame 0 of the transferred video. Physically "
                         "correct for --video_type tactile_normal.")
+    p.add_argument('--bottleneck_hw', type=int, default=24,
+                   help="Must match the checkpoint's training-time --bottleneck_hw (default 24).")
     cond_utils.add_cond_args(p)
     return p.parse_args()
 
@@ -91,7 +93,8 @@ def main():
 
     # --- Model ---
     cond_chans, film_chans = cond_utils.cond_dims(args)
-    model = build_model(args.model_size, cond_chans, film_chans).to(device)
+    model = build_model(args.model_size, cond_chans, film_chans,
+                        bottleneck_hw=args.bottleneck_hw).to(device)
     ckpt = torch.load(args.checkpoint, map_location=device)
     model.load_state_dict(ckpt['model_state'])
     print(f"Loaded checkpoint from epoch {ckpt.get('epoch', '?')}  "

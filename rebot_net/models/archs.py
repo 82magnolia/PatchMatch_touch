@@ -278,10 +278,12 @@ class rebotnet(nn.Module):
                  out_indices=[0, 1, 2, 3],
                  dim_head = 64,
                  cond_chans = 0,
-                 film_chans = 0
+                 film_chans = 0,
+                 bottleneck_hw = 24
                  ):
         super().__init__()
         self.in_chans = in_chans
+        self.bottleneck_hw = bottleneck_hw
         # cond_chans: per-frame channels concatenated to the input (e.g. an aligned
         #   render_mask), fed through both the ConvNeXt and big-patch branches.
         # film_chans: channels of a static (possibly unaligned) conditioning image
@@ -365,9 +367,11 @@ class rebotnet(nn.Module):
 
         self.pool = nn.MaxPool1d(2, 2)
 
-        self.bottleneck = Transformer(576,bottle_dim, bottle_depth, num_heads[-1], dim_head, mlp_dim, dropout)
+        num_bottleneck_tokens = bottleneck_hw * bottleneck_hw
 
-        self.temporal_transformer = Transformer(576,bottle_dim, bottle_depth, num_heads[-1], dim_head, mlp_dim, dropout)
+        self.bottleneck = Transformer(num_bottleneck_tokens,bottle_dim, bottle_depth, num_heads[-1], dim_head, mlp_dim, dropout)
+
+        self.temporal_transformer = Transformer(num_bottleneck_tokens,bottle_dim, bottle_depth, num_heads[-1], dim_head, mlp_dim, dropout)
 
         self.norm = norm_layer(embed_dims[-1])
         self.conv_after_body = nn.Linear(embed_dims[-1], embed_dims[0])
@@ -414,16 +418,17 @@ class rebotnet(nn.Module):
         N_big_h, N_big_w = H_in // 16, W_in // 16
         fc = self.in_chans + self.cond_chans      # channels per frame
 
-        # big patch embeddings: tokens → 2D spatial → adaptive pool to 24×24 → flatten
+        # big patch embeddings: tokens → 2D spatial → adaptive pool to bottleneck_hw² → flatten
+        bhw = self.bottleneck_hw
         x_1 = self.big_embedding1(x[:, 0:fc, ...])   # (B, N_big, C) — frame 0 (+cond)
         x_2 = self.big_embedding2(x[:, fc:2*fc, ...])  # frame 1 (+cond)
         C_emb = x_1.shape[-1]
         x_1 = F.adaptive_avg_pool2d(
-            x_1.transpose(1,2).view(-1, C_emb, N_big_h, N_big_w), (24, 24)
-        ).flatten(2).transpose(1,2)               # (B, 576, C)
+            x_1.transpose(1,2).view(-1, C_emb, N_big_h, N_big_w), (bhw, bhw)
+        ).flatten(2).transpose(1,2)               # (B, bhw², C)
         x_2 = F.adaptive_avg_pool2d(
-            x_2.transpose(1,2).view(-1, C_emb, N_big_h, N_big_w), (24, 24)
-        ).flatten(2).transpose(1,2)               # (B, 576, C)
+            x_2.transpose(1,2).view(-1, C_emb, N_big_h, N_big_w), (bhw, bhw)
+        ).flatten(2).transpose(1,2)               # (B, bhw², C)
 
         x_temp = torch.cat((x_1, x_2), dim=1)    # (B, 1152, C)
         x_temp = self.pool(x_temp.transpose(1,2)).transpose(1,2)   # MaxPool1d(2,2) → (B, 576, C)
@@ -447,15 +452,15 @@ class rebotnet(nn.Module):
         x = outs[-1]                              # (B, C, H/16, W/16)
         x_size = x.size()
 
-        # encoder: 2D adaptive pool to 24×24 → flatten → patch embedding → bottleneck
-        x = F.adaptive_avg_pool2d(x, (24, 24))   # (B, C, 24, 24)
-        x = self.to_patch_embedding(x)            # (B, 576, C)
-        x = self.bottleneck(x)                    # (B, 576, C)
+        # encoder: 2D adaptive pool to bottleneck_hw² → flatten → patch embedding → bottleneck
+        x = F.adaptive_avg_pool2d(x, (bhw, bhw))   # (B, C, bhw, bhw)
+        x = self.to_patch_embedding(x)            # (B, bhw², C)
+        x = self.bottleneck(x)                    # (B, bhw², C)
 
-        x = x + x_temp                            # (B, 576, C)
+        x = x + x_temp                            # (B, bhw², C)
 
-        # reshape to 24×24, then bilinear-upsample to original encoder spatial dims
-        x = x.transpose(1,2).view(x_size[0], x_size[1], 24, 24)
+        # reshape to bhw×bhw, then bilinear-upsample to original encoder spatial dims
+        x = x.transpose(1,2).view(x_size[0], x_size[1], bhw, bhw)
         x = F.interpolate(x, size=(x_size[2], x_size[3]), mode='bilinear', align_corners=False)
 
         ### decoder
