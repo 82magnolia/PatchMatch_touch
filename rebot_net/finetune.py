@@ -141,6 +141,16 @@ def parse_args():
                    help="With --video_save, also save transferred/GT/grid videos")
     p.add_argument('--residual', action='store_true',
                    help="Residual space (match the pretrained checkpoint's training mode)")
+    p.add_argument('--video_type', default='shadow',
+                   help="Appearance domain of the videos to load: {pair}_query_{video_type}.mp4 "
+                        "/ {pair}_ref_{video_type}.mp4, matching transfer_pipeline.py's "
+                        "--video_type. Use 'tactile_normal' for the surface-normal-encoded "
+                        "domain (must match the pretrained checkpoint's domain).")
+    p.add_argument('--normal_blank', action='store_true',
+                   help="With --residual: use the fixed flat-surface-normal (0,0,1) encoding "
+                        "as the blank instead of frame 0 of the transferred video. Physically "
+                        "correct for --video_type tactile_normal, where the no-contact reading "
+                        "is a universal constant rather than something to read per-video.")
     p.add_argument('--wandb_project', default='tactile_enhance')
     p.add_argument('--wandb_run_name', default=None)
     p.add_argument('--wandb_offline', action='store_true')
@@ -169,9 +179,11 @@ def main():
 
     cond_kw = cond_utils.dataset_cond_kwargs(args)
     train_dataset = RealTactileTransferDataset(args.transfer_dir, train_ids, split='train',
-                                               residual=args.residual, **cond_kw)
+                                               residual=args.residual, video_type=args.video_type,
+                                               normal_blank=args.normal_blank, **cond_kw)
     eval_dataset = RealTactileTransferDataset(args.transfer_dir, eval_ids, split='val',
-                                              residual=args.residual, **cond_kw)
+                                              residual=args.residual, video_type=args.video_type,
+                                              normal_blank=args.normal_blank, **cond_kw)
     print(f"Fine-tune frame samples: {len(train_dataset)}, eval objects: {len(eval_ids)}")
 
     train_loader = data.DataLoader(

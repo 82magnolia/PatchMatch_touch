@@ -63,6 +63,14 @@ def parse_args():
                    help="Also save transferred/GT and a 2x2 grid video")
     p.add_argument('--residual', action='store_true',
                    help="Residual-mode checkpoint (metrics still on absolute reconstructions)")
+    p.add_argument('--video_type', default='shadow',
+                   help="Appearance domain of the videos to load: {pair}_query_{video_type}.mp4 "
+                        "/ {pair}_ref_{video_type}.mp4. Use 'tactile_normal' for the "
+                        "surface-normal-encoded domain (must match the checkpoint's domain).")
+    p.add_argument('--normal_blank', action='store_true',
+                   help="With --residual: use the fixed flat-surface-normal (0,0,1) encoding "
+                        "as the blank instead of frame 0 of the transferred video (physically "
+                        "correct for --video_type tactile_normal). Must match training.")
     cond_utils.add_cond_args(p)
     return p.parse_args()
 
@@ -80,6 +88,8 @@ def main():
 
     dataset = RealTactileTransferDataset(args.transfer_dir, eval_ids, split='test',
                                          residual=args.residual,
+                                         video_type=args.video_type,
+                                         normal_blank=args.normal_blank,
                                          **cond_utils.dataset_cond_kwargs(args))
 
     cond_chans, film_chans = cond_utils.cond_dims(args)
@@ -144,7 +154,8 @@ def main():
                     if args.save_gt:
                         _write_video(os.path.join(video_save_dir, f"{obj_id}_{pair_idx}_transferred.mp4"), transferred_frames)
                         _write_video(os.path.join(video_save_dir, f"{obj_id}_{pair_idx}_query.mp4"), gt_frames)
-                        ref_path = os.path.join(dataset._obj_dir(obj_id), f"{pair_idx}_ref_shadow.mp4")
+                        ref_path = os.path.join(dataset._obj_dir(obj_id),
+                                                f"{pair_idx}_ref_{args.video_type}.mp4")
                         ref_frames = _read_video_frames(ref_path) if os.path.exists(ref_path) else []
                         if ref_frames:
                             _make_grid_video(
