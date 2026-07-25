@@ -69,6 +69,8 @@ python rebot_net/train.py \
 | `--num_workers` | `4` | DataLoader worker processes |
 | `--resume` | `None` | Path to checkpoint to resume from |
 | `--video_save` | off | Save enhanced validation videos each epoch to `save_dir/videos/epoch_NNNN/` |
+| `--video_type` | `shadow` | Appearance domain of the videos to load: `{pair}_query_{video_type}.mp4` / `{pair}_ref_{video_type}.mp4`, matching `main_retrieval_transfer_feat_match.py`'s output naming. Use `tactile_normal` for the surface-normal-encoded domain. |
+| `--normal_blank` | off | With `--residual`: use the fixed flat-surface-normal `(0,0,1)` encoding as the blank instead of frame 0 of the transferred video (see [Tactile-Normal-Domain Pipeline](#tactile-normal-domain-pipeline)) |
 | `--wandb_project` | `tactile_enhance` | W&B project name |
 | `--wandb_run_name` | auto | W&B run name |
 | `--wandb_offline` | off | Run W&B in offline mode |
@@ -101,6 +103,8 @@ python rebot_net/eval.py \
 | `--save_dir` | `log/rebot_eval` | Directory for `metrics.pkl` and optional videos |
 | `--video_save` | off | Save all enhanced test videos to `save_dir/videos/` |
 | `--save_gt` | off | Also copy ground-truth query and reference videos alongside enhanced output (requires `--video_save`) |
+| `--video_type` | `shadow` | Appearance domain of the videos to load (see `train.py`'s flag above) |
+| `--normal_blank` | off | With `--residual`: use the fixed flat-normal blank instead of frame 0 (see [Tactile-Normal-Domain Pipeline](#tactile-normal-domain-pipeline)) |
 
 Outputs:
 - Per-object metrics printed to stdout
@@ -150,6 +154,8 @@ CUDA_VISIBLE_DEVICES=0 python rebot_net/infer.py \
 | `--model_size` | `rebot_S` | Must match the checkpoint's model size |
 | `--save_dir` | `log/rebot_infer` | Directory to write enhanced videos |
 | `--save_gt` | off | Also copy ground-truth query and reference videos alongside enhanced output |
+| `--video_type` | `shadow` | Appearance domain of the `--save_gt` GT/ref videos (see `train.py`'s flag above) |
+| `--normal_blank` | off | With `--residual`: use the fixed flat-normal blank instead of frame 0 (see [Tactile-Normal-Domain Pipeline](#tactile-normal-domain-pipeline)) |
 
 Outputs are named `{original_stem}_enhanced.mp4`. When using `--transfer_dir`, videos are written under `save_dir/{obj_id}/`.
 
@@ -291,6 +297,84 @@ python rebot_net/eval_normal.py \
 | `--save_dir` | `log/rebot_eval_normal` | Directory for `metrics.pkl` and optional videos |
 | `--video_save` | off | Save all enhanced test videos to `save_dir/videos/` |
 | `--save_gt` | off | Also save the normal-image video and a 2×2 grid (Normal \| GT / Normal \| Predicted) |
+
+---
+
+## Tactile-Normal-Domain Pipeline
+
+A second full PatchMatch-transfer pipeline, parallel to the main shadow/appearance
+one above but operating entirely in the **surface-normal-encoded** domain
+(`gen_contact_video.py`'s `tactile_normal` modality: `RGB = 255 * (n + 1) / 2` for
+surface normal `n`) instead of the photorealistic shadow domain. This answers a
+different question than the [Normal-Image Baseline](#normal-image-baseline)
+above: that baseline skips PatchMatch entirely (static geometry only, predicting
+the shadow domain); this pipeline runs PatchMatch *within* the normal domain
+(transferring a reference's tactile_normal video onto the query, refining
+toward the query's own true tactile_normal video), isolating how well
+transfer+refinement work when the transferred content is direct geometry
+rather than photorealistic appearance.
+
+Data flow (`train_refine_scripts/transfer_all_multi_pseudo_mini_tactile_normal/`):
+- Reference tactile_normal videos: `Taxim/results/gen_contact_full_tactile_normal_pseudo_mini/{obj}/{pair}_tactile_normal.mp4`
+- Query tactile_normal videos (ground truth): `Taxim/results/gen_contact_full_query_tactile_normal_pseudo_mini/{obj}/{pair}_tactile_normal.mp4`
+- Retrieval results are reused unchanged from `log/touch_retrieval/` (query/ref
+  pairing is geometry-derived and shared across modalities — both video domains
+  are rendered from the same picked contact points)
+- `main_retrieval_transfer_feat_match.py --video_type tactile_normal` transfers
+  each reference video onto its matched query, writing
+  `log/transfer_feat_match_pseudo_mini_tactile_normal/{obj}/{pair}_transferred.mp4`
+  (+ `{pair}_query_tactile_normal.mp4`, `{pair}_ref_tactile_normal.mp4`)
+- Run via `bash train_refine_scripts/transfer_all_multi_pseudo_mini_tactile_normal/run_gpu{0..5}.sh <gpu_id>`
+  (6-way object-sharded, mirrors `gen_contact_query_tactile_normal_pseudo_mini/`'s worker convention)
+
+`rebot_net/train.py` / `eval.py` / `infer.py` then run unmodified against that
+transfer dir via `--video_type tactile_normal`. In residual mode, pass
+`--normal_blank` too: the physically correct no-contact tactile_normal reading
+is the fixed encoding of the flat surface normal `(0,0,1)` — a universal
+constant — rather than something that needs to be read from frame 0 of each
+particular video (see `rebot_net/dataset.py`'s `_FLAT_NORMAL_RGB`).
+
+### Training
+
+```bash
+bash train_refine_scripts/train_rebot_pseudo_mini_tactile_normal/train_rebot_S.sh <gpu_id>
+bash train_refine_scripts/train_rebot_pseudo_mini_tactile_normal_residual/train_rebot_S.sh <gpu_id>
+```
+Also available for `XS`, `M`, `L`. Checkpoints land in
+`log/rebot_checkpoints_{SIZE}_pseudo_mini_tactile_normal[_residual]/`.
+
+### Evaluation
+
+```bash
+bash train_refine_scripts/eval_rebot_pseudo_mini_tactile_normal/eval_rebot_S.sh <gpu_id>
+bash train_refine_scripts/eval_rebot_pseudo_mini_tactile_normal_residual/eval_rebot_S.sh <gpu_id>
+```
+
+### Conditioned variant
+
+Query-conditioned counterparts of the four scripts above (`--cond_dir` /
+`--mask_cond` / `--film_modality` / `--film_scale`, see
+`rebot_net/cond_utils.py`), mirroring
+`train_rebot_pseudo_mini_cond`/`train_rebot_pseudo_mini_residual_cond`/
+`eval_rebot_pseudo_mini_cond` but for the tactile_normal transfer dir. Unlike
+those, there is only one transfer config here (no matcher/masked-data sweep),
+so the scripts take just `<gpu_id> [cond_mode]`. `--cond_dir` points at
+`gen_contact_full_query_tactile_normal_pseudo_mini`'s static
+`render_mask.mp4`/`scale100_{modality}.jpg` files (written by
+`gen_contact_video.py` regardless of `--modalities`) — never the
+`tactile_normal.mp4` video itself, which is the GT and must not leak in as
+conditioning (see `rebot_net/cond_utils.py`).
+
+```bash
+bash train_refine_scripts/train_rebot_pseudo_mini_tactile_normal_cond/train_rebot_S.sh <gpu_id> [cond_mode]
+bash train_refine_scripts/train_rebot_pseudo_mini_tactile_normal_residual_cond/train_rebot_S.sh <gpu_id> [cond_mode]
+bash train_refine_scripts/eval_rebot_pseudo_mini_tactile_normal_cond/eval_rebot_S.sh <gpu_id> [cond_mode]
+bash train_refine_scripts/eval_rebot_pseudo_mini_tactile_normal_residual_cond/eval_rebot_S.sh <gpu_id> [cond_mode]
+```
+`cond_mode` (default `both-normal`): `mask`, `film-{normal,curvature,height}`,
+`both-{normal,curvature,height}`. Also available for `XS`, `M`, `L`.
+Checkpoints land in
+`log/rebot_checkpoints_{SIZE}_pseudo_mini_tactile_normal[_residual]_cond-{cond_mode}/`.
 
 ---
 

@@ -51,7 +51,7 @@ import torch
 sys.path.insert(0, os.path.dirname(__file__))
 from train import MODEL_CONFIGS, build_model
 from trainer import _write_video, _read_video_frames, _make_grid_video, _residual_to_vis
-from dataset import _resolve_lq_path
+from dataset import _resolve_lq_path, _normal_blank
 
 
 def _strip_transferred_suffix(stem):
@@ -126,7 +126,7 @@ def enhance_video(model, frames_rgb, device, blank_tensor=None):
 
 
 def process_single_video(model, input_path, save_dir, device, save_gt=False,
-                         residual=False):
+                         residual=False, video_type='shadow', normal_blank=False):
     frames_uint8, fps = _read_video(input_path)
     if not frames_uint8:
         print(f"  Warning: no frames read from {input_path}, skipping.")
@@ -134,11 +134,19 @@ def process_single_video(model, input_path, save_dir, device, save_gt=False,
 
     blank_tensor = None
     if residual:
-        # Blank is frame 0 of the transferred video itself: always available
-        # at real deployment (unlike the query's own touch video, which only
-        # exists for paired train/eval data) and already in query coordinate
-        # space (unlike the raw reference video).
-        blank_tensor = _to_tensor(frames_uint8[0])
+        if normal_blank:
+            # Fixed flat-surface-normal (0,0,1) encoding: the physically
+            # correct no-contact reading for tactile_normal videos,
+            # independent of any particular frame.
+            h, w = frames_uint8[0].shape[:2]
+            blank_tensor = _normal_blank(h, w)
+        else:
+            # Blank is frame 0 of the transferred video itself: always
+            # available at real deployment (unlike the query's own touch
+            # video, which only exists for paired train/eval data) and
+            # already in query coordinate space (unlike the raw reference
+            # video).
+            blank_tensor = _to_tensor(frames_uint8[0])
 
     print(f"  Enhancing {input_path}  ({len(frames_uint8)} frames @ {fps:.1f} fps) ...",
           flush=True)
@@ -165,8 +173,8 @@ def process_single_video(model, input_path, save_dir, device, save_gt=False,
         _write_video(os.path.join(save_dir, f"{stem}.mp4"), transferred, fps=fps)
 
         # Load reference and query videos
-        ref_path = os.path.join(src_dir, f"{base}_ref_shadow.mp4")
-        query_path = os.path.join(src_dir, f"{base}_query_shadow.mp4")
+        ref_path = os.path.join(src_dir, f"{base}_ref_{video_type}.mp4")
+        query_path = os.path.join(src_dir, f"{base}_query_{video_type}.mp4")
         ref_frames = _read_video_frames(ref_path) if os.path.exists(ref_path) else []
         query_frames = _read_video_frames(query_path) if os.path.exists(query_path) else []
 
@@ -205,6 +213,14 @@ def parse_args():
                    help="Residual mode: subtract blank (frame 0 of the input transferred "
                         "video) before inference, predict refined residual, add blank back "
                         "for absolute output. Also saves *_pred_residual.mp4 visualization.")
+    p.add_argument('--video_type', default='shadow',
+                   help="Appearance domain of the GT/ref videos loaded with --save_gt: "
+                        "{base}_query_{video_type}.mp4 / {base}_ref_{video_type}.mp4. Use "
+                        "'tactile_normal' for the surface-normal-encoded domain.")
+    p.add_argument('--normal_blank', action='store_true',
+                   help="With --residual: use the fixed flat-surface-normal (0,0,1) encoding "
+                        "as the blank instead of frame 0 of the input video. Physically "
+                        "correct for --video_type tactile_normal.")
     return p.parse_args()
 
 
@@ -224,7 +240,8 @@ def main():
 
     if args.input_video:
         process_single_video(model, args.input_video, args.save_dir, device,
-                             save_gt=args.save_gt, residual=args.residual)
+                             save_gt=args.save_gt, residual=args.residual,
+                             video_type=args.video_type, normal_blank=args.normal_blank)
 
     else:
         # Collect object IDs
@@ -255,7 +272,8 @@ def main():
                 done += 1
                 print(f"[{done}/{total}] obj {obj_id} pair {pair_idx}", end='  ', flush=True)
                 process_single_video(model, vid_path, out_dir, device,
-                                     save_gt=args.save_gt, residual=args.residual)
+                                     save_gt=args.save_gt, residual=args.residual,
+                                     video_type=args.video_type, normal_blank=args.normal_blank)
 
     print("\nDone.")
 

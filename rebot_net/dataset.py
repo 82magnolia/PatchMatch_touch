@@ -33,13 +33,36 @@ def _resolve_lq_path(obj_dir, pair_idx):
     return None
 
 
-def _load_blank(video_path):
-    """Load frame 0 of a video as the no-contact blank frame."""
+# Flat/no-contact tactile_normal encoding for the surface normal (0, 0, 1):
+# Taxim's height_map_to_normals + uint8((n+1)/2*255) encoding maps a flat gel
+# (normal exactly (0,0,1) everywhere) to this exact RGB triple regardless of
+# object or video (see Taxim/OpticalSimulation/simOptical.py). Used as a fixed
+# residual baseline for tactile_normal videos instead of a frame-0-derived
+# blank, since the physically correct no-contact reading is a universal
+# constant here (unlike the shadow/appearance domain, where it varies per
+# object/lighting and must be read from frame 0).
+_FLAT_NORMAL_RGB = torch.tensor([127.0, 127.0, 255.0]) / 255.0
+
+
+def _normal_blank(h, w):
+    return _FLAT_NORMAL_RGB.view(3, 1, 1).expand(3, h, w).clone()
+
+
+def _load_blank(video_path, normal_blank=False):
+    """Load the no-contact blank frame for residual mode.
+
+    Default: frame 0 of the given video. When normal_blank=True, the video's
+    frame-0 content is discarded (only used for its shape) and the constant
+    flat-normal encoding is returned instead -- see _FLAT_NORMAL_RGB.
+    """
     cap = cv2.VideoCapture(video_path)
     ret, frame = cap.read()
     cap.release()
     if not ret:
         raise RuntimeError(f"Failed to read blank frame from {video_path}")
+    if normal_blank:
+        h, w = frame.shape[:2]
+        return _normal_blank(h, w)
     return _to_tensor(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
 
@@ -88,34 +111,46 @@ class TactileTransferDataset(data.Dataset):
 
     When residual=True, inputs and targets are expressed as contact residuals:
         residual[t] = video[t] - blank
-    where blank is frame 0 of the transferred video itself
+    where blank is, by default, frame 0 of the transferred video itself
     ({pair_idx}_transferred_em.mp4 or {pair_idx}_transferred.mp4, see
     _resolve_lq_path) — always available at real deployment (unlike the
     query's own touch video, which only exists for paired train/eval data)
     and already in query coordinate space (unlike the raw reference video,
-    which lives in reference coordinate space).
+    which lives in reference coordinate space). When normal_blank=True
+    (tactile_normal-modality videos), blank is instead the fixed encoding of
+    the flat surface normal (0,0,1) — see _FLAT_NORMAL_RGB — since that is
+    the true, video-independent no-contact reading in that domain.
     The returned dict includes a 'blank' key for reconstruction.
+
+    video_type selects which appearance domain's videos to load, matching the
+    {idx}_{video_type}.mp4 / {idx}_query_{video_type}.mp4 /
+    {idx}_ref_{video_type}.mp4 naming written by
+    main_retrieval_transfer_feat_match.py (default 'shadow'; e.g.
+    'tactile_normal' for the surface-normal-encoded domain).
 
     Directory layout expected:
         transfer_dir/
             {obj_id}/
-                {pair_idx}_transferred_em.mp4   # network input, blank source
-                                                 # (patchmatch/EM backend), or
-                {pair_idx}_transferred.mp4       # (dinov3_feat_match backend)
-                {pair_idx}_query_shadow.mp4      # ground truth
-                {pair_idx}_ref_shadow.mp4        # reference (viz only)
+                {pair_idx}_transferred_em.mp4        # network input, blank source
+                                                      # (patchmatch/EM backend), or
+                {pair_idx}_transferred.mp4            # (dinov3_feat_match backend)
+                {pair_idx}_query_{video_type}.mp4     # ground truth
+                {pair_idx}_ref_{video_type}.mp4       # reference (viz only)
     """
 
     NUM_PAIRS = 8
 
     def __init__(self, transfer_dir, object_ids, split='train', use_hflip=True,
                  residual=False, cond_dir=None, mask_cond=False,
-                 film_modality=None, film_scale=100):
+                 film_modality=None, film_scale=100, video_type='shadow',
+                 normal_blank=False):
         super().__init__()
         self.transfer_dir = transfer_dir
         self.split = split
         self.use_hflip = use_hflip and (split == 'train')
         self.residual = residual
+        self.video_type = video_type
+        self.normal_blank = normal_blank
         # Query conditioning (both sourced from cond_dir/{obj}/...):
         #   mask_cond   -> concat the per-frame render_mask (1ch, aligned) to lq
         #   film_modality -> load a static geometry render (3ch) returned as 'film'
@@ -171,7 +206,7 @@ class TactileTransferDataset(data.Dataset):
         obj_dir = self._obj_dir(obj_id)
 
         lq_path = _resolve_lq_path(obj_dir, pair_idx)
-        gt_path = os.path.join(obj_dir, f"{pair_idx}_query_shadow.mp4")
+        gt_path = os.path.join(obj_dir, f"{pair_idx}_query_{self.video_type}.mp4")
 
         cap_lq = cv2.VideoCapture(lq_path)
         cap_gt = cv2.VideoCapture(gt_path)
@@ -195,7 +230,7 @@ class TactileTransferDataset(data.Dataset):
         gt = _to_tensor(frame_gt)
 
         if self.residual:
-            blank = _load_blank(lq_path)
+            blank = _load_blank(lq_path, self.normal_blank)
             lq = lq - blank.unsqueeze(0)   # (2, 3, H, W); only RGB is residualised
             gt = gt - blank
 
@@ -233,11 +268,11 @@ class TactileTransferDataset(data.Dataset):
         """
         obj_dir = self._obj_dir(obj_id)
         lq_path = _resolve_lq_path(obj_dir, pair_idx)
-        gt_path = os.path.join(obj_dir, f"{pair_idx}_query_shadow.mp4")
+        gt_path = os.path.join(obj_dir, f"{pair_idx}_query_{self.video_type}.mp4")
 
         blank = None
         if self.residual:
-            blank = _load_blank(lq_path)
+            blank = _load_blank(lq_path, self.normal_blank)
 
         cap_lq = cv2.VideoCapture(lq_path)
         cap_gt = cv2.VideoCapture(gt_path)

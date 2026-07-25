@@ -3,6 +3,7 @@ import os
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 import wandb
 from skimage.metrics import mean_squared_error as compute_mse
 from skimage.metrics import peak_signal_noise_ratio as compute_psnr
@@ -11,6 +12,59 @@ from skimage.metrics import structural_similarity as compute_ssim
 
 def _charbonnier_loss(pred, gt, eps=1e-6):
     return (pred - gt).pow(2).add(eps).sqrt().mean()
+
+
+# --- Optional auxiliary sharpness losses (full-image, unmasked) -----------
+# Charbonnier-on-the-masked-contact-region (above) is a pure pixel loss, which
+# is well known to bias regression networks toward the conditional mean (i.e.
+# blur) whenever there is any ambiguity about high-frequency content. These
+# terms penalize different aspects of that: _gradient_loss keeps edges sharp
+# directly, _ssim_loss keeps local structure/contrast, and LPIPS (used
+# inline in Trainer.train_epoch via self.lpips_model) keeps deep-feature
+# similarity. All operate on the full frame, not the sparse contact mask,
+# since they need spatial neighborhoods to be meaningful.
+
+def _sobel_kernels(channels, device, dtype):
+    kx = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]], device=device, dtype=dtype)
+    ky = kx.t()
+    kx = kx.view(1, 1, 3, 3).repeat(channels, 1, 1, 1)
+    ky = ky.view(1, 1, 3, 3).repeat(channels, 1, 1, 1)
+    return kx, ky
+
+
+def _gradient_loss(pred, gt):
+    """L1 distance between Sobel gradients of pred and gt (per-channel, full image)."""
+    c = pred.shape[1]
+    kx, ky = _sobel_kernels(c, pred.device, pred.dtype)
+    pred_gx = F.conv2d(pred, kx, padding=1, groups=c)
+    pred_gy = F.conv2d(pred, ky, padding=1, groups=c)
+    gt_gx = F.conv2d(gt, kx, padding=1, groups=c)
+    gt_gy = F.conv2d(gt, ky, padding=1, groups=c)
+    return (pred_gx - gt_gx).abs().mean() + (pred_gy - gt_gy).abs().mean()
+
+
+def _gaussian_window(window_size, sigma, channels, device, dtype):
+    coords = torch.arange(window_size, device=device, dtype=dtype) - window_size // 2
+    g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+    g = (g / g.sum()).unsqueeze(1)
+    window = g @ g.t()
+    return window.expand(channels, 1, window_size, window_size).contiguous()
+
+
+def _ssim_loss(pred, gt, window_size=11):
+    """1 - SSIM, differentiable, single-scale Gaussian-windowed. pred/gt in [0,1]."""
+    c = pred.shape[1]
+    window = _gaussian_window(window_size, 1.5, c, pred.device, pred.dtype)
+    pad = window_size // 2
+    mu_p = F.conv2d(pred, window, padding=pad, groups=c)
+    mu_g = F.conv2d(gt, window, padding=pad, groups=c)
+    mu_p2, mu_g2, mu_pg = mu_p * mu_p, mu_g * mu_g, mu_p * mu_g
+    sigma_p2 = F.conv2d(pred * pred, window, padding=pad, groups=c) - mu_p2
+    sigma_g2 = F.conv2d(gt * gt, window, padding=pad, groups=c) - mu_g2
+    sigma_pg = F.conv2d(pred * gt, window, padding=pad, groups=c) - mu_pg
+    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    ssim_map = ((2 * mu_pg + C1) * (2 * sigma_pg + C2)) / ((mu_p2 + mu_g2 + C1) * (sigma_p2 + sigma_g2 + C2))
+    return 1 - ssim_map.mean()
 
 
 def _write_video(path, frames_rgb_float, fps=5.0):
@@ -114,6 +168,21 @@ class Trainer:
                 continue
             loss = _charbonnier_loss(pred[loss_mask.expand_as(pred)],
                                      gt[loss_mask.expand_as(gt)])
+
+            # Optional auxiliary sharpness losses, full-image (see module docstring
+            # above _sobel_kernels). Assume [0,1] absolute pixel range -- only
+            # meaningful/enabled for non-residual runs (lambda defaults are 0, a
+            # no-op, so residual runs are unaffected unless explicitly opted in).
+            lambda_edge = getattr(self.args, 'lambda_edge', 0.0)
+            lambda_ssim = getattr(self.args, 'lambda_ssim', 0.0)
+            lambda_lpips = getattr(self.args, 'lambda_lpips', 0.0)
+            if lambda_edge > 0:
+                loss = loss + lambda_edge * _gradient_loss(pred, gt)
+            if lambda_ssim > 0:
+                loss = loss + lambda_ssim * _ssim_loss(pred.clamp(0, 1), gt.clamp(0, 1))
+            if lambda_lpips > 0:
+                lp = self.lpips_model(pred.clamp(0, 1) * 2 - 1, gt.clamp(0, 1) * 2 - 1).mean()
+                loss = loss + lambda_lpips * lp
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -232,8 +301,9 @@ class Trainer:
                         _write_video(
                             os.path.join(video_save_dir, f"{obj_id}_{pair_idx}_transferred.mp4"),
                             transferred_frames)
+                        video_type = getattr(dataset, 'video_type', 'shadow')
                         ref_path = os.path.join(dataset.transfer_dir, str(obj_id),
-                                                f"{pair_idx}_ref_shadow.mp4")
+                                                f"{pair_idx}_ref_{video_type}.mp4")
                         ref_frames = _read_video_frames(ref_path)
                         _make_grid_video(
                             os.path.join(video_save_dir, f"{obj_id}_{pair_idx}_grid.mp4"),

@@ -58,6 +58,17 @@ def parse_args():
                    help="Evaluate in residual space: LQ and GT are (video - blank), "
                         "blank from frame 0 of the transferred video. "
                         "Metrics are computed on absolute reconstructions.")
+    p.add_argument('--video_type', default='shadow',
+                   help="Appearance domain of the videos to load: {pair}_query_{video_type}.mp4 "
+                        "/ {pair}_ref_{video_type}.mp4, matching "
+                        "main_retrieval_transfer_feat_match.py's output naming. Use "
+                        "'tactile_normal' for the surface-normal-encoded domain.")
+    p.add_argument('--normal_blank', action='store_true',
+                   help="With --residual: use the fixed flat-surface-normal (0,0,1) encoding "
+                        "as the blank instead of frame 0 of the transferred video. Physically "
+                        "correct for --video_type tactile_normal.")
+    p.add_argument('--bottleneck_hw', type=int, default=24,
+                   help="Must match the checkpoint's training-time --bottleneck_hw (default 24).")
     cond_utils.add_cond_args(p)
     return p.parse_args()
 
@@ -76,11 +87,14 @@ def main():
 
     test_dataset = TactileTransferDataset(args.transfer_dir, test_ids, split='test',
                                           residual=args.residual,
+                                          video_type=args.video_type,
+                                          normal_blank=args.normal_blank,
                                           **cond_utils.dataset_cond_kwargs(args))
 
     # --- Model ---
     cond_chans, film_chans = cond_utils.cond_dims(args)
-    model = build_model(args.model_size, cond_chans, film_chans).to(device)
+    model = build_model(args.model_size, cond_chans, film_chans,
+                        bottleneck_hw=args.bottleneck_hw).to(device)
     ckpt = torch.load(args.checkpoint, map_location=device)
     model.load_state_dict(ckpt['model_state'])
     print(f"Loaded checkpoint from epoch {ckpt.get('epoch', '?')}  "
@@ -172,7 +186,7 @@ def main():
                             os.path.join(video_save_dir, f"{obj_id}_{pair_idx}_transferred.mp4"),
                             transferred_frames)
                         ref_path = os.path.join(args.transfer_dir, str(obj_id),
-                                                f"{pair_idx}_ref_shadow.mp4")
+                                                f"{pair_idx}_ref_{args.video_type}.mp4")
                         ref_frames = _read_video_frames(ref_path) if os.path.exists(ref_path) else []
                         if ref_frames:
                             _make_grid_video(
