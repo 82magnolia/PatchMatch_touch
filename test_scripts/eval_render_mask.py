@@ -331,7 +331,11 @@ def main():
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--variants", default="baseline,baseline_aligned,diff_max")
     p.add_argument("--thres", type=float, default=RENDER_MASK_THRES_M)
-    p.add_argument("--contact_threshold", type=float, default=0.05)
+    # Match production: process_single_shot.NORMAL_CONTACT_THRESHOLD gates the
+    # real pipeline's contact footprint at 0.025. compute_contact_mask's own
+    # default (0.05) is too tight here (ragged holes) and, scored as GT, biases
+    # the whole sweep toward "predict nothing" -- see log/render_mask_sync_study.html.
+    p.add_argument("--contact_threshold", type=float, default=0.025)
     p.add_argument("--blur_sigma", type=float, default=3.0)
     p.add_argument("--morph_radius", type=int, default=5)
     p.add_argument("--rebuild", action="store_true")
