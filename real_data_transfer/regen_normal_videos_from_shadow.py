@@ -1,7 +1,7 @@
 """Regenerate ONLY the tactile normal videos (*_tactile_normal.mp4) in place,
 from each touch's existing *_shadow.mp4, using the current production settings
-(compute_contact_mask @ NORMAL_CONTACT_THRESHOLD, Poisson boundary blend @
-NORMAL_POISSON_BAND_PX). No other artifact is touched and no re-segmentation
+(compute_contact_mask @ NORMAL_CONTACT_THRESHOLD, whole-foreground Poisson blend @
+NORMAL_POISSON_BLEND). No other artifact is touched and no re-segmentation
 happens -- the shadow video IS the resampled sequence the normal video is built
 from, so this exactly reproduces process_single_shot's normal-video block.
 
@@ -25,9 +25,10 @@ sys.path.insert(0, osp.dirname(osp.abspath(__file__)))
 
 from _gelsight_processing import (  # noqa: E402
     compute_contact_mask, normals_to_colormap, write_video, VIDEO_FPS)
-from _tactile_normal_net import load_normal_net, frame_to_normals  # noqa: E402
+from _tactile_normal_net import (  # noqa: E402
+    load_normal_net, frame_to_normals, baseline_gradients)
 from process_single_shot import (  # noqa: E402
-    NORMAL_CONTACT_THRESHOLD, NORMAL_POISSON_BAND_PX, DEFAULT_NORMAL_NN_MODEL_PATH)
+    NORMAL_CONTACT_THRESHOLD, NORMAL_POISSON_BLEND, DEFAULT_NORMAL_NN_MODEL_PATH)
 
 
 def read_video(path):
@@ -47,6 +48,7 @@ def regen_touch(shadow_path, net, device):
     if len(shadow) < 1:
         return 0
     base = shadow[0].astype(np.float32) / 255.0
+    baseline = baseline_gradients(shadow[0], net, device)
     frames = []
     for f in shadow:
         cmask = compute_contact_mask(
@@ -54,7 +56,7 @@ def regen_touch(shadow_path, net, device):
             threshold=NORMAL_CONTACT_THRESHOLD)[..., 0] > 0.5
         frames.append(normals_to_colormap(frame_to_normals(
             f, net, device, contact_mask=cmask,
-            poisson_band_px=NORMAL_POISSON_BAND_PX)))
+            poisson_blend=NORMAL_POISSON_BLEND, baseline=baseline)))
     out = shadow_path[:-len("_shadow.mp4")] + "_tactile_normal.mp4"
     write_video(out, frames, VIDEO_FPS)
     return len(frames)
