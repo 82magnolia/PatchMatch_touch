@@ -62,36 +62,30 @@ def unit_normals(nx, ny):
     return np.stack([nx, ny, nz], axis=-1)
 
 
-def boundary_band(mask, band_px):
-    """Boolean mask of pixels within band_px of the contact-mask boundary, on
-    both sides -- the only region the Poisson blend is allowed to modify."""
-    m = mask.astype(np.uint8)
-    din = cv2.distanceTransform(m, cv2.DIST_L2, 5)
-    dout = cv2.distanceTransform(1 - m, cv2.DIST_L2, 5)
-    return (mask & (din <= band_px)) | (~mask & (dout <= band_px))
+def poisson_blend_normals(nx, ny, mask, *, use_guidance=True):
+    """Poisson/gradient-domain blend of the seam, both channels at once.
 
+    Every pixel of the contact mask is an unknown; the whole background is
+    Dirichlet-fixed at 0 (flat). With use_guidance the right-hand side is the
+    input field's own Laplacian, so the solution is that field plus the harmonic
+    correction bringing it to 0 at the mask border: every interior gradient is
+    preserved exactly, while any low-frequency offset between foreground and
+    background is absorbed across the whole region. Standard Poisson editing
+    (Perez et al.).
 
-def poisson_blend_normals(nx, ny, mask, band_px=None, use_guidance=True):
-    """Poisson/gradient-domain blend of the (nx, ny) seam, both channels at once.
+    Only in-mask neighbour pairs contribute guidance; pairs straddling the mask
+    boundary are left out on purpose, so the solution is free to meet the flat
+    background smoothly rather than reproducing the step there. Pixels at the
+    image edge simply drop the missing neighbour, which is a Neumann (zero-flux)
+    condition -- masks that run to the frame border float rather than being
+    pulled to 0.
 
-    band_px=None (the default) solves over the *entire* foreground -- every pixel
-    of the contact mask is an unknown and the whole background is Dirichlet-fixed
-    at 0. With use_guidance the right-hand side is the net field's own Laplacian,
-    so the solution is that field plus the harmonic correction that brings it to
-    0 at the mask border: every interior gradient is preserved exactly, while any
-    low-frequency offset between foreground and background is absorbed across the
-    whole region instead of being crushed into a few pixels at the rim. This is
-    the standard Poisson-editing formulation (Perez et al.).
-
-    band_px=<int> restricts the unknowns to pixels within that many pixels of the
-    boundary, pinning the deep interior to the net values and the deep exterior to
-    0. That was the original behaviour; it cannot remove an offset that lives in
-    the pinned interior, only smear the resulting step over the band, which shows
-    up as a halo at the contact edge. Retained for the comparison in
-    test_scripts/compare_boundary_blend.py.
-
-    The sparse system depends only on the region geometry, so it is factored once
+    The sparse system depends only on the mask geometry, so it is factored once
     and applied to both channels. Returns (nx, ny).
+
+    use_guidance is keyword-only on purpose: this signature previously took a
+    band_px in that slot, and a leftover positional call must fail loudly rather
+    than quietly reinterpret a band width as a truthy use_guidance.
     """
     from scipy.sparse import csr_matrix
     from scipy.sparse.linalg import factorized
@@ -99,8 +93,7 @@ def poisson_blend_normals(nx, ny, mask, band_px=None, use_guidance=True):
     nx = np.asarray(nx, dtype=np.float32)
     ny = np.asarray(ny, dtype=np.float32)
     mask = np.asarray(mask, dtype=bool)
-    region = mask if band_px is None else boundary_band(mask, band_px)
-    ys, xs = np.where(region)
+    ys, xs = np.where(mask)
     n = len(ys)
     if n == 0:
         return nx.copy(), ny.copy()
@@ -109,11 +102,10 @@ def poisson_blend_normals(nx, ny, mask, band_px=None, use_guidance=True):
     idx = np.full((h, w), -1, dtype=np.int64)
     idx[ys, xs] = np.arange(n)
     here = np.arange(n)
-    in_mask_here = mask[ys, xs]
 
     rows, cols = [here], [here]
     diag = np.zeros(n, dtype=np.float64)
-    data = [diag]  # filled in below; kept by reference
+    data = [diag]  # accumulated in the loop below; held here by reference
     bx = np.zeros(n, dtype=np.float64)
     by = np.zeros(n, dtype=np.float64)
 
@@ -121,33 +113,21 @@ def poisson_blend_normals(nx, ny, mask, band_px=None, use_guidance=True):
         yy, xx = ys + dy, xs + dx
         inb = (yy >= 0) & (yy < h) & (xx >= 0) & (xx < w)  # else Neumann: drop
         diag[inb] += 1.0
-        yi, xi = yy[inb], xx[inb]
 
         j = np.full(n, -1, dtype=np.int64)
-        j[inb] = idx[yi, xi]
-        unknown = j >= 0                      # neighbour is solved for too
+        j[inb] = idx[yy[inb], xx[inb]]
+        # In-mask neighbours are unknowns; in-bounds ones outside the mask are
+        # the Dirichlet boundary, and since that value is 0 they contribute
+        # nothing beyond the diagonal count already added above.
+        unknown = j >= 0
         rows.append(here[unknown])
         cols.append(j[unknown])
-        data.append(np.full(unknown.sum(), -1.0))
-
-        # Fixed neighbour: the net value if it is inside the mask, else 0.
-        # (Unreachable when region is the whole mask -- every in-mask neighbour
-        # is then an unknown -- but needed for the band case.)
-        fixed_in = np.zeros(n, dtype=bool)
-        fixed_in[inb] = mask[yi, xi]
-        fixed_in &= ~unknown
-        bx[fixed_in] += nx[yy[fixed_in], xx[fixed_in]]
-        by[fixed_in] += ny[yy[fixed_in], xx[fixed_in]]
+        data.append(np.full(int(unknown.sum()), -1.0))
 
         if use_guidance:
-            # Import the net's gradient, but only across pairs that are both
-            # inside the mask: cross-boundary pairs are left out on purpose, so
-            # the solution is free to meet the flat background smoothly.
-            g = np.zeros(n, dtype=bool)
-            g[inb] = mask[yi, xi]
-            g &= in_mask_here
-            bx[g] += nx[ys[g], xs[g]] - nx[yy[g], xx[g]]
-            by[g] += ny[ys[g], xs[g]] - ny[yy[g], xx[g]]
+            u = unknown
+            bx[u] += nx[ys[u], xs[u]] - nx[yy[u], xx[u]]
+            by[u] += ny[ys[u], xs[u]] - ny[yy[u], xx[u]]
 
     A = csr_matrix((np.concatenate(data),
                     (np.concatenate(rows), np.concatenate(cols))), shape=(n, n))
@@ -273,10 +253,9 @@ def frame_to_normals(frame_bgr, net, device, contact_mask=None,
     markers_threshold masking). Pass None (with no contact_mask) to run the
     network on every pixel.
 
-    poisson_blend: False = no blending (hard mask boundary). True = solve over
-    the whole foreground, the entire background Dirichlet-fixed at 0. An int =
-    solve only within that many pixels of the boundary (the old band mode).
-    See poisson_blend_normals.
+    poisson_blend: True to Poisson-blend the field over the whole foreground
+    against the flat background (see poisson_blend_normals), False for a hard
+    mask boundary.
 
     baseline: optional (gx, gy) tuple from baseline_gradients() for this
     session's no-contact frame. When given, the network is run on every pixel,
@@ -306,11 +285,6 @@ def frame_to_normals(frame_bgr, net, device, contact_mask=None,
         flat[..., 2] = 1.0
         return flat
 
-    # False/None/0 -> off; True -> whole foreground (band_px=None); int -> band.
-    blend = poisson_blend is not False and poisson_blend is not None \
-        and poisson_blend != 0
-    band_px = None if poisson_blend is True else poisson_blend
-
     if baseline is not None:
         # Run everywhere so the baseline can be subtracted per pixel, in the
         # gradient space gsrobotics zeroes in (see baseline_gradients), then
@@ -321,16 +295,16 @@ def frame_to_normals(frame_bgr, net, device, contact_mask=None,
         grad_y = grad_y - baseline[1]
         grad_x[~contact_mask] = 0.0
         grad_y[~contact_mask] = 0.0
-        if blend:
+        if poisson_blend:
             grad_x, grad_y = poisson_blend_normals(
-                grad_x, grad_y, contact_mask, band_px)
+                grad_x, grad_y, contact_mask)
         return gradients_to_normals(grad_x, grad_y)
 
     normal_x, normal_y = net_nxny(frame_bgr, net, device, contact_mask)
 
-    if blend:
+    if poisson_blend:
         normal_x, normal_y = poisson_blend_normals(
-            normal_x, normal_y, contact_mask, band_px)
+            normal_x, normal_y, contact_mask)
 
     # unit_normals enforces nx^2 + ny^2 + nz^2 == 1 for every pixel (the raw
     # network (nx, ny) and the Poisson solve can both leave the unit disk).

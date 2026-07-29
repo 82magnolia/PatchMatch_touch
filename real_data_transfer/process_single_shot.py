@@ -63,13 +63,10 @@ DEFAULT_NORMAL_NN_MODEL_PATH = os.path.join(
 # background speckle. See test_scripts/sweep_normal_mask_thr.py.
 NORMAL_CONTACT_THRESHOLD = 0.025
 
-# Poisson-blend the normal field over the WHOLE contact mask, with the entire
+# Poisson-blend the normal field over the whole contact mask, with the entire
 # background Dirichlet-fixed at flat. Interior gradients are preserved exactly
 # (the solve's right-hand side is the field's own Laplacian) while any residual
-# foreground/background offset is absorbed across the full region. The earlier
-# setting solved only an 8-pixel band around the outline, which left the deep
-# interior pinned and could only smear a step into a rim halo; set this to an
-# int to get that band behaviour back. See test_scripts/compare_boundary_blend.py.
+# foreground/background offset is absorbed across the full region.
 NORMAL_POISSON_BLEND = True
 
 
