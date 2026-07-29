@@ -67,7 +67,11 @@ NORMAL_CONTACT_THRESHOLD = 0.025
 # background Dirichlet-fixed at flat. Interior gradients are preserved exactly
 # (the solve's right-hand side is the field's own Laplacian) while any residual
 # foreground/background offset is absorbed across the full region.
-NORMAL_POISSON_BLEND = True
+#
+# Off: once the baseline slopes are subtracted (see baseline_gradients) the
+# foreground already meets the flat background smoothly, so the blend corrects
+# little and costs ~0.17 s/frame. Set True to re-enable.
+NORMAL_POISSON_BLEND = False
 
 
 # ── Per-segment save (mirrors capture_gelsight_single_shot._save_segment) ────
