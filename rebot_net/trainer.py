@@ -176,6 +176,7 @@ class Trainer:
             lambda_edge = getattr(self.args, 'lambda_edge', 0.0)
             lambda_ssim = getattr(self.args, 'lambda_ssim', 0.0)
             lambda_lpips = getattr(self.args, 'lambda_lpips', 0.0)
+            lambda_delta = getattr(self.args, 'lambda_delta', 0.0)
             if lambda_edge > 0:
                 loss = loss + lambda_edge * _gradient_loss(pred, gt)
             if lambda_ssim > 0:
@@ -183,6 +184,14 @@ class Trainer:
             if lambda_lpips > 0:
                 lp = self.lpips_model(pred.clamp(0, 1) * 2 - 1, gt.clamp(0, 1) * 2 - 1).mean()
                 loss = loss + lambda_lpips * lp
+            if lambda_delta > 0:
+                # Penalize the magnitude of the learned correction (pred minus
+                # the transferred input the model already added back internally
+                # via its own residual connection, see models/archs.py's
+                # `return conv_last(...) + x_org`) -- discourages large edits
+                # unless the data justifies them, complementing zero_init_final
+                # (which only affects the starting point, not the trajectory).
+                loss = loss + lambda_delta * (pred - lq[:, 1, :3]).abs().mean()
 
             self.optimizer.zero_grad()
             loss.backward()

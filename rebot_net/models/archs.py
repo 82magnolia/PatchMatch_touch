@@ -279,7 +279,8 @@ class rebotnet(nn.Module):
                  dim_head = 64,
                  cond_chans = 0,
                  film_chans = 0,
-                 bottleneck_hw = 24
+                 bottleneck_hw = 24,
+                 zero_init_final = False
                  ):
         super().__init__()
         self.in_chans = in_chans
@@ -391,6 +392,16 @@ class rebotnet(nn.Module):
         self.upsamplef2 = Upsample(4, num_feat3)
 
         self.conv_last = nn.Conv2d(num_feat3, 3, kernel_size=( 3, 3), padding=(1, 1))
+        # zero_init_final: start the network as an exact identity (output ==
+        # x_org, the transferred frame) rather than transferred + an
+        # arbitrary random-init correction. forward() always computes
+        # conv_last(...) + x_org, so zeroing conv_last's weight/bias makes
+        # that sum exactly x_org at step 0 -- the network then only learns to
+        # depart from "trust the transferred input" as training justifies it,
+        # same identity-start trick already used for FiLMEncoder's heads.
+        if zero_init_final:
+            nn.init.zeros_(self.conv_last.weight)
+            nn.init.zeros_(self.conv_last.bias)
 
         self.chchange1 = nn.Conv2d(num_feat, num_feat1, kernel_size=( 3, 3), padding=(1, 1))
         self.chchange2 = nn.Conv2d(num_feat1, num_feat2, kernel_size=( 3, 3), padding=(1, 1))
