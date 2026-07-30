@@ -26,6 +26,12 @@ def add_cond_args(p):
     p.add_argument('--film_modality', default='none',
                    choices=['none', 'normal', 'curvature', 'height'],
                    help="Static geometry render injected via global FiLM")
+    p.add_argument('--geom_concat', action='store_true',
+                   help="Inject the --film_modality geometry render (e.g. normal) by "
+                        "CONCATENATING it as 3 aligned input channels (broadcast to both "
+                        "frames) instead of via global FiLM. FiLM is then disabled. Same "
+                        "idea as --mask_cond but 3-channel and from the static render. "
+                        "Requires --film_modality and --cond_dir.")
     p.add_argument('--film_scale', type=int, default=4,
                    help="Scale suffix of the FiLM geometry jpg (sim uses 100, real 4)")
     p.add_argument('--time_cond', default='none',
@@ -44,6 +50,11 @@ def add_cond_args(p):
 def film_modality(args):
     m = getattr(args, 'film_modality', 'none')
     return None if m in (None, 'none') else m
+
+
+def geom_concat(args):
+    """True when the geometry render is concatenated as input instead of FiLM'd."""
+    return getattr(args, 'geom_concat', False) and film_modality(args) is not None
 
 
 def time_cond_mode(args):
@@ -78,9 +89,13 @@ def cond_dims(args):
     render_mask (mask_cond) and, for --time_cond concat, one constant time
     channel. These ride the same generic cond-channel path in the network.
     """
+    geomc = geom_concat(args)
     cond_chans = (MASK_CHANS if getattr(args, 'mask_cond', False) else 0) \
-        + (1 if time_concat(args) else 0)
-    film_chans = FILM_CHANS if film_modality(args) else 0
+        + (1 if time_concat(args) else 0) \
+        + (FILM_CHANS if geomc else 0)
+    # FiLM is active only when a geometry render is requested AND it is not being
+    # concatenated instead.
+    film_chans = FILM_CHANS if (film_modality(args) and not geomc) else 0
     return cond_chans, film_chans
 
 
@@ -90,8 +105,8 @@ def dataset_cond_kwargs(args):
                 mask_cond=getattr(args, 'mask_cond', False),
                 film_modality=film_modality(args),
                 film_scale=getattr(args, 'film_scale', 4),
-                time_cond=time_cond_mode(args))
-
+                time_cond=time_cond_mode(args),
+                geom_concat=geom_concat(args))
 
 def check_cond_args(args):
     """Validate that a cond_dir is given when any conditioning is requested."""

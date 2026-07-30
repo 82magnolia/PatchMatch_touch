@@ -153,7 +153,7 @@ class TactileTransferDataset(data.Dataset):
     def __init__(self, transfer_dir, object_ids, split='train', use_hflip=True,
                  residual=False, cond_dir=None, mask_cond=False,
                  film_modality=None, film_scale=100, video_type='shadow',
-                 normal_blank=False, time_cond='none'):
+                 normal_blank=False, time_cond='none', geom_concat=False):
         super().__init__()
         self.transfer_dir = transfer_dir
         self.split = split
@@ -171,15 +171,21 @@ class TactileTransferDataset(data.Dataset):
         self.time_cond = time_cond
         self.time_concat = (time_cond == 'concat')
         self.time_scalar = time_cond in ('film', 'token', 'film_token')
-        # Query conditioning (both sourced from cond_dir/{obj}/...):
+        # Query conditioning (all sourced from cond_dir/{obj}/...):
         #   mask_cond   -> concat the per-frame render_mask (1ch, aligned) to lq
-        #   film_modality -> load a static geometry render (3ch) returned as 'film'
+        #   film_modality -> load a static geometry render (3ch). By default it is
+        #                    returned as 'film' for global FiLM modulation; with
+        #                    geom_concat it is instead concatenated as 3 aligned
+        #                    input channels (broadcast to both frames), same idea
+        #                    as mask_cond but 3ch and from the static render --
+        #                    and no 'film' is returned (FiLM is off).
         # These are query-side signals available at deployment; do NOT use the
         # tactile-video normals, which are derived from the GT.
         self.cond_dir = cond_dir
         self.mask_cond = mask_cond
         self.film_modality = film_modality
         self.film_scale = film_scale
+        self.geom_concat = geom_concat and (film_modality is not None)
 
         # Build flat sample index: list of (obj_id, pair_idx, frame_idx)
         self.samples = []
@@ -268,6 +274,13 @@ class TactileTransferDataset(data.Dataset):
             mask_pair = torch.stack([_chw(m_tm1), _chw(m_t)], dim=0)  # (2,1,H,W)
             lq = torch.cat([lq, mask_pair], dim=1)                    # (2,3+1,H,W)
 
+        # Static geometry render concatenated as 3 aligned input channels
+        # (broadcast to both frames), in place of FiLM. Appended after the mask
+        # so cond-channel order stays fixed.
+        if self.geom_concat:
+            geom = self._load_film(obj_id, pair_idx, h, w, do_flip)   # (3,H,W)
+            lq = torch.cat([lq, torch.stack([geom, geom], dim=0)], dim=1)
+
         # Time as an extra constant input channel (appended last, after mask, so
         # channel order stays fixed). Same t_norm for both frames of the pair --
         # it labels the touch phase this training example targets.
@@ -278,7 +291,7 @@ class TactileTransferDataset(data.Dataset):
         out = {'lq': lq, 'gt': gt, 'meta': (obj_id, pair_idx, t)}
         if self.residual:
             out['blank'] = blank
-        if self.film_modality:
+        if self.film_modality and not self.geom_concat:
             out['film'] = self._load_film(obj_id, pair_idx, h, w, do_flip)
         if self.time_scalar:
             out['time'] = torch.tensor(t_norm, dtype=torch.float32)
@@ -311,6 +324,7 @@ class TactileTransferDataset(data.Dataset):
         cap_m = cv2.VideoCapture(self._mask_path(obj_id, pair_idx)) if self.mask_cond else None
         n_frames = int(cap_lq.get(cv2.CAP_PROP_FRAME_COUNT))
         film = None
+        geom = None
 
         try:
             prev_frame = None
@@ -348,11 +362,16 @@ class TactileTransferDataset(data.Dataset):
                     lq = torch.cat([lq, mask_pair], dim=1)
                     prev_mask = cur_mask
 
+                if self.geom_concat:
+                    if geom is None:
+                        geom = self._load_film(obj_id, pair_idx, h, w, do_flip=False)
+                    lq = torch.cat([lq, torch.stack([geom, geom], dim=0)], dim=1)
+
                 if self.time_concat:
                     tc = _time_channel(_norm_time(t, n_frames), h, w)
                     lq = torch.cat([lq, torch.stack([tc, tc], dim=0)], dim=1)
 
-                if self.film_modality and film is None:
+                if self.film_modality and not self.geom_concat and film is None:
                     film = self._load_film(obj_id, pair_idx, h, w, do_flip=False)
 
                 yield lq, gt, blank, film, _norm_time(t, n_frames)
