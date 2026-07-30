@@ -123,9 +123,10 @@ def main():
                 print(f"  Object {obj_id}  contact {pair_idx}", flush=True)
 
                 pred_frames, gt_frames, transferred_frames = [], [], []
-                for lq_pair, gt_frame, blank, film in dataset.iter_video_pairs(obj_id, pair_idx):
+                for lq_pair, gt_frame, blank, film, t_norm in dataset.iter_video_pairs(obj_id, pair_idx):
                     film_in = film.unsqueeze(0).to(device) if film is not None else None
-                    pred = model(lq_pair.unsqueeze(0).to(device), film=film_in).squeeze(0)
+                    t_in = torch.tensor([t_norm], device=device)   # ignored unless model has a time head
+                    pred = model(lq_pair.unsqueeze(0).to(device), film=film_in, t=t_in).squeeze(0)
                     lq_rgb = lq_pair[1, :3]                 # transferred RGB only
                     if args.residual:
                         blank_np = blank.permute(1, 2, 0).numpy()

@@ -157,8 +157,11 @@ class Trainer:
             film = batch.get('film')
             if film is not None:
                 film = film.to(self.device)
+            t = batch.get('time')              # (B,) normalized timestamps, or None
+            if t is not None:
+                t = t.to(self.device)
 
-            pred = self.model(lq, film=film)   # (B, 3, H, W)
+            pred = self.model(lq, film=film, t=t)   # (B, 3, H, W)
 
             with torch.no_grad():
                 # RGB channels only (lq may carry extra conditioning channels);
@@ -238,10 +241,11 @@ class Trainer:
                 pred_frames, gt_frames, transferred_frames = [], [], []
                 pred_residual_frames, gt_residual_frames = [], []
 
-                for lq_pair, gt_frame, blank, film in dataset.iter_video_pairs(obj_id, pair_idx):
+                for lq_pair, gt_frame, blank, film, t_norm in dataset.iter_video_pairs(obj_id, pair_idx):
                     lq_in = lq_pair.unsqueeze(0).to(self.device)  # (1,2,3(+cond),H,W)
                     film_in = film.unsqueeze(0).to(self.device) if film is not None else None
-                    pred = self.model(lq_in, film=film_in).squeeze(0)   # (3,H,W)
+                    t_in = torch.tensor([t_norm], device=self.device)   # ignored unless model has a time head
+                    pred = self.model(lq_in, film=film_in, t=t_in).squeeze(0)   # (3,H,W)
                     lq_rgb = lq_pair[1, :3]                              # transferred RGB
 
                     if self.residual:
