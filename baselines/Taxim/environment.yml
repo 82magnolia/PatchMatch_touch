@@ -1,0 +1,25 @@
+name: Taxim
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy=1.26
+  - opencv
+  - scipy
+  - scikit-image
+  - matplotlib
+  - pillow
+  - pyyaml
+  - tqdm
+  - pytest
+  - pip
+  - setuptools=75.8
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cpu
+      - trimesh
+      - open3d
+      - pyrender
+      - rtree
+      - lpips
+      - torch==2.4.1+cpu
+      - torchvision==0.19.1+cpu

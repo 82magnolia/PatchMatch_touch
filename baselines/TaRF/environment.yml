@@ -1,0 +1,33 @@
+name: TaRF
+channels:
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch=2.4.1=py3.10_cuda12.1_cudnn9.1.0_0
+  - torchvision=0.19.1=py310_cu121
+  - pytorch-cuda=12.1
+  - mkl=2023.1
+  - numpy=1.26
+  - opencv
+  - scipy
+  - scikit-image
+  - pillow
+  - pyyaml
+  - tqdm
+  - pytest
+  - pip
+  - setuptools=75.8
+  - pip:
+      - einops
+      - omegaconf
+      - pytorch-lightning==1.9.5
+      - torchmetrics==0.11.4
+      - lpips
+      - kornia
+      - albumentations
+      - taming-transformers-rom1504
+      - ipdb
+      - transformers==4.31.0
+      - openai-clip

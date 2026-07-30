@@ -1,0 +1,15 @@
+__pycache__/
+build/
+*.egg-info/
+*.so
+venv_*/
+.vs/
+.vscode/
+.idea/
+
+tmp_*
+*logs*
+*.mp4
+data/*
+TextureDreambooth/data/
+TextureDreambooth/output/

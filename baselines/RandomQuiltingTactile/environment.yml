@@ -1,0 +1,9 @@
+name: RandomQuiltingTactile
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy
+  - opencv
+  - scipy
+  - scikit-image

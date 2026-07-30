@@ -1,0 +1,3 @@
+[submodule "TactileDreamFusion/blender-render-toolkit"]
+	path = TactileDreamFusion/blender-render-toolkit
+	url = https://github.com/dunbar12138/blender-render-toolkit.git
