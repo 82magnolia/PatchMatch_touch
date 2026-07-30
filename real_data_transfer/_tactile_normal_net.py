@@ -214,6 +214,31 @@ def gradients_to_normals(gx, gy):
                     axis=-1).astype(np.float32)
 
 
+# RGB2NormNet's vertical component comes out mirrored relative to the convention
+# Taxim builds its normals with, so the two domains disagree by a sign on ny.
+#
+# Evidence: for an indentation the tangential normals must point radially from
+# the contact centre, which is a property of the deformation rather than of any
+# labelling choice. Over ~80 clips per domain, simulated normals score +0.555
+# radial as stored, while real normals score only +0.055 -- and +0.505 once ny is
+# negated, matching simulation in both magnitude and sign. Swapping nx/ny instead
+# yields a field that swirls around the contact (curl +0.505, radial ~0), which is
+# physically impossible for a press, so the sign flip is the correct correction.
+# See log/exp_normal_convention/report.html.
+#
+# Set False to reproduce the older, un-flipped videos.
+FLIP_NY = True
+
+
+def _apply_ny_convention(normals):
+    """Negate ny so real tactile normals match the simulated convention."""
+    if not FLIP_NY:
+        return normals
+    out = normals.copy()
+    out[..., 1] = -out[..., 1]
+    return out
+
+
 def baseline_gradients(frame_bgr, net, device):
     """Surface slopes the network reports for a *no-contact* reference frame.
 
@@ -298,7 +323,7 @@ def frame_to_normals(frame_bgr, net, device, contact_mask=None,
         if poisson_blend:
             grad_x, grad_y = poisson_blend_normals(
                 grad_x, grad_y, contact_mask)
-        return gradients_to_normals(grad_x, grad_y)
+        return _apply_ny_convention(gradients_to_normals(grad_x, grad_y))
 
     normal_x, normal_y = net_nxny(frame_bgr, net, device, contact_mask)
 
@@ -308,4 +333,4 @@ def frame_to_normals(frame_bgr, net, device, contact_mask=None,
 
     # unit_normals enforces nx^2 + ny^2 + nz^2 == 1 for every pixel (the raw
     # network (nx, ny) and the Poisson solve can both leave the unit disk).
-    return unit_normals(normal_x, normal_y)
+    return _apply_ny_convention(unit_normals(normal_x, normal_y))

@@ -89,12 +89,8 @@ def dataset_cond_kwargs(args):
     return dict(cond_dir=getattr(args, 'cond_dir', None),
                 mask_cond=getattr(args, 'mask_cond', False),
                 film_modality=film_modality(args),
-<<<<<<< HEAD
-                film_scale=getattr(args, 'film_scale', 4))
-=======
-                film_scale=getattr(args, 'film_scale', 8),
+                film_scale=getattr(args, 'film_scale', 4),
                 time_cond=time_cond_mode(args))
->>>>>>> d4bcd3b06436a9082cb209cc478440d811cf13d5
 
 
 def check_cond_args(args):
