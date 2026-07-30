@@ -73,7 +73,7 @@ CUDA_VISIBLE_DEVICES=$GPU python "$PROJECT_ROOT/rebot_net/train.py" \
     --lr            2e-4 \
     --num_workers   4 \
     --cond_dir      "$PROJECT_ROOT/log/real_data_gt_retrieval" \
-    --film_scale    8 \
+    --film_scale    4 \
     "${COND_FLAGS[@]}" \
     --wandb_project tactile_enhance \
     --wandb_run_name "scratch_S_real${TRANSFER_SUFFIX}_cond-${COND_MODE}${DATA_SUFFIX}_bs8_lr2e-4"

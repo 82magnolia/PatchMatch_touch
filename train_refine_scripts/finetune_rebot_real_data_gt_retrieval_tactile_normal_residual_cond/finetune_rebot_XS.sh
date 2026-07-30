@@ -108,14 +108,14 @@ CUDA_VISIBLE_DEVICES=$GPU python "$PROJECT_ROOT/rebot_net/finetune.py" \
     --finetune_mode $FINETUNE_MODE \
     --video_type    tactile_normal \
     --num_eval      20 \
-    --epochs        8 \
+    --epochs        3 \
     --batch_size    8 \
     --lr            5e-5 \
     --num_workers   4 \
     --residual \
     --normal_blank \
     --cond_dir      "$PROJECT_ROOT/log/real_data_gt_retrieval" \
-    --film_scale    8 \
+    --film_scale    4 \
     "${COND_FLAGS[@]}" \
     --wandb_project tactile_enhance \
     --wandb_run_name "finetune_XS_real_tactile_normal_residual${TRANSFER_SUFFIX}_${FINETUNE_MODE}_cond-${COND_MODE}${DATA_SUFFIX}_bs8_lr5e-5"

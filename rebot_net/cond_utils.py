@@ -26,14 +26,14 @@ def add_cond_args(p):
     p.add_argument('--film_modality', default='none',
                    choices=['none', 'normal', 'curvature', 'height'],
                    help="Static geometry render injected via global FiLM")
-    p.add_argument('--film_scale', type=int, default=8,
-                   help="Scale suffix of the FiLM geometry jpg (sim uses 100, real 8)")
     p.add_argument('--geom_concat', action='store_true',
                    help="Inject the --film_modality geometry render (e.g. normal) by "
                         "CONCATENATING it as 3 aligned input channels (broadcast to both "
                         "frames) instead of via global FiLM. FiLM is then disabled. Same "
                         "idea as --mask_cond but 3-channel and from the static render. "
                         "Requires --film_modality and --cond_dir.")
+    p.add_argument('--film_scale', type=int, default=4,
+                   help="Scale suffix of the FiLM geometry jpg (sim uses 100, real 4)")
     p.add_argument('--time_cond', default='none',
                    choices=['none', 'film', 'token', 'film_token', 'concat'],
                    help="Condition on the frame's normalized timestamp (index/(n-1) in "
@@ -104,9 +104,17 @@ def dataset_cond_kwargs(args):
     return dict(cond_dir=getattr(args, 'cond_dir', None),
                 mask_cond=getattr(args, 'mask_cond', False),
                 film_modality=film_modality(args),
+<<<<<<< HEAD
+                film_scale=getattr(args, 'film_scale', 4))
+=======
                 film_scale=getattr(args, 'film_scale', 8),
+<<<<<<< HEAD
                 time_cond=time_cond_mode(args),
                 geom_concat=geom_concat(args))
+=======
+                time_cond=time_cond_mode(args))
+>>>>>>> d4bcd3b06436a9082cb209cc478440d811cf13d5
+>>>>>>> f427643b477f63c35ac33fff2d6ecf492bc60a41
 
 
 def check_cond_args(args):

@@ -32,7 +32,7 @@ Usage:
         --model_size   rebot_S \
         --residual \
         --finetune_mode decoder_bottleneck \
-        --epochs 8 --batch_size 4 --lr 5e-5 \
+        --epochs 3 --batch_size 4 --lr 5e-5 \
         --wandb_run_name finetune_real_S
 """
 
@@ -125,7 +125,10 @@ def parse_args():
                    help="Cap the number of fine-tuning objects (for short runs)")
     p.add_argument('--max_eval_objects', type=int, default=None,
                    help="Cap the number of evaluation objects (for short runs)")
-    p.add_argument('--epochs', type=int, default=8)
+    # Validation peaks at epoch 2 or 3 in 10 of 11 measured real-data runs and
+    # drifts downward from epoch 4 on, so 3 covers the peak while the extra
+    # epochs only cost time. best.pth still tracks the peak within the budget.
+    p.add_argument('--epochs', type=int, default=3)
     p.add_argument('--batch_size', type=int, default=4)
     p.add_argument('--lr', type=float, default=5e-5)
     p.add_argument('--log_interval', type=int, default=10,

@@ -78,7 +78,7 @@ CUDA_VISIBLE_DEVICES=$GPU python "$PROJECT_ROOT/rebot_net/finetune.py" \
     --model_size    $MODEL_SIZE \
     --finetune_mode $FINETUNE_MODE \
     --num_eval      20 \
-    --epochs        8 \
+    --epochs        3 \
     --batch_size    8 \
     --lr            5e-5 \
     --num_workers   4 \
