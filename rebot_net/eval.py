@@ -94,7 +94,8 @@ def main():
     # --- Model ---
     cond_chans, film_chans = cond_utils.cond_dims(args)
     model = build_model(args.model_size, cond_chans, film_chans,
-                        bottleneck_hw=args.bottleneck_hw).to(device)
+                        bottleneck_hw=args.bottleneck_hw,
+                        time_cond=cond_utils.time_cond_mode(args)).to(device)
     ckpt = torch.load(args.checkpoint, map_location=device)
     model.load_state_dict(ckpt['model_state'])
     print(f"Loaded checkpoint from epoch {ckpt.get('epoch', '?')}  "
@@ -127,10 +128,11 @@ def main():
                 pred_frames, gt_frames, transferred_frames = [], [], []
                 pred_residual_frames, gt_residual_frames = [], []
 
-                for lq_pair, gt_frame, blank, film in test_dataset.iter_video_pairs(obj_id, pair_idx):
+                for lq_pair, gt_frame, blank, film, t_norm in test_dataset.iter_video_pairs(obj_id, pair_idx):
                     lq_in = lq_pair.unsqueeze(0).to(device)
                     film_in = film.unsqueeze(0).to(device) if film is not None else None
-                    pred = model(lq_in, film=film_in).squeeze(0)
+                    t_in = torch.tensor([t_norm], device=device)   # ignored unless model has a time head
+                    pred = model(lq_in, film=film_in, t=t_in).squeeze(0)
                     lq_rgb = lq_pair[1, :3]                 # transferred RGB only
 
                     if args.residual:

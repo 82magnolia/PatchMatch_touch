@@ -241,6 +241,68 @@ class FiLMEncoder(nn.Module):
         return [h(z) for h in self.heads]        # list of (B, 2*dims[i])
 
 
+def sinusoidal_time_embedding(t, dim, max_period=10000.0):
+    """Map a scalar timestamp t in [0,1] to a (B, dim) sinusoidal embedding.
+
+    The classic Transformer/DDPM positional encoding: dim/2 sine and dim/2
+    cosine components at geometrically spaced frequencies. t is rescaled to
+    [0,1000] first so the frequency band is exercised the same way it is for
+    integer diffusion timesteps (a raw [0,1] input would leave every frequency
+    in its near-linear regime and waste the basis).
+    """
+    t = t.float().view(-1) * 1000.0
+    half = dim // 2
+    freqs = torch.exp(
+        -math.log(max_period) * torch.arange(half, device=t.device, dtype=torch.float32) / max(1, half - 1)
+    )
+    args = t[:, None] * freqs[None, :]
+    emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+    if dim % 2 == 1:                       # zero-pad an odd dim
+        emb = F.pad(emb, (0, 1))
+    return emb
+
+
+class TimeConditioner(nn.Module):
+    """Inject a normalized timestamp into the network (Stable-Diffusion style).
+
+    A fixed sinusoidal embedding of the scalar time is passed through a small
+    MLP, then turned into whichever conditioning signals the mode requests:
+      * FiLM   (mode in {'film','film_token'}): per-ConvNeXt-stage (gamma, beta),
+        applied like FiLMEncoder's but from time instead of a geometry render.
+      * token  (mode in {'token','film_token'}): one bias vector added to every
+        bottleneck transformer token.
+    Every output head is zero-initialised, so the module starts as an exact
+    identity (gamma=beta=0, token bias=0) and only learns to use time as
+    training justifies it -- same identity-start trick as FiLMEncoder.
+    """
+
+    def __init__(self, mode, stage_dims, token_dim, embed_dim=128):
+        super().__init__()
+        self.mode = mode
+        self.embed_dim = embed_dim
+        self.want_film = mode in ('film', 'film_token')
+        self.want_token = mode in ('token', 'film_token')
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim), nn.SiLU(),
+            nn.Linear(embed_dim, embed_dim),
+        )
+        if self.want_film:
+            self.stage_heads = nn.ModuleList([nn.Linear(embed_dim, 2 * d) for d in stage_dims])
+            for h in self.stage_heads:
+                nn.init.zeros_(h.weight)
+                nn.init.zeros_(h.bias)
+        if self.want_token:
+            self.token_head = nn.Linear(embed_dim, token_dim)
+            nn.init.zeros_(self.token_head.weight)
+            nn.init.zeros_(self.token_head.bias)
+
+    def forward(self, t):
+        e = self.mlp(sinusoidal_time_embedding(t, self.embed_dim))
+        film = [h(e) for h in self.stage_heads] if self.want_film else None   # list of (B,2*dims[i])
+        token = self.token_head(e) if self.want_token else None               # (B, token_dim)
+        return film, token
+
+
 class rebotnet(nn.Module):
 
 
@@ -279,11 +341,18 @@ class rebotnet(nn.Module):
                  dim_head = 64,
                  cond_chans = 0,
                  film_chans = 0,
-                 bottleneck_hw = 24
+                 bottleneck_hw = 24,
+                 zero_init_final = False,
+                 time_cond = 'none'
                  ):
         super().__init__()
         self.in_chans = in_chans
         self.bottleneck_hw = bottleneck_hw
+        # time_cond: in-network temporal conditioning mode. 'film'/'token'/
+        # 'film_token' build a TimeConditioner (see below); 'concat'/'none' do
+        # not -- 'concat' arrives as an extra cond_chan handled by the generic
+        # per-frame input path, 'none' is a no-op. Defaults to unchanged network.
+        self.time_cond = time_cond
         # cond_chans: per-frame channels concatenated to the input (e.g. an aligned
         #   render_mask), fed through both the ConvNeXt and big-patch branches.
         # film_chans: channels of a static (possibly unaligned) conditioning image
@@ -391,6 +460,16 @@ class rebotnet(nn.Module):
         self.upsamplef2 = Upsample(4, num_feat3)
 
         self.conv_last = nn.Conv2d(num_feat3, 3, kernel_size=( 3, 3), padding=(1, 1))
+        # zero_init_final: start the network as an exact identity (output ==
+        # x_org, the transferred frame) rather than transferred + an
+        # arbitrary random-init correction. forward() always computes
+        # conv_last(...) + x_org, so zeroing conv_last's weight/bias makes
+        # that sum exactly x_org at step 0 -- the network then only learns to
+        # depart from "trust the transferred input" as training justifies it,
+        # same identity-start trick already used for FiLMEncoder's heads.
+        if zero_init_final:
+            nn.init.zeros_(self.conv_last.weight)
+            nn.init.zeros_(self.conv_last.bias)
 
         self.chchange1 = nn.Conv2d(num_feat, num_feat1, kernel_size=( 3, 3), padding=(1, 1))
         self.chchange2 = nn.Conv2d(num_feat1, num_feat2, kernel_size=( 3, 3), padding=(1, 1))
@@ -400,6 +479,12 @@ class rebotnet(nn.Module):
         if film_chans > 0:
             self.film_encoder = FiLMEncoder(film_chans, dims)
 
+        # Optional temporal conditioning on the frame's normalized timestamp.
+        # FiLM heads modulate the 4 ConvNeXt stages (dims); the token head adds a
+        # bias to every bottleneck token, whose feature dim equals embed_dims[-1].
+        if time_cond in ('film', 'token', 'film_token'):
+            self.time_conditioner = TimeConditioner(time_cond, dims, embed_dims[-1])
+
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.Linear)):
@@ -407,11 +492,18 @@ class rebotnet(nn.Module):
             nn.init.constant_(m.bias, 0)
 
 
-    def forward(self, x, film=None):
+    def forward(self, x, film=None, t=None):
         # x: (N, 2, C, H, W) — frame pair (C = in_chans + cond_chans). The
         # residual is added back on RGB channels only. film: optional static
         # conditioning image (N, film_chans, H, W) for global FiLM modulation.
+        # t: optional (N,) normalized timestamps for temporal conditioning.
         x_org = x[:, 1, :self.in_chans, ...].clone()   # RGB only, for the residual
+
+        # Temporal conditioning signals (both None unless a TimeConditioner is
+        # built and t is supplied): per-stage FiLM and/or a bottleneck-token bias.
+        time_film, time_token = None, None
+        if getattr(self, 'time_conditioner', None) is not None and t is not None:
+            time_film, time_token = self.time_conditioner(t)
 
         x = rearrange(x, 'b t c h w -> b (t c) h w')
         H_in, W_in = x.shape[2], x.shape[3]
@@ -445,6 +537,9 @@ class rebotnet(nn.Module):
             if film_params is not None:
                 gamma, beta = film_params[i].chunk(2, dim=1)   # (B, dims[i]) each
                 x = x * (1 + gamma[:, :, None, None]) + beta[:, :, None, None]
+            if time_film is not None:
+                tg, tb = time_film[i].chunk(2, dim=1)          # (B, dims[i]) each
+                x = x * (1 + tg[:, :, None, None]) + tb[:, :, None, None]
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')
                 outs.append(norm_layer(x))
@@ -455,6 +550,8 @@ class rebotnet(nn.Module):
         # encoder: 2D adaptive pool to bottleneck_hw² → flatten → patch embedding → bottleneck
         x = F.adaptive_avg_pool2d(x, (bhw, bhw))   # (B, C, bhw, bhw)
         x = self.to_patch_embedding(x)            # (B, bhw², C)
+        if time_token is not None:
+            x = x + time_token[:, None, :]        # broadcast time bias over tokens
         x = self.bottleneck(x)                    # (B, bhw², C)
 
         x = x + x_temp                            # (B, bhw², C)

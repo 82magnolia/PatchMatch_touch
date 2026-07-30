@@ -48,6 +48,16 @@ def _normal_blank(h, w):
     return _FLAT_NORMAL_RGB.view(3, 1, 1).expand(3, h, w).clone()
 
 
+def _norm_time(t, n_frames):
+    """Normalized timestamp in [0,1] for frame t of an n_frames-long touch."""
+    return float(t) / max(1, n_frames - 1)
+
+
+def _time_channel(t_norm, h, w):
+    """(1,H,W) constant channel filled with t_norm, for concat-style time cond."""
+    return torch.full((1, h, w), float(t_norm), dtype=torch.float32)
+
+
 def _load_blank(video_path, normal_blank=False):
     """Load the no-contact blank frame for residual mode.
 
@@ -143,7 +153,7 @@ class TactileTransferDataset(data.Dataset):
     def __init__(self, transfer_dir, object_ids, split='train', use_hflip=True,
                  residual=False, cond_dir=None, mask_cond=False,
                  film_modality=None, film_scale=100, video_type='shadow',
-                 normal_blank=False):
+                 normal_blank=False, time_cond='none'):
         super().__init__()
         self.transfer_dir = transfer_dir
         self.split = split
@@ -151,6 +161,16 @@ class TactileTransferDataset(data.Dataset):
         self.residual = residual
         self.video_type = video_type
         self.normal_blank = normal_blank
+        # Temporal conditioning on the frame's normalized timestamp t_norm =
+        # t / max(1, n_frames-1) in [0,1] (a touch runs no-press -> contact ->
+        # take-off, so this locates the frame within the press cycle).
+        #   'concat'                -> append t_norm as one constant input channel
+        #   'film'/'token'/'film_token' -> return the scalar in out['time'] for
+        #                                  the in-network TimeConditioner
+        # 'none' (default) adds nothing.
+        self.time_cond = time_cond
+        self.time_concat = (time_cond == 'concat')
+        self.time_scalar = time_cond in ('film', 'token', 'film_token')
         # Query conditioning (both sourced from cond_dir/{obj}/...):
         #   mask_cond   -> concat the per-frame render_mask (1ch, aligned) to lq
         #   film_modality -> load a static geometry render (3ch) returned as 'film'
@@ -175,7 +195,7 @@ class TactileTransferDataset(data.Dataset):
                 if n_frames <= 0:
                     continue
                 for t in range(n_frames):
-                    self.samples.append((obj_id, pair_idx, t))
+                    self.samples.append((obj_id, pair_idx, t, n_frames))
 
     def _obj_dir(self, obj_id):
         """Directory holding this object's videos. Overridable for other layouts."""
@@ -202,7 +222,8 @@ class TactileTransferDataset(data.Dataset):
         return len(self.samples)
 
     def __getitem__(self, index):
-        obj_id, pair_idx, t = self.samples[index]
+        obj_id, pair_idx, t, n_frames = self.samples[index]
+        t_norm = _norm_time(t, n_frames)
         obj_dir = self._obj_dir(obj_id)
 
         lq_path = _resolve_lq_path(obj_dir, pair_idx)
@@ -247,11 +268,20 @@ class TactileTransferDataset(data.Dataset):
             mask_pair = torch.stack([_chw(m_tm1), _chw(m_t)], dim=0)  # (2,1,H,W)
             lq = torch.cat([lq, mask_pair], dim=1)                    # (2,3+1,H,W)
 
+        # Time as an extra constant input channel (appended last, after mask, so
+        # channel order stays fixed). Same t_norm for both frames of the pair --
+        # it labels the touch phase this training example targets.
+        if self.time_concat:
+            tc = _time_channel(t_norm, h, w)
+            lq = torch.cat([lq, torch.stack([tc, tc], dim=0)], dim=1)
+
         out = {'lq': lq, 'gt': gt, 'meta': (obj_id, pair_idx, t)}
         if self.residual:
             out['blank'] = blank
         if self.film_modality:
             out['film'] = self._load_film(obj_id, pair_idx, h, w, do_flip)
+        if self.time_scalar:
+            out['time'] = torch.tensor(t_norm, dtype=torch.float32)
         return out
 
     def lq_video_exists(self, obj_id, pair_idx):
@@ -259,12 +289,14 @@ class TactileTransferDataset(data.Dataset):
         return _resolve_lq_path(obj_dir, pair_idx) is not None
 
     def iter_video_pairs(self, obj_id, pair_idx):
-        """Yield (lq_pair, gt_frame, blank_or_None, film_or_None) per frame.
+        """Yield (lq_pair, gt_frame, blank_or_None, film_or_None, t_norm) per frame.
 
         blank is a (3,H,W) tensor when residual=True else None. film is a
         (film_chans,H,W) tensor when film_modality is set else None. lq gains the
-        concatenated render_mask channel when mask_cond is set. lq/gt are in
-        residual space (RGB only) when residual=True.
+        concatenated render_mask channel when mask_cond is set, and a constant
+        time channel when time_cond=='concat'. t_norm is the frame's normalized
+        timestamp in [0,1]. lq/gt are in residual space (RGB only) when
+        residual=True.
         """
         obj_dir = self._obj_dir(obj_id)
         lq_path = _resolve_lq_path(obj_dir, pair_idx)
@@ -316,10 +348,14 @@ class TactileTransferDataset(data.Dataset):
                     lq = torch.cat([lq, mask_pair], dim=1)
                     prev_mask = cur_mask
 
+                if self.time_concat:
+                    tc = _time_channel(_norm_time(t, n_frames), h, w)
+                    lq = torch.cat([lq, torch.stack([tc, tc], dim=0)], dim=1)
+
                 if self.film_modality and film is None:
                     film = self._load_film(obj_id, pair_idx, h, w, do_flip=False)
 
-                yield lq, gt, blank, film
+                yield lq, gt, blank, film, _norm_time(t, n_frames)
         finally:
             cap_lq.release()
             cap_gt.release()

@@ -28,6 +28,16 @@ def add_cond_args(p):
                    help="Static geometry render injected via global FiLM")
     p.add_argument('--film_scale', type=int, default=4,
                    help="Scale suffix of the FiLM geometry jpg (sim uses 100, real 4)")
+    p.add_argument('--time_cond', default='none',
+                   choices=['none', 'film', 'token', 'film_token', 'concat'],
+                   help="Condition on the frame's normalized timestamp (index/(n-1) in "
+                        "[0,1], where a touch runs no-press -> contact -> take-off). "
+                        "'film': sinusoidal timestep embedding -> MLP -> per-ConvNeXt-stage "
+                        "FiLM (scale/shift), the Stable-Diffusion/DDPM recipe. 'token': the "
+                        "same embedding projected to one bias vector added to every "
+                        "bottleneck token. 'film_token': both injection points. 'concat': "
+                        "broadcast the scalar time as one extra constant input channel per "
+                        "frame (coord-conv style). 'none' (default) leaves the net unchanged.")
     return p
 
 
@@ -36,9 +46,40 @@ def film_modality(args):
     return None if m in (None, 'none') else m
 
 
+def time_cond_mode(args):
+    """Full --time_cond value ('none'/'film'/'token'/'film_token'/'concat')."""
+    return getattr(args, 'time_cond', 'none')
+
+
+def time_concat(args):
+    """True when time is injected as an extra constant input channel."""
+    return time_cond_mode(args) == 'concat'
+
+
+def time_module_mode(args):
+    """In-network TimeConditioner mode ('film'/'token'/'film_token'), or None.
+
+    'concat' and 'none' need no in-network module -- 'concat' rides the generic
+    per-frame cond-channel path, 'none' is a no-op.
+    """
+    m = time_cond_mode(args)
+    return m if m in ('film', 'token', 'film_token') else None
+
+
+def uses_time(args):
+    """True when the model must receive the scalar timestamp t (module modes)."""
+    return time_module_mode(args) is not None
+
+
 def cond_dims(args):
-    """(cond_chans, film_chans) for build_model."""
-    cond_chans = MASK_CHANS if getattr(args, 'mask_cond', False) else 0
+    """(cond_chans, film_chans) for build_model.
+
+    cond_chans counts every per-frame channel appended to the RGB input: the
+    render_mask (mask_cond) and, for --time_cond concat, one constant time
+    channel. These ride the same generic cond-channel path in the network.
+    """
+    cond_chans = (MASK_CHANS if getattr(args, 'mask_cond', False) else 0) \
+        + (1 if time_concat(args) else 0)
     film_chans = FILM_CHANS if film_modality(args) else 0
     return cond_chans, film_chans
 
@@ -48,7 +89,12 @@ def dataset_cond_kwargs(args):
     return dict(cond_dir=getattr(args, 'cond_dir', None),
                 mask_cond=getattr(args, 'mask_cond', False),
                 film_modality=film_modality(args),
+<<<<<<< HEAD
                 film_scale=getattr(args, 'film_scale', 4))
+=======
+                film_scale=getattr(args, 'film_scale', 8),
+                time_cond=time_cond_mode(args))
+>>>>>>> d4bcd3b06436a9082cb209cc478440d811cf13d5
 
 
 def check_cond_args(args):

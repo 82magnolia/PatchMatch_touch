@@ -57,9 +57,12 @@ MODEL_CONFIGS = {
 }
 
 
-def build_model(model_size, cond_chans=0, film_chans=0, bottleneck_hw=24):
+def build_model(model_size, cond_chans=0, film_chans=0, bottleneck_hw=24,
+                zero_init_final=False, time_cond='none'):
     cfg = MODEL_CONFIGS[model_size]
-    return ReBotNet(**cfg, cond_chans=cond_chans, film_chans=film_chans, bottleneck_hw=bottleneck_hw)
+    return ReBotNet(**cfg, cond_chans=cond_chans, film_chans=film_chans,
+                    bottleneck_hw=bottleneck_hw, zero_init_final=zero_init_final,
+                    time_cond=time_cond)
 
 
 def parse_args():
@@ -112,6 +115,15 @@ def parse_args():
                         "24, i.e. 576 tokens, matching the original architecture). Larger "
                         "retains more spatial detail through the bottleneck transformer at "
                         "increased compute/memory cost.")
+    p.add_argument('--zero_init_final', action='store_true',
+                   help="Zero-init the final reconstruction layer (conv_last), so the network "
+                        "starts as an exact identity (output == transferred input) and only "
+                        "learns corrections from there, instead of transferred + a random-init "
+                        "delta. Off by default (matches prior behavior).")
+    p.add_argument('--lambda_delta', type=float, default=0.0,
+                   help="Weight for an auxiliary L1 penalty on |pred - transferred_frame|, "
+                        "discouraging large corrections unless the data justifies them. "
+                        "0 (default) disables it.")
     p.add_argument('--real_data', action='store_true',
                    help="Train from scratch on the real-data transfer tree "
                         "(RealTactileTransferDataset: nested {obj}/transfer/ layout, odd query "
@@ -160,7 +172,9 @@ def main():
     # --- Model ---
     cond_chans, film_chans = cond_utils.cond_dims(args)
     model = build_model(args.model_size, cond_chans, film_chans,
-                        bottleneck_hw=args.bottleneck_hw).to(device)
+                        bottleneck_hw=args.bottleneck_hw,
+                        zero_init_final=args.zero_init_final,
+                        time_cond=cond_utils.time_cond_mode(args)).to(device)
     print(f"Model: {args.model_size}  |  Device: {device}  |  "
           f"cond_chans={cond_chans} film_chans={film_chans}")
 
