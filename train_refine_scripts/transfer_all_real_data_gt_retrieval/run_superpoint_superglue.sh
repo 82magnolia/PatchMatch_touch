@@ -46,7 +46,7 @@ for session_dir in "$SESSIONS_BASE"/*/; do
         --ref_dir            "$session_dir" \
         --query_dir          "$session_dir" \
         --scale              1 \
-        --match_scale              8 \
+        --match_scale              4 \
         --match_scale_convention render_scale \
         --retrieval_mode     real_gt_retrieval \
         --transfer_backend   dinov3_feat_match \

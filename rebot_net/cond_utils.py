@@ -26,8 +26,8 @@ def add_cond_args(p):
     p.add_argument('--film_modality', default='none',
                    choices=['none', 'normal', 'curvature', 'height'],
                    help="Static geometry render injected via global FiLM")
-    p.add_argument('--film_scale', type=int, default=8,
-                   help="Scale suffix of the FiLM geometry jpg (sim uses 100, real 8)")
+    p.add_argument('--film_scale', type=int, default=4,
+                   help="Scale suffix of the FiLM geometry jpg (sim uses 100, real 4)")
     return p
 
 
@@ -48,7 +48,7 @@ def dataset_cond_kwargs(args):
     return dict(cond_dir=getattr(args, 'cond_dir', None),
                 mask_cond=getattr(args, 'mask_cond', False),
                 film_modality=film_modality(args),
-                film_scale=getattr(args, 'film_scale', 8))
+                film_scale=getattr(args, 'film_scale', 4))
 
 
 def check_cond_args(args):
