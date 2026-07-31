@@ -266,6 +266,35 @@ RGB `[125, 126, 250]`). The object-disjoint split is the same as shadow
 training: 12,800 train, 1,600 validation, and 1,600 test samples. Object IDs
 ending in buckets 1–8 are train, bucket 9 is validation, and bucket 0 is test.
 
+### ReBotNet-object-matched simulation training
+
+The comparable TaRF run uses simulation data only. It matches the object IDs
+from the completed ReBotNet real tactile-normal fine-tuning split:
+
+```bash
+bash \
+  baselines/TaRF/scripts/prepare_rebot_finetune_tactile_normal_training_data.sh
+```
+
+ReBotNet holds out real object IDs `1`–`20` and fine-tunes on real object IDs
+`21`–`100`. TaRF applies that same object-ID split to both simulation roots:
+
+```text
+Taxim/results/gen_contact_full_tactile_normal_pseudo_mini/
+Taxim/results/gen_contact_full_query_tactile_normal_pseudo_mini/
+```
+
+TaRF therefore trains on simulated objects `21`–`100`, uses simulated objects
+`1`–`10` for validation, and simulated objects `11`–`20` for test. Each root
+has eight touches per object, producing 1,280 train, 160 validation, and 160
+test samples. No real RGB, height, mask, or tactile video is read by this
+training pipeline. Conditions remain simulation `scale25` for `40_50` and
+simulation `scale100` for `0_40`. The prepared dataset is saved under:
+
+```text
+log/baselines/tarf_training/patchmatch_sim_tactile_normal_rebot_finetune/
+```
+
 The released `img2touch.ckpt` predicts shadow/RGB tactile appearance, so its
 diffusion UNet, EMA, and RGB-D conditioner weights are **not loaded** for this
 model. Those components start randomly with the same upstream TaRF structure.
@@ -278,23 +307,25 @@ shadow-trained diffusion mapping.
 Before using GPUs, the launcher prints `nvidia-smi` and chooses four idle GPUs:
 
 ```bash
-bash baselines/TaRF/scripts/train_img2touch_tactile_normal.sh
+bash \
+  baselines/TaRF/scripts/train_img2touch_tactile_normal_rebot_finetune.sh
 ```
 
 Explicitly select idle devices when sharing the machine:
 
 ```bash
 TARF_GPUS=0,1,2,3 \
-bash baselines/TaRF/scripts/train_img2touch_tactile_normal.sh
+bash \
+  baselines/TaRF/scripts/train_img2touch_tactile_normal_rebot_finetune.sh
 ```
 
 The training config is
-`img2touch/configs/patchmatch_sim_tactile_normal_train.yaml`. It uses batch
-size 1 per GPU, 30 epochs, full validation loss, and only one rank-zero
-diffusion-preview batch per validation epoch. Runs are saved under:
+`img2touch/configs/patchmatch_sim_tactile_normal_rebot_finetune_train.yaml`.
+It uses batch size 1 per GPU, 30 epochs, full validation loss, and only one
+rank-zero diffusion-preview batch per validation epoch. Runs are saved under:
 
 ```text
-log/baselines/tarf_training/runs/<timestamp>_patchmatch_sim_tactile_normal/
+log/baselines/tarf_training/runs/<timestamp>_patchmatch_sim_tactile_normal_rebot_finetune/
 ```
 
 To resume, set `TARF_RESUME` to a completed checkpoint:
@@ -302,7 +333,8 @@ To resume, set `TARF_RESUME` to a completed checkpoint:
 ```bash
 TARF_GPUS=0,1,2,3 \
 TARF_RESUME=/absolute/path/to/checkpoints/last.ckpt \
-bash baselines/TaRF/scripts/train_img2touch_tactile_normal.sh
+bash \
+  baselines/TaRF/scripts/train_img2touch_tactile_normal_rebot_finetune.sh
 ```
 
 After training, pass the selected tactile-normal diffusion checkpoint to the
@@ -313,7 +345,7 @@ bash baselines/TaRF/scripts/run_sim_tactile_normal.sh \
   --diffusion_ckpt \
   log/baselines/tarf_training/runs/<run>/checkpoints/<selected>.ckpt \
   --background \
-  log/baselines/tarf_training/patchmatch_sim_tactile_normal/tactile_normal_background.jpg
+  log/baselines/tarf_training/patchmatch_sim_tactile_normal_rebot_finetune/tactile_normal_background.jpg
 ```
 
 ## Simulation

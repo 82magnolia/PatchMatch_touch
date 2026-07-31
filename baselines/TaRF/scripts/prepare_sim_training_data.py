@@ -18,6 +18,15 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--workers", type=int, default=8)
     result.add_argument("--limit", type=int)
     result.add_argument(
+        "--split-mode",
+        choices=("object_buckets", "rebot_finetune"),
+        default="object_buckets",
+        help=(
+            "object_buckets uses the original modulo split; rebot_finetune "
+            "uses sim IDs 21-100 for training and holds out IDs 1-20."
+        ),
+    )
+    result.add_argument(
         "--target-video-type",
         choices=("shadow", "tactile_normal"),
         default="shadow",
@@ -26,7 +35,16 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
-def split_for_object(object_id: str) -> str:
+def split_for_object(object_id: str, split_mode: str) -> str | None:
+    value = int(object_id)
+    if split_mode == "rebot_finetune":
+        if 21 <= value <= 100:
+            return "train"
+        if 1 <= value <= 10:
+            return "val"
+        if 11 <= value <= 20:
+            return "test"
+        return None
     bucket = (int(object_id) - 1) % 10
     return "train" if bucket < 8 else ("val" if bucket == 8 else "test")
 
@@ -97,6 +115,8 @@ def main() -> None:
             (path for path in root.iterdir() if path.is_dir()),
             key=lambda path: int(path.name),
         ):
+            if split_for_object(object_dir.name, args.split_mode) is None:
+                continue
             indices = sorted(
                 int(path.name.split("_", 1)[0])
                 for path in object_dir.glob("*_scale100_color.jpg")
@@ -117,7 +137,9 @@ def main() -> None:
     manifest = {"train": [], "val": [], "test": []}
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for record in pool.map(build_record, tasks):
-            manifest[split_for_object(record["object_id"])].append(record)
+            split = split_for_object(record["object_id"], args.split_mode)
+            if split is not None:
+                manifest[split].append(record)
     manifest["metadata"] = {
         "roots": [str(root.resolve()) for root in args.roots],
         "pairing": {"40_50": "scale25", "0_40": "scale100"},
@@ -127,7 +149,14 @@ def main() -> None:
             "selected by mask.mp4"
         ),
         "counts": {split: len(manifest[split]) for split in ("train", "val", "test")},
+        "split_mode": args.split_mode,
     }
+    if args.split_mode == "rebot_finetune":
+        manifest["metadata"]["object_ids"] = {
+            "train": list(range(21, 101)),
+            "val": list(range(1, 11)),
+            "test": list(range(11, 21)),
+        }
     if args.target_video_type == "tactile_normal":
         first = tasks[0]
         _, _, object_dir, touch_index, _, target_video_type = first
