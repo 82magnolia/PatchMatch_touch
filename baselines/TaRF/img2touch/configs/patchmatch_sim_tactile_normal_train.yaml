@@ -1,0 +1,50 @@
+model:
+  params:
+    # Do not import the shadow-trained diffusion or conditioning weights.
+    ckpt_path: null
+    first_stage_config:
+      params:
+        # The latent autoencoder remains frozen, as in upstream TaRF.
+        ckpt_path: pretrained_models/img2touch_first_stage.ckpt
+
+data:
+  params:
+    batch_size: 1
+    num_workers: 4
+    train:
+      target: ldm.patchmatch_sim_data.PatchMatchSimDataset
+      params:
+        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal/manifest.json
+        split: train
+        background_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal/tactile_normal_background.jpg
+        size: 256
+    validation:
+      target: ldm.patchmatch_sim_data.PatchMatchSimDataset
+      params:
+        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal/manifest.json
+        split: val
+        background_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal/tactile_normal_background.jpg
+        size: 256
+    test:
+      target: ldm.patchmatch_sim_data.PatchMatchSimDataset
+      params:
+        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal/manifest.json
+        split: test
+        background_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal/tactile_normal_background.jpg
+        size: 256
+
+lightning:
+  callbacks:
+    image_logger:
+      target: main.ImageLogger
+      params:
+        batch_frequency: 200
+        max_images: 1
+        increase_log_steps: false
+        max_validation_image_batches: 1
+  logger:
+    target: pytorch_lightning.loggers.CSVLogger
+    params:
+      name: csv
+  trainer:
+    max_epochs: 30

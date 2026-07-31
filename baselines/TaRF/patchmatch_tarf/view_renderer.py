@@ -16,6 +16,12 @@ VIEW_SPECS = {
     "0_40": {"standoff_m": 0.05, "fov_deg": 40.86},
 }
 GELSIGHT_FOV_M = (0.0186, 0.0143)
+PREPARED_SCALES = {
+    "sim": {"40_50": 25.0, "0_40": 100.0},
+    "real": {"40_50": 4.0, "0_40": 1.0},
+}
+REAL_HEIGHT_CUTOFF_M = 0.050
+TAXIM_HEIGHT_PIXEL_M = 0.0295e-3
 
 
 def _rz(degrees: float) -> np.ndarray:
@@ -237,57 +243,122 @@ def _crop_for_footprint(array: np.ndarray, source_extent: tuple[float, float], f
     return array[top : top + crop_height, left : left + crop_width]
 
 
-def _sim_views(folder: Path, query_idx: int, output: Path, size: int) -> dict:
-    candidates = []
-    pattern = re.compile(rf"^{query_idx}_scale([0-9.]+)_color\.(?:jpg|png)$")
-    for path in folder.glob(f"{query_idx}_scale*_color.*"):
-        match = pattern.match(path.name)
-        if match:
-            scale = float(match.group(1))
-            height_path = folder / f"{query_idx}_scale{match.group(1)}_height.npz"
-            if height_path.is_file():
-                candidates.append((scale, path, height_path))
-    if not candidates:
-        raise FileNotFoundError(f"No paired multiscale RGB/height inputs for simulated query {query_idx}")
-    context_width = 2.0 * VIEW_SPECS["40_50"]["standoff_m"] * np.tan(
-        np.deg2rad(VIEW_SPECS["40_50"]["fov_deg"]) / 2.0
+def _center_square(array: np.ndarray) -> np.ndarray:
+    height, width = array.shape[:2]
+    side = min(height, width)
+    top = (height - side) // 2
+    left = (width - side) // 2
+    return array[top : top + side, left : left + side]
+
+
+def _scale_tag(scale: float) -> str:
+    return str(int(scale)) if float(scale).is_integer() else f"{scale:g}"
+
+
+def _resize_prepared_rgb(path: Path, size: int) -> np.ndarray:
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise FileNotFoundError(f"Cannot read prepared TaRF RGB view: {path}")
+    return cv2.resize(_center_square(image), (size, size), interpolation=cv2.INTER_CUBIC)
+
+
+def _decode_viridis_height(path: Path) -> np.ndarray:
+    """Invert the real-data `applyColorMap(VIRIDIS)` height preview."""
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise FileNotFoundError(f"Cannot read prepared TaRF height view: {path}")
+    lut = cv2.applyColorMap(np.arange(256, dtype=np.uint8)[:, None], cv2.COLORMAP_VIRIDIS)
+    lut = lut[:, 0].astype(np.int32)
+    pixels = image.reshape(-1, 3).astype(np.int32)
+    indices = np.empty(len(pixels), dtype=np.uint8)
+    # Chunking avoids a full H*W*256 temporary for every query.
+    for start in range(0, len(pixels), 8192):
+        chunk = pixels[start : start + 8192]
+        distance = np.sum((chunk[:, None, :] - lut[None, :, :]) ** 2, axis=2)
+        indices[start : start + len(chunk)] = np.argmin(distance, axis=1)
+    indentation = indices.reshape(image.shape[:2]).astype(np.float32) / 255.0
+    return -indentation * REAL_HEIGHT_CUTOFF_M
+
+
+def _prepared_depth(path: Path, *, real: bool, standoff_m: float, size: int) -> np.ndarray:
+    if real:
+        relative_height = _decode_viridis_height(path)
+    else:
+        with np.load(path) as archive:
+            elevation = np.asarray(archive["height"], dtype=np.float32)
+        # Taxim stores height in GelSight calibration pixels, not millimetres.
+        elevation = (elevation - float(np.nanmin(elevation))) * TAXIM_HEIGHT_PIXEL_M
+        # Greater object height is closer to the virtual RGB-D camera.
+        relative_height = -elevation
+    relative_height = cv2.resize(
+        _center_square(relative_height), (size, size), interpolation=cv2.INTER_LINEAR
     )
-    scale, color_path, height_path = min(
-        candidates,
-        key=lambda item: abs(GELSIGHT_FOV_M[0] * item[0] - context_width),
-    )
-    color = cv2.imread(str(color_path), cv2.IMREAD_COLOR)
-    with np.load(height_path) as archive:
-        height = np.asarray(archive["height"], dtype=np.float32)
-    height_m = height / 1000.0 if float(np.nanmax(np.abs(height))) > 2.0 else height
-    source_extent = (GELSIGHT_FOV_M[0] * scale, GELSIGHT_FOV_M[1] * scale)
+    return np.clip(standoff_m + relative_height, 0.0, 5.0).astype(np.float32)
+
+
+def _prepared_scaled_views(
+    folder: Path,
+    query_idx: int,
+    output: Path,
+    size: int,
+    *,
+    domain: str,
+    sensor_offset_file: Path | None = None,
+) -> dict:
     records = {}
-    for name, spec in VIEW_SPECS.items():
-        footprint = 2.0 * spec["standoff_m"] * np.tan(np.deg2rad(spec["fov_deg"]) / 2.0)
-        rgb_crop = _crop_for_footprint(color, source_extent, footprint)
-        height_crop = _crop_for_footprint(height_m, source_extent, footprint)
-        rgb = cv2.resize(rgb_crop, (size, size), interpolation=cv2.INTER_CUBIC)
-        relative = height_crop - float(np.nanmin(height_crop))
-        depth = spec["standoff_m"] + relative
-        depth = cv2.resize(depth, (size, size), interpolation=cv2.INTER_LINEAR).astype(np.float32)
+    for name in ("40_50", "0_40"):
+        scale = PREPARED_SCALES[domain][name]
+        tag = _scale_tag(scale)
+        color_path = folder / f"{query_idx}_scale{tag}_color.jpg"
+        height_path = folder / (
+            f"{query_idx}_scale{tag}_height.jpg"
+            if domain == "real"
+            else f"{query_idx}_scale{tag}_height.npz"
+        )
+        missing = [path for path in (color_path, height_path) if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(
+                f"Prepared {domain} TaRF {name} view is missing: "
+                + ", ".join(map(str, missing))
+            )
+        rgb = _resize_prepared_rgb(color_path, size)
+        depth = _prepared_depth(
+            height_path,
+            real=domain == "real",
+            standoff_m=VIEW_SPECS[name]["standoff_m"],
+            size=size,
+        )
         rgb_path = output / "rgb" / f"{name}.png"
         depth_path = output / "depth" / f"{name}.npy"
         cv2.imwrite(str(rgb_path), rgb)
         np.save(depth_path, depth)
         records[name] = {
-            **spec,
-            "requested_standoff_m": spec["standoff_m"],
+            **VIEW_SPECS[name],
+            "prepared_scale": scale,
+            "source_rgb": str(color_path),
+            "source_height": str(height_path),
             "rgb": str(rgb_path),
             "depth": str(depth_path),
         }
-    return {
-        "mode": "sim_multiscale_fixed_standoff",
-        "source_scale": scale,
-        "source_extent_m": list(source_extent),
-        "source_rgb": str(color_path),
-        "source_height": str(height_path),
+    metadata = {
+        "mode": f"{domain}_prepared_multiscale_tarf_views",
+        "view_order": ["40_50", "0_40"],
+        "scale_mapping": {
+            name: PREPARED_SCALES[domain][name] for name in ("40_50", "0_40")
+        },
         "views": records,
     }
+    if domain == "real" and sensor_offset_file is not None:
+        metadata["sensor_offset_file"] = str(sensor_offset_file)
+        metadata["alignment"] = (
+            "Prepared scale images are already centered using the saved "
+            "ArUco-to-gel calibration."
+        )
+    return metadata
+
+
+def _sim_views(folder: Path, query_idx: int, output: Path, size: int) -> dict:
+    return _prepared_scaled_views(folder, query_idx, output, size, domain="sim")
 
 
 def prepare_fixed_view_conditions(
@@ -307,12 +378,13 @@ def prepare_fixed_view_conditions(
             raise ValueError(
                 "Real TaRF fixed views require --sensor_offset_file"
             )
-        metadata = _real_views(
+        metadata = _prepared_scaled_views(
             query_dir,
             query_idx,
             output,
-            Path(sensor_offset_file),
             int(size),
+            domain="real",
+            sensor_offset_file=Path(sensor_offset_file),
         )
     else:
         metadata = _sim_views(query_dir, query_idx, output, int(size))

@@ -189,6 +189,11 @@ class TaRFGenerator:
         self.tac_encoder = self.tac_encoder.to(self.device).eval()
 
     def _condition(self, conditions: QueryConditions):
+        if len(conditions.rgb_paths) != 2 or len(conditions.depth_paths) != 2:
+            raise ValueError(
+                "Official TaRF conditioning requires exactly two ordered RGB-D views: "
+                "40_50 followed by 0_40"
+            )
         parts, first_rgb = [], None
         for rgb_path, depth_path in zip(conditions.rgb_paths, conditions.depth_paths):
             rgb, rgb_image = _load_rgb_tensor(rgb_path, self.torch, self.cv2)

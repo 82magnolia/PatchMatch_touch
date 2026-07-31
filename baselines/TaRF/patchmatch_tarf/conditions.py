@@ -14,14 +14,13 @@ class QueryConditions:
     rgb_paths: tuple[Path, ...]
     depth_paths: tuple[Path, ...]
     background_path: Path
-    duplicated_single_view: bool = False
 
     def as_dict(self) -> dict:
         return {
             "rgb_paths": [str(path) for path in self.rgb_paths],
             "depth_paths": [str(path) for path in self.depth_paths],
             "background_path": str(self.background_path),
-            "duplicated_single_view": self.duplicated_single_view,
+            "view_order": ["40_50", "0_40"],
         }
 
 
@@ -60,7 +59,6 @@ def resolve_conditions(
     if manifest:
         rgbs, depths = _manifest_entry(manifest.resolve(), query_idx)
     else:
-        scale_text = f"{scale:g}"
         per_query = root / str(query_idx)
         rgb_view_candidates = [
             per_query / "rgb" / "40_50.png",
@@ -82,56 +80,39 @@ def resolve_conditions(
             per_query / "depth" / "0_40.npz",
             root / "depth" / f"{query_idx}_0_40.npy",
         ]
-        flat_rgb = [
-            root / f"{query_idx}_scale{scale_text}_color.jpg",
-            root / f"{query_idx}_scale{scale_text}_color.png",
-            root / f"{query_idx}_color.jpg",
-            root / f"{query_idx}_rgb.png",
-        ]
-        flat_depth = [
-            root / f"{query_idx}_scale{scale_text}_height.npz",
-            root / f"{query_idx}_scale{scale_text}_height.npy",
-            root / f"{query_idx}_depth.npy",
-            root / f"{query_idx}_depth.npz",
-            root / f"{query_idx}_height.npz",
-            root / f"{query_idx}_height.jpg",
-            root / f"{query_idx}_height.png",
-        ]
-        first_rgb = _first_existing(rgb_view_candidates) or _first_existing(flat_rgb)
+        first_rgb = _first_existing(rgb_view_candidates)
         second_rgb = _first_existing(rgb_second_candidates)
-        first_depth = _first_existing(depth_view_candidates) or _first_existing(flat_depth)
+        first_depth = _first_existing(depth_view_candidates)
         second_depth = _first_existing(depth_second_candidates)
         rgbs = [path for path in (first_rgb, second_rgb) if path]
         depths = [path for path in (first_depth, second_depth) if path]
 
     missing = []
-    if not rgbs:
+    if len(rgbs) != 2:
         missing.append(
-            f"RGB: {query_idx}_scale{scale:g}_color.jpg, {query_idx}_color.jpg, "
-            f"or {query_idx}/rgb/{{40_50,0_40}}.png"
+            f"two ordered RGB views ({query_idx}/rgb/40_50.png and "
+            f"{query_idx}/rgb/0_40.png)"
         )
-    if not depths:
+    if len(depths) != 2:
         missing.append(
-            f"depth: {query_idx}_scale{scale:g}_height.npz, {query_idx}_depth.npy, "
-            f"{query_idx}_height.jpg, or {query_idx}/depth/{{40_50,0_40}}.npy"
+            f"two ordered depth views ({query_idx}/depth/40_50.npy and "
+            f"{query_idx}/depth/0_40.npy)"
         )
     absent = [str(path) for path in [*rgbs, *depths] if not path.is_file()]
     if missing or absent:
         detail = "; ".join(missing + ([f"manifest paths absent: {', '.join(absent)}"] if absent else []))
         raise FileNotFoundError(
             f"Missing TaRF query conditions for query {query_idx} under {root}. "
-            f"Accepted inputs: {detail}. Query tactile GT is intentionally not a fallback."
+            f"Official TaRF requires distinct 40_50 and 0_40 RGB-D views: {detail}. "
+            "A single view is never duplicated. Query tactile GT is intentionally "
+            "not a fallback."
         )
-    duplicated = len(rgbs) == 1 or len(depths) == 1
-    while len(rgbs) < 2:
-        rgbs.append(rgbs[0])
-    while len(depths) < 2:
-        depths.append(depths[0])
-    if len(rgbs) != len(depths):
+    if len(rgbs) != 2 or len(depths) != 2:
         raise ValueError(
-            f"Query {query_idx} has {len(rgbs)} RGB views but {len(depths)} depth views"
+            f"Query {query_idx} must have exactly two RGB and two depth views in "
+            f"[40_50, 0_40] order; got {len(rgbs)} RGB and {len(depths)} depth"
         )
-    return QueryConditions(tuple(rgbs[:2]), tuple(depths[:2]), background_path, duplicated)
+    return QueryConditions(tuple(rgbs), tuple(depths), background_path)
 
 
 def load_depth(path: Path) -> np.ndarray:

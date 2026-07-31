@@ -13,6 +13,12 @@ from pathlib import Path
 
 BASELINE_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = BASELINE_ROOT.parents[1]
+DEFAULT_BACKGROUND = (
+    BASELINE_ROOT
+    / "img2touch"
+    / "touch_bg"
+    / "gelsight_pseudo_background.jpg"
+)
 sys.path.insert(0, str(BASELINE_ROOT))
 
 from patchmatch_tarf.conditions import resolve_conditions
@@ -72,7 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--condition_render_size", type=int, default=480)
-    parser.add_argument("--background", required=True, type=Path)
+    parser.add_argument(
+        "--background",
+        type=Path,
+        default=DEFAULT_BACKGROUND,
+        help=(
+            "No-contact GelSight background used by img2touch. Defaults to the "
+            "gelsight_pseudo_mini image used for Taxim calibration."
+        ),
+    )
     parser.add_argument(
         "--timing_suffix",
         default="render_mask",

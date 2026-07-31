@@ -6,7 +6,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 OBJECT_ID="${TACTILE_NORMAL_OBJECT_ID:-1}"
 SIM_REF_ROOT="${TACTILE_NORMAL_SIM_REF_ROOT:-$REPO_DIR/Taxim/results/gen_contact_full_tactile_normal_pseudo_mini}"
 SIM_QUERY_ROOT="${TACTILE_NORMAL_SIM_QUERY_ROOT:-$REPO_DIR/Taxim/results/gen_contact_full_query_tactile_normal_pseudo_mini}"
-BACKGROUND="${TARF_TACTILE_NORMAL_BACKGROUND:-$REPO_DIR/baselines/TaRF/img2touch/touch_bg/bench_colmap_40_50/bg.jpg}"
+BACKGROUND="${TARF_TACTILE_NORMAL_BACKGROUND:-$REPO_DIR/baselines/TaRF/img2touch/touch_bg/gelsight_pseudo_background.jpg}"
 
 exec "$SCRIPT_DIR/run_sim.sh" \
     --ref_dir "$SIM_REF_ROOT/$OBJECT_ID" \
