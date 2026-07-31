@@ -11,7 +11,8 @@ exec conda run --no-capture-output -n TaRF python \
   --roots \
     Taxim/results/gen_contact_full_tactile_normal_pseudo_mini \
     Taxim/results/gen_contact_full_query_tactile_normal_pseudo_mini \
-  --output log/baselines/tarf_training/patchmatch_sim_tactile_normal \
+  --output \
+    log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd \
   --target-video-type tactile_normal \
   --workers "${TARF_DATA_WORKERS:-12}" \
   "$@"

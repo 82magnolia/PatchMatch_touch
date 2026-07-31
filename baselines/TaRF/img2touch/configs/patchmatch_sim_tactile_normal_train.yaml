@@ -14,23 +14,23 @@ data:
     train:
       target: ldm.patchmatch_sim_data.PatchMatchSimDataset
       params:
-        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal/manifest.json
+        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd/manifest.json
         split: train
-        background_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal/tactile_normal_background.jpg
+        background_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd/tactile_normal_background.jpg
         size: 256
     validation:
       target: ldm.patchmatch_sim_data.PatchMatchSimDataset
       params:
-        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal/manifest.json
+        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd/manifest.json
         split: val
-        background_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal/tactile_normal_background.jpg
+        background_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd/tactile_normal_background.jpg
         size: 256
     test:
       target: ldm.patchmatch_sim_data.PatchMatchSimDataset
       params:
-        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal/manifest.json
+        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd/manifest.json
         split: test
-        background_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal/tactile_normal_background.jpg
+        background_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd/tactile_normal_background.jpg
         size: 256
 
 lightning:

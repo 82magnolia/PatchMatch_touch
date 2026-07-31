@@ -155,18 +155,19 @@ generated image only when packaging it at the query video's output resolution.
 
 ## Fine-tuning img2touch on paired simulation data
 
-The simulation preparation pairs both Taxim roots and keeps whole objects in
-only one split:
+Shadow training uses reference samples for fitting and holds out query samples
+for prediction. Prepare its reference-even/query-odd split with:
 
 ```bash
-conda run --no-capture-output -n TaRF \
-  python baselines/TaRF/scripts/prepare_sim_training_data.py \
-  --roots \
-    Taxim/results/gen_contact_full_pseudo_mini \
-    Taxim/results/gen_contact_full_query_pseudo_mini \
-  --output log/baselines/tarf_training/patchmatch_sim \
-  --workers 12
+bash baselines/TaRF/scripts/prepare_sim_shadow_training_data.sh
 ```
+
+For pseudo-mini objects `1`–`950`, the manifest uses reference-tree even
+touches `0,2,4,6` for training, query-tree odd touches `1,5` for validation,
+and query-tree odd touches `3,7` for test. This produces 3,800/1,900/1,900
+samples. Objects are shared across splits; touch role and parity are held out.
+The manifest is written to
+`log/baselines/tarf_training/patchmatch_sim_ref_even_query_odd/`.
 
 For each touch, the target is the `shadow.mp4` frame having the largest contact
 area in `mask.mp4`. Conditions reproduce TaRF's two-view, 11-channel input:
@@ -222,8 +223,9 @@ diffusion preview generation is limited to one rank-zero batch per validation
 epoch. This avoids generating previews repeatedly at the same global step.
 
 The default is 30 epochs. Runs, CSV metrics, generated previews, and checkpoints
-are written under `log/baselines/tarf_training/runs/`, outside the baseline
-source tree.
+are written under
+`log/baselines/tarf_training/runs/<timestamp>_patchmatch_sim_ref_even_query_odd/`,
+outside the baseline source tree.
 
 ## Training a tactile-normal img2touch model
 
@@ -254,7 +256,7 @@ For every touch, the preparation script:
 The output is:
 
 ```text
-log/baselines/tarf_training/patchmatch_sim_tactile_normal/
+log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd/
 ├── manifest.json
 ├── tactile_normal_background.jpg
 └── touch/
@@ -262,38 +264,15 @@ log/baselines/tarf_training/patchmatch_sim_tactile_normal/
 ```
 
 The no-contact first frame becomes the normal-map background (approximately
-RGB `[125, 126, 250]`). The object-disjoint split is the same as shadow
-training: 12,800 train, 1,600 validation, and 1,600 test samples. Object IDs
-ending in buckets 1–8 are train, bucket 9 is validation, and bucket 0 is test.
+RGB `[125, 126, 250]`). For pseudo-mini objects `1`–`950`, TaRF uses:
 
-### ReBotNet-object-matched simulation training
+- reference-tree even touches `0,2,4,6` for training;
+- query-tree odd touches `1,5` for validation; and
+- query-tree odd touches `3,7` for test.
 
-The comparable TaRF run uses simulation data only. It matches the object IDs
-from the completed ReBotNet real tactile-normal fine-tuning split:
-
-```bash
-bash \
-  baselines/TaRF/scripts/prepare_rebot_finetune_tactile_normal_training_data.sh
-```
-
-ReBotNet holds out real object IDs `1`–`20` and fine-tunes on real object IDs
-`21`–`100`. TaRF applies that same object-ID split to both simulation roots:
-
-```text
-Taxim/results/gen_contact_full_tactile_normal_pseudo_mini/
-Taxim/results/gen_contact_full_query_tactile_normal_pseudo_mini/
-```
-
-TaRF therefore trains on simulated objects `21`–`100`, uses simulated objects
-`1`–`10` for validation, and simulated objects `11`–`20` for test. Each root
-has eight touches per object, producing 1,280 train, 160 validation, and 160
-test samples. No real RGB, height, mask, or tactile video is read by this
-training pipeline. Conditions remain simulation `scale25` for `40_50` and
-simulation `scale100` for `0_40`. The prepared dataset is saved under:
-
-```text
-log/baselines/tarf_training/patchmatch_sim_tactile_normal_rebot_finetune/
-```
+This produces 3,800 training, 1,900 validation, and 1,900 test samples. Objects
+are shared across splits; touch role and parity are held out. No real RGB,
+height, mask, or tactile video is read.
 
 The released `img2touch.ckpt` predicts shadow/RGB tactile appearance, so its
 diffusion UNet, EMA, and RGB-D conditioner weights are **not loaded** for this
@@ -307,25 +286,23 @@ shadow-trained diffusion mapping.
 Before using GPUs, the launcher prints `nvidia-smi` and chooses four idle GPUs:
 
 ```bash
-bash \
-  baselines/TaRF/scripts/train_img2touch_tactile_normal_rebot_finetune.sh
+bash baselines/TaRF/scripts/train_img2touch_tactile_normal.sh
 ```
 
 Explicitly select idle devices when sharing the machine:
 
 ```bash
 TARF_GPUS=0,1,2,3 \
-bash \
-  baselines/TaRF/scripts/train_img2touch_tactile_normal_rebot_finetune.sh
+bash baselines/TaRF/scripts/train_img2touch_tactile_normal.sh
 ```
 
 The training config is
-`img2touch/configs/patchmatch_sim_tactile_normal_rebot_finetune_train.yaml`.
+`img2touch/configs/patchmatch_sim_tactile_normal_train.yaml`.
 It uses batch size 1 per GPU, 30 epochs, full validation loss, and only one
 rank-zero diffusion-preview batch per validation epoch. Runs are saved under:
 
 ```text
-log/baselines/tarf_training/runs/<timestamp>_patchmatch_sim_tactile_normal_rebot_finetune/
+log/baselines/tarf_training/runs/<timestamp>_patchmatch_sim_tactile_normal_ref_even_query_odd/
 ```
 
 To resume, set `TARF_RESUME` to a completed checkpoint:
@@ -333,8 +310,7 @@ To resume, set `TARF_RESUME` to a completed checkpoint:
 ```bash
 TARF_GPUS=0,1,2,3 \
 TARF_RESUME=/absolute/path/to/checkpoints/last.ckpt \
-bash \
-  baselines/TaRF/scripts/train_img2touch_tactile_normal_rebot_finetune.sh
+bash baselines/TaRF/scripts/train_img2touch_tactile_normal.sh
 ```
 
 After training, pass the selected tactile-normal diffusion checkpoint to the
@@ -345,7 +321,7 @@ bash baselines/TaRF/scripts/run_sim_tactile_normal.sh \
   --diffusion_ckpt \
   log/baselines/tarf_training/runs/<run>/checkpoints/<selected>.ckpt \
   --background \
-  log/baselines/tarf_training/patchmatch_sim_tactile_normal_rebot_finetune/tactile_normal_background.jpg
+  log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd/tactile_normal_background.jpg
 ```
 
 ## Simulation

@@ -8,7 +8,7 @@ IMG2TOUCH_DIR="${TARF_DIR}/img2touch"
 RUN_ROOT="${PROJECT_DIR}/log/baselines/tarf_training/runs"
 NUM_GPUS="${TARF_NUM_GPUS:-4}"
 TRAIN_CONFIG="${TARF_TRAIN_CONFIG:-configs/patchmatch_sim_train.yaml}"
-RUN_NAME="${TARF_RUN_NAME:-patchmatch_sim}"
+RUN_NAME="${TARF_RUN_NAME:-patchmatch_sim_ref_even_query_odd}"
 
 echo "Current GPU occupancy:"
 nvidia-smi

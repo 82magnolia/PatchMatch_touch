@@ -14,21 +14,21 @@ data:
     train:
       target: ldm.patchmatch_sim_data.PatchMatchSimDataset
       params:
-        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim/manifest.json
+        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_ref_even_query_odd/manifest.json
         split: train
         background_path: touch_bg/gelsight_pseudo_background.jpg
         size: 256
     validation:
       target: ldm.patchmatch_sim_data.PatchMatchSimDataset
       params:
-        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim/manifest.json
+        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_ref_even_query_odd/manifest.json
         split: val
         background_path: touch_bg/gelsight_pseudo_background.jpg
         size: 256
     test:
       target: ldm.patchmatch_sim_data.PatchMatchSimDataset
       params:
-        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim/manifest.json
+        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_ref_even_query_odd/manifest.json
         split: test
         background_path: touch_bg/gelsight_pseudo_background.jpg
         size: 256

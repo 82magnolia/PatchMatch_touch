@@ -19,5 +19,5 @@ if [[ ! -f "${FIRST_STAGE_CKPT}" ]]; then
 fi
 
 export TARF_TRAIN_CONFIG="configs/patchmatch_sim_tactile_normal_train.yaml"
-export TARF_RUN_NAME="patchmatch_sim_tactile_normal"
+export TARF_RUN_NAME="patchmatch_sim_tactile_normal_ref_even_query_odd"
 exec bash "${SCRIPT_DIR}/train_img2touch_sim.sh" "$@"
