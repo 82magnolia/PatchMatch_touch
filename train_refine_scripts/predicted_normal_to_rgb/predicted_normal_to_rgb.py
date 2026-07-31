@@ -1,10 +1,15 @@
-"""Heightmaps -> Taxim RGB optical simulation -> GelSight tactile VIDEO.
+"""PREDICTED NORMAL MAP -> RGB TACTILE IMAGE (Taxim optical simulation).
 
-For each sim test touch: run geomcat_film per frame, integrate the predicted
-normal map to a heightmap (Poisson), then apply Taxim's optical simulation
-(gradient -> calibrated RGB LUT + gel background) to synthesize the GelSight
-tactile image. Stitched into an MP4 (H.264): [predicted normal | Taxim tactile
-(predicted) | Taxim tactile (ground truth)]. Then writes an HTML report.
+This is the canonical "predicted normal -> RGB" converter. The core is
+`normal_to_taxim(normal_map)`: it integrates a predicted (or GT) tactile-normal
+map to a heightmap (Poisson), then applies Taxim's optical simulation
+(`taxim_rgb`: calibrated gradient->RGB lookup table + gel background) to
+synthesize the GelSight RGB tactile image.
+
+As driven by `main()` it runs geomcat_film over sim test touches and stitches an
+H.264 MP4 per touch -- [predicted normal | Taxim tactile (predicted) | Taxim
+tactile (ground truth)] -- plus an HTML report. To convert your own normal maps,
+import `normal_to_taxim` / `taxim_rgb` directly.
 """
 import os, sys, base64, subprocess
 import numpy as np, cv2, torch
