@@ -9,6 +9,9 @@ __pycache__/
 
 outputs/
 
+# Legacy Ionic/FastAPI demo; not used by the PatchMatch_touch baseline.
+ImageQuilting/TEXTURify/
+
 TactileDreamFusion/logs/
 TactileDreamFusion/data/
 

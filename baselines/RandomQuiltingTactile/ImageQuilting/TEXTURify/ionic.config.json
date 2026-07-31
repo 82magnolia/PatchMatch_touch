@@ -1,7 +1,0 @@
-{
-  "name": "TEXTURify",
-  "integrations": {
-    "cordova": {}
-  },
-  "type": "angular"
-}
