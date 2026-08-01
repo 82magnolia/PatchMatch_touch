@@ -1,26 +1,24 @@
 %% Ground-truth retrieval benchmark: our method vs. baselines.
-%% Cells are intentionally empty -- fill in the numbers.
-%% Our-method numbers currently available locally (paper_experiments/02_gt_retrieval_figure):
-%%   ours coarse   PSNR 22.93  SSIM 0.8348  LPIPS 0.2105
-%%   ours refined  PSNR 31.28  SSIM 0.9228  LPIPS 0.1075
+%% Numbers from paper_experiments/job1_gt_retrieval/{results.json,table_body.tex}
+%% (50 held-out objects 951-1000, 8 touch locations each).
 \begin{table}[t]
   \centering
   \small
   \caption{\textbf{Ground-truth retrieval benchmark.} Prediction accuracy averaged over all
-    evaluation touches and all frames. ``Coarse'' is the transfer obtained from feature-matching
+    evaluation touches and all frames, with the reference touch supplied by construction so that
+    retrieval error is excluded. ``Coarse'' is the transfer obtained from feature-matching
     alignment alone, and ``refined'' additionally applies the refinement network. Arrows indicate
-    whether higher ($\uparrow$) or lower ($\downarrow$) is better.}
+    whether higher ($\uparrow$) or lower ($\downarrow$) is better. Best result in \textbf{bold}.}
   \label{tab:gt_retrieval}
   \begin{tabular}{l c c c}
     \hline
     Method & PSNR $\uparrow$ & SSIM $\uparrow$ & LPIPS $\downarrow$ \\
     \hline
-    TaRF~\cite{tarf}                              & & & \\
-    Tactile normal quilting~\cite{tactiledreamfusion} & & & \\
-    Implicit neural representation~\cite{objectfolder} & & & \\
+    Tactile normal quilting~\cite{tactiledreamfusion} & 14.58 & 0.7227 & 0.4833 \\
+    Implicit neural representation~\cite{objectfolder} & 18.26 & 0.8166 & 0.3821 \\
     \hline
-    Ours (coarse transfer)                        & & & \\
-    Ours (refined)                                & & & \\
+    Ours (coarse transfer)                        & 22.90 & 0.8363 & 0.2102 \\
+    Ours (refined)                                & \textbf{31.21} & \textbf{0.9224} & \textbf{0.1085} \\
     \hline
   \end{tabular}
 \end{table}

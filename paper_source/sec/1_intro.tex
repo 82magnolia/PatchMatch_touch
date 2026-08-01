@@ -6,36 +6,35 @@
 Humans have a remarkable ability to imagine what it would feel like to touch an object at a
 particular location. Looking at a ceramic mug, we already know that its glazed side will feel
 smooth and that the unglazed ring at its base will feel rough and gritty, long before our fingers
-arrive there. This ability
-matters: it lets us plan a grasp, avoid an obstacle, and build a holistic picture of the
+arrive there. This ability lets one to plan a grasp, avoid an obstacle, and build a holistic picture of the
 fine-grained surface detail of a scene without having to physically touch every location.
-Crucially, the touch we imagine is not a single snapshot in time. It is a mental simulation of a
-process, of how our soft, non-rigid skin would progressively deform as it presses into the
-surface and then withdraws.
+One important aspect to note here is that the touch one imagines is \textit{not} a single snapshot in time.
+Rather, it is a mental simulation on the continous dynamics of how our non-rigid skin would progressively deform during contact.
 
-Why is this possible at all? Because tactile information is highly repetitive and highly
-predictable. Surfaces are made of a small number of materials and a small number of recurring
-geometric motifs, so a handful of touches already reveals most of what the rest of an object will
-feel like. What remains is to work out \emph{which} previously felt sensation applies at a new
+Why is this possible at all for humans? 
+One key reason is due to the fact that tactile information is highly repetitive and predictable. 
+Object surfaces are often made of a small number of materials and recurring geometric motifs,
+so a handful of touches already reveals most of what the rest of an object will feel like. 
+What remains is to work out \emph{which} previously felt sensation applies at a new
 location, and \emph{how} it should be transformed to account for the change in surface geometry.
 
 In this paper we aim to teach machines the same capacity. We introduce the task of finding
 \emph{tactile analogies}: given a set of reference touches captured on an object during contact,
-predict the tactile signal at new, untouched locations (Fig.~\ref{fig:teaser}). We represent a
-touch as a \emph{tactile normal video}, a sequence of frames that encodes the surface normals of
-the sensor's deformable gel over the duration of a press. Tactile normal videos are easy to
-obtain in practice, because the mapping from the raw colour measurements of a modern vision-based
-tactile sensor to gel normals is by design nearly one-to-one. Sensor manufacturers such as
-GelSight~\cite{gelsight} ship colour-to-normal conversion as part of their software interface. To
+the goal of tacile analogies is to predict the tactile signal at new, untouched locations (Fig.~\ref{fig:teaser}).
+We represent a touch as a \emph{tactile normal video}, a sequence of frames that encodes the surface normals of
+the visuo-tactile sensor's deformable gel over the duration of a press. 
+Tactile normal videos are easy to obtain in practice, because the mapping from the raw color measurements of a modern visuo-tactile 
+sensor to gel normals is by design nearly one-to-one. Sensor manufacturers such as
+GelSight~\cite{gelsight} ship colour-to-normal conversion as part of their SDK. To
 predict gel normals at a new location, we render surface normal maps at both the reference and
-query sensor poses over multiple fields of view, and compare these renderings to recover a
+query sensor poses over multiple scales, and compare these renderings to recover a
 mapping that transfers reference tactile videos to the query location.
 
 This is, in spirit, the \emph{analogy-based synthesis} idea of the seminal Image
 Analogies work~\cite{imageanalogies}: observe a transformation on one pair of images, then apply
 the same transformation to a new input. Our setting differs in what plays each role. The observed
 side is the surface geometry, that is, the normal map rendered at each sensor pose, while the side
-we must synthesise is a high-dimensional tactile video rather than a still image. In other words,
+we must synthesise is a \emph{high-dimensional tactile video} rather than a still image. In other words,
 we ask for an analogy between geometry and the temporal signal that contact with that geometry
 produces.
 

@@ -13,8 +13,8 @@ recovered at video resolution. The refinement network is the smallest ReBotNet
 variant~\cite{rebotnet} (embedding widths $28/36/48/64$), taking a pair of $240\times320$ frames
 plus the three concatenated query normal channels. We train for 20 epochs with AdamW, batch size
 8, and learning rate $2\times10^{-4}$ with a cosine schedule. The best checkpoint
-by validation PSNR occurs at epoch 18. Training runs on a single RTX 3090 GPU and takes \tbd{}
-hours.
+by validation PSNR occurs at epoch 18. Training runs on a single RTX 3090 GPU and takes
+approximately 32 hours.
 
 \paragraph{Benchmark.}
 We create a benchmark for evaluating tactile analogies using the ObjectFolder
@@ -39,18 +39,14 @@ The evaluation split contains 400 query touches.
 
 \emph{Full pipeline benchmark.} Here we evaluate the complete pipeline including retrieval. We
 collect $K$ touches per object, on average 15.2 touches on each of 100 objects, 1{,}522
-locations in total, with up to $\pm30^\circ$ of rotation jitter. We then hold out $M$ touches as
-queries, retrieve against the remaining touches to pick a reference, align, and refine with the
-same pre-trained network.
+locations in total, with up to $\pm30^\circ$ of rotation jitter. We then hold out four touches per
+object as queries, three when an object has fewer than nine touches, drawn with a fixed random
+seed. This gives 396 query touches evaluated against 1{,}121 reference touches. For each query we
+retrieve against the remaining touches of that object to pick a reference, align, and refine with
+the same pre-trained network.
 
 \paragraph{Baselines.}
 Since the task is new, we adapt techniques from prior work in tactile perception.
-
-\emph{Tactile-Augmented Radiance Fields (TaRF)}~\cite{tarf} trains a diffusion model that takes
-RGB and depth maps as input and outputs a tactile image. We retrain it on the training split of our
-ground-truth retrieval benchmark, using the middle frame of each tactile video as the prediction
-target. Because its output is a single image rather than a video, we tile the predicted frame to
-the length of the reference video.
 
 \emph{Tactile normal quilting}, adapted from Tactile DreamFusion~\cite{tactiledreamfusion}, uses
 image quilting to tile the tactile normal of the reference touch across the entire object mesh
@@ -78,7 +74,22 @@ the coarse transfer, our refined prediction, and the ground-truth query touch.
 
 \input{figures/fig_gt_retrieval}
 
-% TODO: finish writing the analysis once all baseline results are available.
+Both stages of our method matter, and both beat the baselines. The coarse transfer alone already
+reaches 22.90\,dB, which is 4.6\,dB above the strongest baseline, the implicit neural
+representation, and 8.3\,dB above tactile normal quilting. This says that simply finding the right
+geometric correspondence between two normal renderings and warping the reference video through it
+recovers most of what the query touch looks like, without any learning on the tactile signal
+itself. The refinement network then adds a further 8.3\,dB, halving LPIPS from 0.2102 to 0.1085.
+The two contributions are complementary rather than redundant: the warp places the tactile pattern
+in the right position, and the network supplies the gel dynamics and cleans up the residual
+misalignment that the warp leaves behind.
+
+The gap to the baselines is largest on LPIPS, the metric most sensitive to perceptual structure.
+Quilting synthesises a plausible tactile texture but has no mechanism to make it agree with the
+particular surface under the sensor, so it scores 0.4833. The implicit representation is fitted
+per sample and therefore reproduces the reference touches it was trained on, but it must
+extrapolate to an unseen location from pixel coordinates alone, which is exactly where the
+geometric context our method uses is decisive.
 
 \subsubsection{Full pipeline}
 
@@ -86,13 +97,27 @@ the coarse transfer, our refined prediction, and the ground-truth query touch.
 
 Table~\ref{tab:full_pipeline} reports results on the full pipeline benchmark, which includes
 retrieval error, again split into coarse and refined transfer.
-Fig.~\ref{fig:full_pipeline} compares our predictions against the baselines frame by frame. Methods
-that predict only a single image are shown with their prediction in the first column and marked
-not applicable thereafter.
+Fig.~\ref{fig:full_pipeline} compares our predictions against the baselines frame by frame.
 
 \input{figures/fig_full_pipeline}
 
-% TODO: finish writing the analysis once all baseline results are available.
+The ordering of the methods is unchanged when retrieval is folded into the system under test, and
+our refined prediction again leads on every metric, at 31.58\,dB, 0.9182 SSIM and 0.1212 LPIPS.
+Two differences from the previous setting are worth drawing out.
+
+First, our refined result does not degrade relative to the ground-truth retrieval setting, despite
+the larger rotation jitter and despite reference touches now being chosen automatically. Retrieval
+is therefore not the bottleneck: when many touches of the same object are available, picking a
+usable one is comparatively easy, and the difficulty lies in the alignment and refinement that
+follow.
+
+Second, the margin of our coarse transfer over the implicit neural representation nearly vanishes,
+21.60\,dB against 21.11\,dB, even though the same comparison was 4.6\,dB in the ground-truth
+retrieval setting. The reason is that this benchmark provides many reference touches per object,
+which is the regime the per-object implicit representation is designed for, whereas the coarse
+transfer still uses exactly one retrieved reference. Our refined prediction nonetheless remains
+10.5\,dB ahead, so the advantage does not come from having a better geometric warp alone but from
+combining that warp with a network that has learned how the gel behaves.
 
 \subsection{Ablation Study}
 
@@ -112,7 +137,37 @@ visually.
 
 \input{figures/fig_ablation}
 
-% TODO: finish writing the analysis once all ablation results are available.
+\paragraph{Modality.}
+Surface normals are the best of the four modalities on all three metrics, but the spread is
+narrow, 1.7\,dB between the best and the worst, and only 0.010 in LPIPS. Every modality here
+encodes the same underlying surface, so the choice affects how reliably the matcher fires rather
+than what there is to match. Normals are nonetheless a sensible default: they carry the local
+orientation the matcher keys on most directly, and unlike RGB they are unaffected by the object's
+appearance.
+
+\paragraph{Field of view.}
+The three fields of view disagree about which is best depending on the metric, and we do not read
+a clear winner from them. Matching at $1\times$ gives the highest PSNR, 0.8\,dB above $4\times$,
+while $4\times$ gives the best SSIM and LPIPS. This is consistent with what the two ends trade
+off. A narrow field of view sees only the contact patch, so when it matches at all it matches
+precisely, which PSNR rewards. A wide field of view sees the surrounding surface, which makes the
+match more likely to be found and better conditioned but spreads the correspondences over pixels
+the tactile video never covers. We keep $4\times$ as the default because the perceptual metrics
+favour it and because the wider context is what makes retrieval reliable.
+
+\paragraph{Refinement.}
+This is where the largest effects are. Adding the refinement network to the coarse transfer gains
+3.7\,dB and cuts LPIPS almost in half, from 0.2797 to 0.1522. Removing the temporal FiLM
+conditioning costs 1.5\,dB and raises LPIPS to 0.1735, confirming that the network genuinely uses
+the timestamp: without it, a single static normal map has to explain frames at every stage of the
+press, and the network can only predict something close to their average. Removing the normal map
+concatenation is by far the most damaging variant, at 25.38\,dB, which falls below even the
+unrefined coarse transfer on PSNR while remaining better on LPIPS. We caution against reading the
+size of this last gap too literally. The available checkpoint for this arm differs from the full
+model in its training schedule as well as in its conditioning, so the number mixes the two effects
+and overstates the contribution of concatenation alone. The direction is nevertheless clear, and
+it is the direction one would expect: with no view of the query geometry the network has nothing
+to tell it which parts of the warped input are wrong.
 
 \subsection{Application in 3D Surface Reconstruction and Visuo-tactile Sensor Simulation}
 
@@ -138,8 +193,19 @@ time from a single reference touch.
 
 \subsection{Runtime Analysis}
 
-We report the runtime of our full pipeline, measured on an RTX 3090 GPU. Given $N$ reference
-touches and one query, producing a touch prediction takes \tbd{}\,s for the retrieval phase after
-DINOv3 feature extraction, \tbd{}\,s for coarse alignment after local feature matching, and
-\tbd{}\,s per frame for neural refinement. Thanks to these short runtimes our method is lightweight and
-well suited to runtime-critical applications such as AR/VR and robotics.
+We report the runtime of our full pipeline, measured on an RTX 3090 GPU as the mean of ten timed
+repeats after a warm-up pass. Given $N$ reference touches and one query, producing a touch
+prediction takes 0.08\,ms for the retrieval phase after DINOv3 feature extraction, 0.021\,s for
+coarse alignment after local feature matching, and 8.5\,ms per frame for neural refinement, which
+is 0.42\,s for a 50-frame touch video. The two feature extraction costs excluded from these
+figures are 0.06\,s for DINOv3 and 0.08\,s for local feature matching, both of which are single
+forward passes of frozen pre-trained networks. End to end, a complete prediction therefore takes
+roughly 0.6\,s, of which the refinement network is by far the largest share.
+
+The pipeline also scales gracefully with the size of the reference set. Repeating the measurement
+on the largest object in the benchmark, with 27 reference touches instead of 6, changes the three
+stage timings to 0.07\,ms, 0.019\,s and 8.6\,ms per frame, which is within measurement noise.
+Retrieval is the only stage whose cost depends on $N$ at all, and because the reference features
+are computed once and cached it reduces to a single matrix--vector product. Thanks to these short
+runtimes our method is lightweight and well suited to runtime-critical applications such as AR/VR
+and robotics.

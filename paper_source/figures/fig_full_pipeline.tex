@@ -1,11 +1,12 @@
 %% Qualitative comparison against the baselines on the full pipeline benchmark (two columns).
 %% The graphic is a matrix of images:
 %%   rows    -- one per method. The FIRST row shows the reference tactile normal video.
-%%              Remaining rows: TaRF, tactile normal quilting, implicit neural representation,
+%%              Remaining rows: tactile normal quilting, implicit neural representation,
 %%              ours, ground truth.
 %%   columns -- frames of the predicted video, sampled across the press.
-%% For methods that predict a single image only, put the image in the first column and write
-%% "N/A (image only)" in the remaining columns.
+%% Assets are built by paper_experiments/extract_video_matrix.py into
+%%   log/paper_job2_figure_assets/   (not present on this machine -- produced on the
+%%   machine the job2 baselines were run on).
 %% Replace the \rule placeholder below with the actual graphic.
 \begin{figure*}[t]
   \centering
@@ -14,8 +15,6 @@
   \caption{\textbf{Comparison against baselines on the full pipeline benchmark.} Each row is one
     method and each column is a frame of the predicted tactile normal video, sampled across the
     press. The top row shows the reference tactile normal video that the prediction is transferred
-    from. Baselines that predict a single tactile image rather than a video are shown with their
-    prediction in the first column and marked \emph{N/A (image only)} thereafter, since they
-    cannot express how the gel deforms over the press.}
+    from, and the bottom row shows the ground truth at the query location.}
   \label{fig:full_pipeline}
 \end{figure*}
