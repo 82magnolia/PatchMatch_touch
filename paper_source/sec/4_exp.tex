@@ -31,7 +31,7 @@ split.
 We define two benchmark settings.
 
 \emph{Ground-truth retrieval benchmark.} Each item is a pair of touches, one designated query and
-one designated reference, with their tactile videos and normal renderings. Because the pairing
+one designated reference, with their tactile videos and normal renderings. Since the pairing
 is given, this setting isolates the coarse alignment and refinement stages from retrieval error.
 We simulate 8 reference and 8 query touches per object, giving 16{,}000 touch locations, with the
 query touches perturbed by up to $\pm15^\circ$ of in-plane rotation relative to the references.
@@ -173,7 +173,7 @@ to tell it which parts of the warped input are wrong.
 
 \input{figures/fig_recon}
 
-Because our method predicts tactile surface normals rather than an opaque appearance signal, its
+Our method predicts tactile surface normals rather than an opaque appearance signal, so its
 output can be turned into geometry with no additional supervision. We convert the predicted
 normals into per-pixel surface slopes and integrate them into a heightmap with a Poisson solver,
 subtracting a least-squares plane fit since the integration is defined only up to a plane. The

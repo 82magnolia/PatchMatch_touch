@@ -49,9 +49,9 @@ similar in the cosine sense,
   i^{*} \;=\; \arg\max_{i \in \{1,\dots,N\}} \; f_i^{\top} f_q .
   \label{eq:retrieval}
 \end{equation}
-We use the top-1 result throughout. Because the descriptor is frozen and the features of the
-reference set can be computed once and cached, retrieval reduces to a single matrix--vector
-product at query time.
+We use the top-1 result throughout. The descriptor is frozen and the features of the reference set
+can be computed once and cached, so retrieval reduces to a single matrix--vector product at query
+time.
 
 \subsection{Coarse Alignment}
 \label{sec:coarse}
@@ -71,24 +71,6 @@ $\mathbf{H} \in \mathbb{R}^{3\times 3}$ under RANSAC~\cite{ransac}:
 where $\tilde{\mathbf{p}}_k$ is $\mathbf{p}_k$ in homogeneous coordinates,
 $\pi([x, y, w]^{\top}) = [x/w, y/w]^{\top}$ is the perspective division, and $\rho$ is the RANSAC
 inlier--outlier cost.
-
-We estimate $\mathbf{H}$ in two decomposed parts, because the two parts are best measured at
-different fields of view. Matching over the wide, $4\times$ field of view gives many more
-keypoints and therefore a far more stable estimate of everything but the translation, that is, of
-rotation, scale, shear and the projective terms. However, that estimate is expressed in wide-field
-pixels, and rescaling it down to the narrow field of view that the tactile video actually covers
-amplifies any error in its translation component. We therefore first solve
-Eq.~\ref{eq:homography} at the matching scale, rescale the result to video resolution, and strip
-its translation so that the remaining transform $\mathbf{H}_0$ fixes the image centre. We then
-warp the reference normal map by $\mathbf{H}_0$ and re-match against the query at video scale.
-Since everything but the translation is already accounted for, the residual displacement is a pure
-shift, and we take its component-wise median over the matches,
-\begin{equation}
-  \mathbf{t} \;=\; \operatorname{median}_{k} \bigl( \mathbf{q}'_k - \mathbf{p}'_k \bigr),
-\end{equation}
-with $\{(\mathbf{p}'_k, \mathbf{q}'_k)\}$ the matches found after warping. The final transform
-composes the two, $\mathbf{H} = \mathbf{T}(\mathbf{t})\,\mathbf{H}_0$, where $\mathbf{T}(\mathbf{t})$
-is the translation by $\mathbf{t}$ in homogeneous coordinates.
 
 Applying $\mathbf{H}$ to every frame of the retrieved reference video gives the initial transfer
 \begin{equation}
@@ -154,4 +136,12 @@ sensitive to outliers than a squared error,
   \sqrt{\bigl(\hat{V}_q^{\,t}(x) - V_q^{t}(x)\bigr)^2 + \epsilon^2},
 \end{equation}
 evaluated on the region $\Omega$ where the ground-truth query frame differs from the warped input,
-i.e.\ the part of the frame the network is actually being asked to change.
+i.e.\ the part of the frame the network is actually being asked to change. We obtain $\Omega$ by
+thresholding the per-pixel difference between the two,
+\begin{equation}
+  \Omega \;=\; \bigl\{\, x \;:\; \max_{c} \, \bigl\lvert V_q^{t}(x, c) - W^{t}(x, c) \bigr\rvert
+  \;>\; \delta \,\bigr\},
+  \label{eq:lossmask}
+\end{equation}
+where the maximum runs over the three normal channels and $\delta = 10^{-2}$. Pixels at which the warped input already agrees with the ground truth carry no training
+signal, and keeping them would let the large, unchanged background dominate the loss.
