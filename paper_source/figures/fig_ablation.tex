@@ -10,9 +10,9 @@
   % \includegraphics[width=\linewidth]{figures/ablation_qualitative.pdf}
   \rule{\linewidth}{3.0cm}% PLACEHOLDER -- remove when the real figure is dropped in
   \caption{\textbf{Qualitative ablation of the refinement stage.} From left to right: the coarse
-    transfer with no neural refinement; refinement without temporal conditioning through FiLM;
-    refinement without the concatenated query normal map; our full model; and the ground truth.
-    Removing either conditioning signal degrades the prediction in a characteristic way --- without
+    transfer with no neural refinement, refinement without temporal conditioning through FiLM,
+    refinement without the concatenated query normal map, our full model, and the ground truth.
+    Removing either conditioning signal degrades the prediction in a characteristic way. Without
     the timestamp the network cannot tell how deep into the press it is, and without the query
     normal map it has no evidence about the surface it is predicting for.}
   \label{fig:ablation}

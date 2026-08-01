@@ -23,10 +23,10 @@ sensor and the camera. That relative pose is available either from forward kinem
 are mounted on a robot, or from fiducial markers such as an ArUco tag attached to the back of the
 sensor.
 
-We then take a coarse-to-fine approach with three steps: retrieve the most promising reference
-touch using DINOv3 features (Sec.~\ref{sec:retrieval}); coarsely align the two normal maps to
-obtain a homography that gives an initial transfer of the reference tactile video
-(Sec.~\ref{sec:coarse}); and refine that initial transfer with a neural network
+We then take a coarse-to-fine approach with three steps. We first retrieve the most promising
+reference touch using DINOv3 features (Sec.~\ref{sec:retrieval}). We then coarsely align the two
+normal maps to obtain a homography that gives an initial transfer of the reference tactile video
+(Sec.~\ref{sec:coarse}). Finally, we refine that initial transfer with a neural network
 (Sec.~\ref{sec:refine}).
 
 \subsection{Retrieval}
@@ -34,8 +34,8 @@ obtain a homography that gives an initial transfer of the reference tactile vide
 
 A reference touch is useful only if the surface it was taken on resembles the surface at the
 query pose. We measure this resemblance in the space of a self-supervised visual descriptor.
-Concretely, we render normal maps over a field of view larger than the sensor footprint --- four
-times the sensor's extent by default --- so that the descriptor sees the surrounding surface
+Concretely, we render normal maps over a field of view larger than the sensor footprint, four
+times the sensor's extent by default, so that the descriptor sees the surrounding surface
 context and not just the small contact patch, and we extract the class-token feature of a
 pre-trained DINOv3 encoder~\cite{dinov3}:
 \begin{equation}
@@ -56,9 +56,9 @@ product at query time.
 \subsection{Coarse Alignment}
 \label{sec:coarse}
 
-Retrieval tells us \emph{which} reference to use; alignment tells us \emph{how} to place it. Using
-the top-1 retrieval $N_{i^{*}}$, we run a local feature matcher --- SuperPoint
-keypoints~\cite{superpoint} matched by SuperGlue~\cite{superglue} --- between $N_{i^{*}}$ and
+Retrieval tells us \emph{which} reference to use, and alignment tells us \emph{how} to place it.
+Using the top-1 retrieval $N_{i^{*}}$, we run a local feature matcher, namely SuperPoint
+keypoints~\cite{superpoint} matched by SuperGlue~\cite{superglue}, between $N_{i^{*}}$ and
 $N_q$, obtaining a set of $K$ two-dimensional pixel correspondences
 $\{(\mathbf{p}_k, \mathbf{q}_k)\}_{k=1}^{K}$. From these we estimate a homography
 $\mathbf{H} \in \mathbb{R}^{3\times 3}$ under RANSAC~\cite{ransac}:
@@ -74,15 +74,15 @@ inlier--outlier cost.
 
 We estimate $\mathbf{H}$ in two decomposed parts, because the two parts are best measured at
 different fields of view. Matching over the wide, $4\times$ field of view gives many more
-keypoints and therefore a far more stable estimate of everything but the translation --- rotation,
-scale, shear and the projective terms; but that estimate is expressed in wide-field pixels, and
-rescaling it down to the narrow field of view that the tactile video actually covers amplifies any
-error in its translation component. We therefore first solve Eq.~\ref{eq:homography} at the
-matching scale, rescale the result to video resolution, and strip its translation so that the
-remaining transform $\mathbf{H}_0$ fixes the image centre. We then warp the reference normal map
-by $\mathbf{H}_0$ and re-match against the query at video scale; since everything but the
-translation is already accounted for, the residual displacement is a pure shift, and we take its
-component-wise median over the matches,
+keypoints and therefore a far more stable estimate of everything but the translation, that is, of
+rotation, scale, shear and the projective terms. However, that estimate is expressed in wide-field
+pixels, and rescaling it down to the narrow field of view that the tactile video actually covers
+amplifies any error in its translation component. We therefore first solve
+Eq.~\ref{eq:homography} at the matching scale, rescale the result to video resolution, and strip
+its translation so that the remaining transform $\mathbf{H}_0$ fixes the image centre. We then
+warp the reference normal map by $\mathbf{H}_0$ and re-match against the query at video scale.
+Since everything but the translation is already accounted for, the residual displacement is a pure
+shift, and we take its component-wise median over the matches,
 \begin{equation}
   \mathbf{t} \;=\; \operatorname{median}_{k} \bigl( \mathbf{q}'_k - \mathbf{p}'_k \bigr),
 \end{equation}
@@ -112,8 +112,8 @@ efficiency.
 
 \paragraph{Architecture.}
 Our refinement network is based on ReBotNet~\cite{rebotnet}, a lightweight architecture for video
-enhancement. ReBotNet processes a pair of consecutive frames through two branches --- a
-ConvNeXt-style spatio-temporal branch and a per-frame token branch --- and merges them in a shared
+enhancement. ReBotNet processes a pair of consecutive frames through two branches, a
+ConvNeXt-style spatio-temporal branch and a per-frame token branch, and merges them in a shared
 decoder, with a global residual connection that adds the current input frame back to the
 prediction. It was originally designed to remove blur and compression artifacts from natural
 video, so we adapt it in two ways.
@@ -123,8 +123,8 @@ three additional aligned channels, broadcast across both frames of the pair. Thi
 network aware of the rough surface geometry at the query location, which is exactly the
 information the warped reference cannot supply.
 
-\emph{Temporal conditioning with FiLM.} The normal map is static --- it is rendered once at the
-query pose and does not change over the press --- so on its own it gives the network no sense of
+\emph{Temporal conditioning with FiLM.} The normal map is static, since it is rendered once at the
+query pose and does not change over the press, so on its own it gives the network no sense of
 where in the press it currently is. We therefore inject the frame's normalized timestamp
 $\tau_t = (t-1)/(T-1) \in [0,1]$, which runs from no contact through deepest press to take-off.
 Following the standard diffusion-model recipe, a fixed sinusoidal embedding of $\tau_t$ is passed
