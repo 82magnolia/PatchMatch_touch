@@ -1,0 +1,23 @@
+%% Full pipeline benchmark (retrieval + alignment + refinement): our method vs. baselines.
+%% Cells are intentionally empty -- fill in the numbers.
+\begin{table}[t]
+  \centering
+  \small
+  \caption{\textbf{Full pipeline benchmark.} Prediction accuracy when retrieval is part of the
+    evaluated system, averaged over all evaluation touches and all frames. ``Coarse'' is the
+    transfer obtained from retrieval and feature-matching alignment alone; ``refined''
+    additionally applies the refinement network.}
+  \label{tab:full_pipeline}
+  \begin{tabular}{l c c c}
+    \hline
+    Method & PSNR $\uparrow$ & SSIM $\uparrow$ & LPIPS $\downarrow$ \\
+    \hline
+    TaRF~\cite{tarf}                              & & & \\
+    Tactile normal quilting~\cite{tactiledreamfusion} & & & \\
+    Implicit neural representation~\cite{objectfolder} & & & \\
+    \hline
+    Ours (coarse transfer)                        & & & \\
+    Ours (refined)                                & & & \\
+    \hline
+  \end{tabular}
+\end{table}

@@ -70,10 +70,15 @@ def main():
                     help="Which field of view to show in the two normal-render columns: "
                          "100 = 1x the sensor footprint, 50 = 2x, 25 = 4x (the scale the "
                          "feature matching actually runs at).")
-    ap.add_argument("--out", default=f"{OUT}/figure_gt_retrieval_3x6.png")
+    ap.add_argument("--base", default=OUT,
+                    help="Job-2 output directory holding per_touch_metrics.pkl and assets/.")
+    ap.add_argument("--out", default=None)
     args = ap.parse_args()
+    base_dir = args.base
+    if args.out is None:
+        args.out = f"{base_dir}/figure_gt_retrieval_3x6.png"
 
-    recs = pickle.load(open(f"{OUT}/per_touch_metrics.pkl", "rb"))
+    recs = pickle.load(open(f"{base_dir}/per_touch_metrics.pkl", "rb"))
     by_key = {f"{r['obj']}_{r['pair']}": r for r in recs}
 
     if args.touches:
@@ -107,11 +112,11 @@ def main():
         "03_query_normal": f"{ROOT}/Taxim/results/gen_contact_full_query_tactile_normal_pseudo_mini",
     }
     for r in chosen:
-        for tag, base_dir in render_src.items():
+        for tag, render_dir in render_src.items():
             idx = r["ref_idx"] if tag.startswith("02") else r["pair"]
             for sc in ("100", "50", "25"):
-                src = f"{base_dir}/{r['obj']}/{idx}_scale{sc}_normal.jpg"
-                stem = f"{OUT}/assets/{r['obj']}_{r['pair']}_{tag}_scale{sc}"
+                src = f"{render_dir}/{r['obj']}/{idx}_scale{sc}_normal.jpg"
+                stem = f"{base_dir}/assets/{r['obj']}_{r['pair']}_{tag}_scale{sc}"
                 if not os.path.exists(src):
                     continue
                 im = cv2.imread(src)
@@ -122,7 +127,7 @@ def main():
 
     rows, meta = [], []
     for r in chosen:
-        base = f"{OUT}/assets/{r['obj']}_{r['pair']}"
+        base = f"{base_dir}/assets/{r['obj']}_{r['pair']}"
         cells = []
         for tag, _ in COLS:
             p = f"{base}_{tag}.png"

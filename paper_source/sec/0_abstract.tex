@@ -1,4 +1,18 @@
 \begin{abstract}
-%% Text of abstract
-Abstract text.
+We introduce \emph{tactile analogies}, an example-based synthesis paradigm for tactile videos.
+Given a small set of reference touches recorded on an object, we predict the tactile signal that
+a vision-based tactile sensor would measure at a new, previously untouched location. We represent
+a touch as a \emph{tactile normal video}, which records how the deformable gel surface of the
+sensor bends over the course of a press, and we bridge reference and query locations through
+surface normal maps rendered at the two sensor poses over several fields of view. Prediction
+proceeds coarse to fine: a self-supervised image descriptor retrieves the most promising
+reference touch, a pre-trained local feature matcher aligns the two normal renderings and warps
+the reference video into the query frame, and a lightweight video network refines the warped
+video into the final prediction. To evaluate the task we build a benchmark on the ObjectFolder
+dataset with two settings, one that isolates alignment and refinement and one that exercises the
+full pipeline including retrieval. Our method outperforms baselines adapted from prior work in
+tactile prediction while running fast enough for interactive use. Finally, we show that the
+predicted normals can be integrated into heightmaps for fine-grained 3D surface reconstruction,
+and pushed through an optical tactile simulator to produce virtual visuo-tactile measurements at
+locations that were never physically touched.
 \end{abstract}

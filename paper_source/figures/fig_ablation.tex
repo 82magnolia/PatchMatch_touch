@@ -1,0 +1,19 @@
+%% Small qualitative ablation figure (one column).
+%% Columns (or rows) compare the network prediction under:
+%%   - w/o neural refinement (the coarse transfer)
+%%   - w/o temporal FiLM
+%%   - w/o normal map concatenation
+%%   - full model (ours)  + ground truth
+%% Replace the \rule placeholder below with the actual graphic.
+\begin{figure}[t]
+  \centering
+  % \includegraphics[width=\linewidth]{figures/ablation_qualitative.pdf}
+  \rule{\linewidth}{3.0cm}% PLACEHOLDER -- remove when the real figure is dropped in
+  \caption{\textbf{Qualitative ablation of the refinement stage.} From left to right: the coarse
+    transfer with no neural refinement; refinement without temporal conditioning through FiLM;
+    refinement without the concatenated query normal map; our full model; and the ground truth.
+    Removing either conditioning signal degrades the prediction in a characteristic way --- without
+    the timestamp the network cannot tell how deep into the press it is, and without the query
+    normal map it has no evidence about the surface it is predicting for.}
+  \label{fig:ablation}
+\end{figure}

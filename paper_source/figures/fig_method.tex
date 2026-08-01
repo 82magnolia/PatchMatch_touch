@@ -1,0 +1,33 @@
+%% Method overview figure (one column), three stacked subfigures:
+%%   (a) Retrieval        -- database of reference touches + their normal maps, DINOv3 features
+%%                           of each compared against the query feature, one gets selected.
+%%   (b) Coarse alignment -- SuperPoint/SuperGlue matches between the selected reference normal
+%%                           map and the query normal map, the fitted affine map, and the
+%%                           reference tactile video warped by it.
+%%   (c) Refinement       -- rough ReBotNet architecture, showing the query normal map
+%%                           concatenated to the input frames and the timestamp entering through
+%%                           FiLM. No need to draw every layer.
+%% Replace the \rule placeholders below with the actual graphics.
+\begin{figure}[t]
+  \centering
+  % \includegraphics[width=\linewidth]{figures/method_retrieval.pdf}
+  \rule{\linewidth}{2.6cm}\\[0.4em]% PLACEHOLDER (a) retrieval
+  {\small (a) Retrieval}\\[0.9em]
+  % \includegraphics[width=\linewidth]{figures/method_coarse.pdf}
+  \rule{\linewidth}{2.6cm}\\[0.4em]% PLACEHOLDER (b) coarse alignment
+  {\small (b) Coarse alignment}\\[0.9em]
+  % \includegraphics[width=\linewidth]{figures/method_refine.pdf}
+  \rule{\linewidth}{2.6cm}\\[0.4em]% PLACEHOLDER (c) refinement
+  {\small (c) Learning-based refinement}
+  \caption{\textbf{Method overview.} (a) Every reference touch is stored alongside a surface
+    normal map rendered at its sensor pose. We encode these normal maps with a frozen DINOv3
+    encoder and pick the reference whose feature is closest to the query's
+    (Sec.~\ref{sec:retrieval}). (b) We match local features between the selected reference normal
+    map and the query normal map, fit an affine map to the correspondences, and warp the reference
+    tactile video through it to obtain an initial transfer (Sec.~\ref{sec:coarse}). (c) A
+    lightweight video network refines the initial transfer. The query normal map is concatenated
+    to the input frames so the network knows the surface geometry it is predicting for, and the
+    normalized timestamp of the frame is injected through feature-wise linear modulation (FiLM) so
+    the network knows where in the press it is (Sec.~\ref{sec:refine}).}
+  \label{fig:method}
+\end{figure}

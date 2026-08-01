@@ -1,7 +1,537 @@
+%% ---------------------------------------------------------------------------
+%% References for "Tactile Analogies: Example-Driven Synthesis of Tactile Videos"
+%% Built from paper_assets/reference_bib_plan.md. Published venues are preferred
+%% over arXiv preprints wherever a published version exists.
+%% ---------------------------------------------------------------------------
+
+%% --- Example-based synthesis: vision ---------------------------------------
+
+@inproceedings{imageanalogies,
+  author       = {Aaron Hertzmann and
+                  Charles E. Jacobs and
+                  Nuria Oliver and
+                  Brian Curless and
+                  David Salesin},
+  title        = {Image Analogies},
+  booktitle    = {Proceedings of the 28th Annual Conference on Computer Graphics and
+                  Interactive Techniques (SIGGRAPH)},
+  pages        = {327--340},
+  publisher    = {{ACM}},
+  year         = {2001},
+  doi          = {10.1145/383259.383295}
+}
+
+@article{patchmatch,
+  author       = {Connelly Barnes and
+                  Eli Shechtman and
+                  Adam Finkelstein and
+                  Dan B. Goldman},
+  title        = {PatchMatch: A Randomized Correspondence Algorithm for Structural Image
+                  Editing},
+  journal      = {{ACM} Transactions on Graphics},
+  volume       = {28},
+  number       = {3},
+  pages        = {24},
+  year         = {2009},
+  doi          = {10.1145/1531326.1531330}
+}
+
+@inproceedings{ldm,
+  author       = {Robin Rombach and
+                  Andreas Blattmann and
+                  Dominik Lorenz and
+                  Patrick Esser and
+                  Bj{\"{o}}rn Ommer},
+  title        = {High-Resolution Image Synthesis with Latent Diffusion Models},
+  booktitle    = {Proceedings of the {IEEE/CVF} Conference on Computer Vision and
+                  Pattern Recognition (CVPR)},
+  pages        = {10674--10685},
+  year         = {2022},
+  doi          = {10.1109/CVPR52688.2022.01042}
+}
+
+@inproceedings{asic,
+  author       = {Kamal Gupta and
+                  Varun Jampani and
+                  Carlos Esteves and
+                  Abhinav Shrivastava and
+                  Ameesh Makadia and
+                  Noah Snavely and
+                  Abhishek Kar},
+  title        = {{ASIC}: Aligning Sparse in-the-wild Image Collections},
+  booktitle    = {Proceedings of the {IEEE/CVF} International Conference on Computer
+                  Vision (ICCV)},
+  pages        = {4111--4122},
+  year         = {2023},
+  doi          = {10.1109/ICCV51070.2023.00382}
+}
+
+%% --- Example-based synthesis: audio ----------------------------------------
+
+@inproceedings{foleyanalogies,
+  author       = {Yuexi Du and
+                  Ziyang Chen and
+                  Justin Salamon and
+                  Bryan C. Russell and
+                  Andrew Owens},
+  title        = {Conditional Generation of Audio from Video via Foley Analogies},
+  booktitle    = {Proceedings of the {IEEE/CVF} Conference on Computer Vision and
+                  Pattern Recognition (CVPR)},
+  pages        = {2426--2436},
+  year         = {2023},
+  doi          = {10.1109/CVPR52729.2023.00240}
+}
+
+@article{foleycrafter,
+  author       = {Yiming Zhang and
+                  Yicheng Gu and
+                  Yanhong Zeng and
+                  Zhening Xing and
+                  Yuancheng Wang and
+                  Zhizheng Wu and
+                  Kai Chen},
+  title        = {FoleyCrafter: Bring Silent Videos to Life with Lifelike and
+                  Synchronized Sounds},
+  journal      = {International Journal of Computer Vision},
+  year         = {2026},
+  doi          = {10.1007/s11263-025-02649-3}
+}
+
+@inproceedings{audiotextureanalogy,
+  author       = {Kan Jen Cheng and
+                  Tingle Li and
+                  Gopala Anumanchipalli},
+  title        = {Audio Texture Manipulation by Exemplar-Based Analogy},
+  booktitle    = {{IEEE} International Conference on Acoustics, Speech and Signal
+                  Processing (ICASSP)},
+  year         = {2025},
+  doi          = {10.1109/ICASSP49660.2025.10890704}
+}
+
+%% --- Example-based synthesis: touch, and multisensory datasets -------------
+
+@inproceedings{tactiledreamfusion,
+  author       = {Ruihan Gao and
+                  Kangle Deng and
+                  Gengshan Yang and
+                  Wenzhen Yuan and
+                  Jun-Yan Zhu},
+  title        = {Tactile DreamFusion: Exploiting Tactile Sensing for 3D Generation},
+  booktitle    = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year         = {2024}
+}
+
 @inproceedings{tarf,
-  title={Tactile-augmented radiance fields},
-  author={Dou, Yiming and Yang, Fengyu and Liu, Yi and Loquercio, Antonio and Owens, Andrew},
-  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
-  pages={26529--26539},
-  year={2024}
+  author       = {Yiming Dou and
+                  Fengyu Yang and
+                  Yi Liu and
+                  Antonio Loquercio and
+                  Andrew Owens},
+  title        = {Tactile-Augmented Radiance Fields},
+  booktitle    = {Proceedings of the {IEEE/CVF} Conference on Computer Vision and
+                  Pattern Recognition (CVPR)},
+  pages        = {26519--26529},
+  year         = {2024},
+  doi          = {10.1109/CVPR52733.2024.02505}
+}
+
+@inproceedings{objectfolder,
+  author       = {Ruohan Gao and
+                  Yen-Yu Chang and
+                  Shivani Mall and
+                  Li Fei-Fei and
+                  Jiajun Wu},
+  title        = {ObjectFolder: A Dataset of Objects with Implicit Visual, Auditory,
+                  and Tactile Representations},
+  booktitle    = {Proceedings of the 5th Conference on Robot Learning (CoRL)},
+  series       = {Proceedings of Machine Learning Research},
+  volume       = {164},
+  pages        = {466--476},
+  publisher    = {{PMLR}},
+  year         = {2022}
+}
+
+@inproceedings{objectfolder2,
+  author       = {Ruohan Gao and
+                  Zilin Si and
+                  Yen-Yu Chang and
+                  Samuel Clarke and
+                  Jeannette Bohg and
+                  Li Fei-Fei and
+                  Wenzhen Yuan and
+                  Jiajun Wu},
+  title        = {ObjectFolder 2.0: A Multisensory Object Dataset for Sim2Real Transfer},
+  booktitle    = {Proceedings of the {IEEE/CVF} Conference on Computer Vision and
+                  Pattern Recognition (CVPR)},
+  pages        = {10598--10608},
+  year         = {2022},
+  doi          = {10.1109/CVPR52688.2022.01034}
+}
+
+%% --- Tactile sensors and simulators ----------------------------------------
+
+@article{gelsight,
+  author       = {Wenzhen Yuan and
+                  Siyuan Dong and
+                  Edward H. Adelson},
+  title        = {GelSight: High-Resolution Robot Tactile Sensors for Estimating
+                  Geometry and Force},
+  journal      = {Sensors},
+  volume       = {17},
+  number       = {12},
+  pages        = {2762},
+  year         = {2017},
+  doi          = {10.3390/s17122762}
+}
+
+@article{taxim,
+  author       = {Zilin Si and
+                  Wenzhen Yuan},
+  title        = {Taxim: An Example-Based Simulation Model for GelSight Tactile Sensors},
+  journal      = {{IEEE} Robotics and Automation Letters},
+  volume       = {7},
+  number       = {2},
+  pages        = {2361--2368},
+  year         = {2022},
+  doi          = {10.1109/LRA.2022.3142412}
+}
+
+@article{dotsim,
+  author       = {Yang You and
+                  Won Kyung Do and
+                  Aiden Swann and
+                  Rika Antonova and
+                  Monroe Kennedy III and
+                  Leonidas Guibas},
+  title        = {{DOT-Sim}: Differentiable Optical Tactile Simulation with Precise
+                  Real-to-Sim Physical Calibration},
+  journal      = {arXiv preprint arXiv:2604.27367},
+  year         = {2026}
+}
+
+%% --- Tactile object / texture recognition ----------------------------------
+
+@inproceedings{textureuneven,
+  author       = {Maliheh Marzani and
+                  Soheil Khatibi and
+                  Vinicius Prado da Fonseca and
+                  Thiago Eustaquio Alves de Oliveira},
+  title        = {Texture Recognition on Uneven Surfaces Using Deep Learning and Tactile
+                  Sensing Techniques},
+  booktitle    = {{IEEE} Canadian Conference on Electrical and Computer Engineering
+                  (CCECE)},
+  pages        = {607--613},
+  year         = {2025},
+  doi          = {10.1109/CCECE64018.2025.11364519}
+}
+
+@inproceedings{glovetactile,
+  author       = {Sriwiboon Pohtongkam and
+                  Jakkree Srinonchat},
+  title        = {Object Recognition Using Glove Tactile Sensor},
+  booktitle    = {International Electrical Engineering Congress (iEECON)},
+  year         = {2022},
+  doi          = {10.1109/iEECON53204.2022.9741672}
+}
+
+@article{triboelectrictactile,
+  author       = {Yating Xie and
+                  Hongyu Cheng and
+                  Chaocheng Yuan and
+                  Limin Zheng and
+                  Zhengchun Peng and
+                  Bo Meng},
+  title        = {Deep Learning-Assisted Object Recognition with Hybrid
+                  Triboelectric-Capacitive Tactile Sensor},
+  journal      = {Microsystems \& Nanoengineering},
+  volume       = {10},
+  pages        = {166},
+  year         = {2024},
+  doi          = {10.1038/s41378-024-00813-2}
+}
+
+@inproceedings{bagoffeatures,
+  author       = {Alexander Schneider and
+                  J{\"{u}}rgen Sturm and
+                  Cyrill Stachniss and
+                  Marco Reisert and
+                  Hans Burkhardt and
+                  Wolfram Burgard},
+  title        = {Object Identification with Tactile Sensors Using Bag-of-Features},
+  booktitle    = {{IEEE/RSJ} International Conference on Intelligent Robots and Systems
+                  (IROS)},
+  pages        = {243--248},
+  year         = {2009},
+  doi          = {10.1109/IROS.2009.5354648}
+}
+
+%% --- Tactile 3D reconstruction ---------------------------------------------
+
+@article{neuralfeels,
+  author       = {Sudharshan Suresh and
+                  Haozhi Qi and
+                  Tingfan Wu and
+                  Taosha Fan and
+                  Luis Pineda and
+                  Mike Lambeta and
+                  Jitendra Malik and
+                  Mrinal Kalakrishnan and
+                  Roberto Calandra and
+                  Michael Kaess and
+                  Joseph Ortiz and
+                  Mustafa Mukadam},
+  title        = {NeuralFeels with Neural Fields: Visuotactile Perception for In-Hand
+                  Manipulation},
+  journal      = {Science Robotics},
+  volume       = {9},
+  number       = {96},
+  year         = {2024},
+  doi          = {10.1126/scirobotics.adl0628}
+}
+
+@article{touchsdf,
+  author       = {Mauro Comi and
+                  Yijiong Lin and
+                  Alex Church and
+                  Alessio Tonioni and
+                  Laurence Aitchison and
+                  Nathan F. Lepora},
+  title        = {TouchSDF: A DeepSDF Approach for 3D Shape Reconstruction Using
+                  Vision-Based Tactile Sensing},
+  journal      = {{IEEE} Robotics and Automation Letters},
+  volume       = {9},
+  number       = {6},
+  pages        = {5719--5726},
+  year         = {2024},
+  doi          = {10.1109/LRA.2024.3396054}
+}
+
+@inproceedings{snaptapsplat,
+  author       = {Mauro Comi and
+                  Alessio Tonioni and
+                  Max Yang and
+                  Jonathan Tremblay and
+                  Valts Blukis and
+                  Yijiong Lin and
+                  Nathan F. Lepora and
+                  Laurence Aitchison},
+  title        = {Snap-it, Tap-it, Splat-it: Tactile-Informed 3D Gaussian Splatting for
+                  Reconstructing Challenging Surfaces},
+  booktitle    = {International Conference on 3D Vision (3DV)},
+  year         = {2025}
+}
+
+@inproceedings{splattouch,
+  author       = {Antonio Luigi Stefani and
+                  Niccol{\`{o}} Bisagno and
+                  Nicola Conci and
+                  Francesco G. B. De Natale},
+  title        = {SplatTouch: Explicit 3D Representation Binding Vision and Touch},
+  booktitle    = {Proceedings of the {IEEE/CVF} Conference on Computer Vision and
+                  Pattern Recognition (CVPR) Workshops},
+  year         = {2025}
+}
+
+@inproceedings{touchgs,
+  author       = {Aiden Swann and
+                  Matthew Strong and
+                  Won Kyung Do and
+                  Gadiel Sznaier Camps and
+                  Mac Schwager and
+                  Monroe Kennedy III},
+  title        = {Touch-GS: Visual-Tactile Supervised 3D Gaussian Splatting},
+  booktitle    = {{IEEE/RSJ} International Conference on Intelligent Robots and Systems
+                  (IROS)},
+  pages        = {10511--10518},
+  year         = {2024},
+  doi          = {10.1109/IROS58592.2024.10802412}
+}
+
+@article{gelslam,
+  author       = {Hung-Jui Huang and
+                  Mohammad Amin Mirzaee and
+                  Michael Kaess and
+                  Wenzhen Yuan},
+  title        = {{GelSLAM}: A Real-Time, High-Fidelity, and Robust 3D Tactile {SLAM}
+                  System},
+  journal      = {arXiv preprint arXiv:2508.15990},
+  year         = {2025}
+}
+
+%% --- Touch localization -----------------------------------------------------
+
+@article{tacloc,
+  author       = {Zirui Zhang and
+                  Boyang Zhang and
+                  Fumin Zhang and
+                  Huan Yin},
+  title        = {{TacLoc}: Global Tactile Localization on Objects from a Registration
+                  Perspective},
+  journal      = {arXiv preprint arXiv:2603.10565},
+  year         = {2026}
+}
+
+@article{normalflow,
+  author       = {Hung-Jui Huang and
+                  Michael Kaess and
+                  Wenzhen Yuan},
+  title        = {NormalFlow: Fast, Robust, and Accurate Contact-Based Object 6DoF Pose
+                  Tracking with Vision-Based Tactile Sensors},
+  journal      = {{IEEE} Robotics and Automation Letters},
+  volume       = {10},
+  number       = {1},
+  pages        = {452--459},
+  year         = {2025},
+  doi          = {10.1109/LRA.2024.3505815}
+}
+
+%% --- Visual representations, matching, and robust fitting ------------------
+
+@inproceedings{dino,
+  author       = {Mathilde Caron and
+                  Hugo Touvron and
+                  Ishan Misra and
+                  Herv{\'{e}} J{\'{e}}gou and
+                  Julien Mairal and
+                  Piotr Bojanowski and
+                  Armand Joulin},
+  title        = {Emerging Properties in Self-Supervised Vision Transformers},
+  booktitle    = {Proceedings of the {IEEE/CVF} International Conference on Computer
+                  Vision (ICCV)},
+  pages        = {9630--9640},
+  year         = {2021},
+  doi          = {10.1109/ICCV48922.2021.00951}
+}
+
+@article{dinov2,
+  author       = {Maxime Oquab and
+                  Timoth{\'{e}}e Darcet and
+                  Th{\'{e}}o Moutakanni and
+                  Huy V. Vo and
+                  Marc Szafraniec and
+                  Vasil Khalidov and
+                  Pierre Fernandez and
+                  Daniel Haziza and
+                  Francisco Massa and
+                  Alaaeldin El-Nouby and
+                  Mido Assran and
+                  Nicolas Ballas and
+                  Wojciech Galuba and
+                  Russell Howes and
+                  Po-Yao Huang and
+                  Shang-Wen Li and
+                  Ishan Misra and
+                  Michael Rabbat and
+                  Vasu Sharma and
+                  Gabriel Synnaeve and
+                  Hu Xu and
+                  Herv{\'{e}} J{\'{e}}gou and
+                  Julien Mairal and
+                  Patrick Labatut and
+                  Armand Joulin and
+                  Piotr Bojanowski},
+  title        = {DINOv2: Learning Robust Visual Features without Supervision},
+  journal      = {Transactions on Machine Learning Research},
+  volume       = {2024},
+  year         = {2024}
+}
+
+@article{dinov3,
+  author       = {Oriane Sim{\'{e}}oni and
+                  Huy V. Vo and
+                  Maximilian Seitzer and
+                  Federico Baldassarre and
+                  Maxime Oquab and
+                  Cijo Jose and
+                  Vasil Khalidov and
+                  Marc Szafraniec and
+                  Seung Eun Yi and
+                  Micha{\"{e}}l Ramamonjisoa and
+                  Francisco Massa and
+                  Daniel Haziza and
+                  Luca Wehrstedt and
+                  Jianyuan Wang and
+                  Timoth{\'{e}}e Darcet and
+                  Th{\'{e}}o Moutakanni and
+                  Leonel Sentana and
+                  Claire Roberts and
+                  Andrea Vedaldi and
+                  Jamie Tolan and
+                  John Brandt and
+                  Camille Couprie and
+                  Julien Mairal and
+                  Herv{\'{e}} J{\'{e}}gou and
+                  Patrick Labatut and
+                  Piotr Bojanowski},
+  title        = {DINOv3},
+  journal      = {Transactions on Machine Learning Research},
+  volume       = {2026},
+  year         = {2026}
+}
+
+@inproceedings{superpoint,
+  author       = {Daniel DeTone and
+                  Tomasz Malisiewicz and
+                  Andrew Rabinovich},
+  title        = {SuperPoint: Self-Supervised Interest Point Detection and Description},
+  booktitle    = {Proceedings of the {IEEE/CVF} Conference on Computer Vision and
+                  Pattern Recognition (CVPR) Workshops},
+  pages        = {224--236},
+  year         = {2018},
+  doi          = {10.1109/CVPRW.2018.00060}
+}
+
+@inproceedings{superglue,
+  author       = {Paul-Edouard Sarlin and
+                  Daniel DeTone and
+                  Tomasz Malisiewicz and
+                  Andrew Rabinovich},
+  title        = {SuperGlue: Learning Feature Matching with Graph Neural Networks},
+  booktitle    = {Proceedings of the {IEEE/CVF} Conference on Computer Vision and
+                  Pattern Recognition (CVPR)},
+  pages        = {4937--4946},
+  year         = {2020},
+  doi          = {10.1109/CVPR42600.2020.00499}
+}
+
+@inproceedings{lightglue,
+  author       = {Philipp Lindenberger and
+                  Paul-Edouard Sarlin and
+                  Marc Pollefeys},
+  title        = {LightGlue: Local Feature Matching at Light Speed},
+  booktitle    = {Proceedings of the {IEEE/CVF} International Conference on Computer
+                  Vision (ICCV)},
+  pages        = {17581--17592},
+  year         = {2023},
+  doi          = {10.1109/ICCV51070.2023.01616}
+}
+
+@article{ransac,
+  author       = {Martin A. Fischler and
+                  Robert C. Bolles},
+  title        = {Random Sample Consensus: A Paradigm for Model Fitting with
+                  Applications to Image Analysis and Automated Cartography},
+  journal      = {Communications of the {ACM}},
+  volume       = {24},
+  number       = {6},
+  pages        = {381--395},
+  year         = {1981},
+  doi          = {10.1145/358669.358692}
+}
+
+%% --- Video enhancement backbone --------------------------------------------
+
+@inproceedings{rebotnet,
+  author       = {Jeya Maria Jose Valanarasu and
+                  Rahul Garg and
+                  Andeep Toor and
+                  Xin Tong and
+                  Weijuan Xi and
+                  Andreas Lugmayr and
+                  Vishal M. Patel and
+                  Anne Menini},
+  title        = {ReBotNet: Fast Real-Time Video Enhancement},
+  booktitle    = {Proceedings of the {IEEE/CVF} Winter Conference on Applications of
+                  Computer Vision (WACV)},
+  year         = {2025}
 }

@@ -1,0 +1,26 @@
+%% Ground-truth retrieval benchmark: our method vs. baselines.
+%% Cells are intentionally empty -- fill in the numbers.
+%% Our-method numbers currently available locally (paper_experiments/02_gt_retrieval_figure):
+%%   ours coarse   PSNR 22.93  SSIM 0.8348  LPIPS 0.2105
+%%   ours refined  PSNR 31.28  SSIM 0.9228  LPIPS 0.1075
+\begin{table}[t]
+  \centering
+  \small
+  \caption{\textbf{Ground-truth retrieval benchmark.} Prediction accuracy averaged over all
+    evaluation touches and all frames. ``Coarse'' is the transfer obtained from feature-matching
+    alignment alone; ``refined'' additionally applies the refinement network. Arrows indicate
+    whether higher ($\uparrow$) or lower ($\downarrow$) is better.}
+  \label{tab:gt_retrieval}
+  \begin{tabular}{l c c c}
+    \hline
+    Method & PSNR $\uparrow$ & SSIM $\uparrow$ & LPIPS $\downarrow$ \\
+    \hline
+    TaRF~\cite{tarf}                              & & & \\
+    Tactile normal quilting~\cite{tactiledreamfusion} & & & \\
+    Implicit neural representation~\cite{objectfolder} & & & \\
+    \hline
+    Ours (coarse transfer)                        & & & \\
+    Ours (refined)                                & & & \\
+    \hline
+  \end{tabular}
+\end{table}

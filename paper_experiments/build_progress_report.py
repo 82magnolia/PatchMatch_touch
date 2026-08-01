@@ -12,8 +12,11 @@ OUT = f"{LOG}/paper_experiments_progress.html"
 
 stats = json.load(open(f"{ROOT}/paper_experiments/01_dataset_stats/stats.json"))
 D = stats["datasets"]
-recs = pickle.load(open(f"{LOG}/paper_job02_gt_retrieval_figure/per_touch_metrics.pkl", "rb"))
-summ = pickle.load(open(f"{LOG}/paper_job02_gt_retrieval_figure/summary.pkl", "rb"))
+JOB2 = f"{LOG}/paper_job02_gt_retrieval_figure_normalmatch"   # normals = plan default
+JOB2_ALT = f"{LOG}/paper_job02_gt_retrieval_figure"            # curvature comparison run
+recs = pickle.load(open(f"{JOB2}/per_touch_metrics.pkl", "rb"))
+summ = pickle.load(open(f"{JOB2}/summary.pkl", "rb"))
+alt_recs = pickle.load(open(f"{JOB2_ALT}/per_touch_metrics.pkl", "rb"))
 
 
 def b64(p):
@@ -40,10 +43,11 @@ JOBS = [
      "paper_experiments/01_dataset_stats/ &middot; log/paper_job01_dataset_stats/report.html"),
     ("Ground-truth retrieval two-column figure (with all image assets saved)", "done",
      "Ran the coarse transfer over all 50 held-out objects, ran the pretrained refinement "
-     "network over all 400 touches, cached every figure cell as a PNG, and stitched the 3 &times; 6 figure.",
-     "paper_experiments/02_gt_retrieval_figure/ &middot; log/paper_job02_gt_retrieval_figure/"),
+     "network over all 400 touches, cached every figure cell as a PNG, and stitched the 3 &times; 6 figure. "
+     "Run twice, once matching on normals (the plan's default) and once on curvature.",
+     "paper_experiments/02_gt_retrieval_figure/ &middot; log/paper_job02_gt_retrieval_figure_normalmatch/"),
     ("3D surface reconstruction and visuo-tactile sensor simulation figure", "done",
-     "Built the four-row figure (reference video, predicted video, 3D point clouds, simulated "
+     "Built the four-row figure (reference video, predicted video, shaded 3D relief, simulated "
      "RGB) for six candidate touches, plus a full-length video of the main example.",
      "paper_experiments/03_recon_visuotactile/ &middot; log/paper_job03_recon_visuotactile/"),
 ]
@@ -123,15 +127,17 @@ Each touch also carries RGB, normal, height, curvature and shape-index rendering
 surface at 1x, 2x and 4x the sensor footprint.</p>
 
 <h2>2. Ground-truth retrieval figure</h2>
-<figure>{img(f"{LOG}/paper_job02_gt_retrieval_figure/figure_gt_retrieval_3x6.png")}
-<figcaption>Columns: reference touch &middot; reference surface normal (4x field of view) &middot;
-query surface normal (4x) &middot; coarse transfer &middot; refined transfer (ours) &middot;
+<figure>{img(f"{JOB2}/figure_gt_retrieval_3x6.png")}
+<figcaption>Columns: reference touch &middot; reference surface normal (4x field of view, 1x sensor
+footprint boxed in red) &middot; query surface normal (4x, boxed) &middot; coarse transfer &middot;
+refined transfer (ours) &middot;
 ground-truth query touch. Rows are drawn from the 95th, 50th and 20th percentile of the
 refinement gain, so this is not a best-case-only selection.</figcaption></figure>
 
 <h3>Our-method numbers on the 50 held-out objects</h3>
 <p>A by-product of having to run the coarse transfer locally: metrics over all
-{summ['n_touches']} evaluation touches, every frame counted.</p>
+{summ['n_touches']} evaluation touches, every frame counted. Matching modality is the surface
+<b>normal</b> render at 4x, per the experiment plan.</p>
 <table><thead><tr><th style="text-align:left">Stage</th><th>PSNR (dB)</th><th>SSIM</th>
 <th>LPIPS</th><th>MSE</th></tr></thead><tbody>
 <tr><td style="text-align:left">Coarse transfer (feature matching only)</td>
@@ -141,6 +147,11 @@ refinement gain, so this is not a best-case-only selection.</figcaption></figure
     <td><b>{st('refined','PSNR'):.2f}</b></td><td><b>{st('refined','SSIM'):.4f}</b></td>
     <td><b>{st('refined','LPIPS'):.4f}</b></td><td><b>{st('refined','MSE'):.4f}</b></td></tr>
 </tbody></table>
+<p>Matching on curvature instead of normals gives
+{np.mean([r['coarse']['PSNR'] for r in alt_recs]):.2f} / {np.mean([r['refined']['PSNR'] for r in alt_recs]):.2f} dB
+(coarse / refined) &mdash; statistically indistinguishable from the normals numbers above. The Job 2
+report has the paired test.</p>
+
 <div class="warn">These are <b>our method only</b>. The baseline comparison
 (Tactile Normal Quilting, implicit neural representations, TaRF) is a Dirac job and was not
 run here. Treat this as the "ours" row of that table, already computed.</div>
@@ -148,7 +159,7 @@ run here. Treat this as the "ours" row of that table, already computed.</div>
 <h2>3. 3D reconstruction and visuo-tactile simulation</h2>
 <figure>{img(f"{LOG}/paper_job03_recon_visuotactile/figure_951_5.png")}
 <figcaption>Object 951, touch 5. Columns are frames of the press. Row 1: reference tactile
-normal video. Row 2: our predicted tactile normal video. Row 3: 3D point cloud from
+normal video. Row 2: our predicted tactile normal video. Row 3: shaded 3D relief from
 integrating row 2 into a heightmap. Row 4: RGB visuo-tactile frames from running row 3
 through Taxim's optical model. The reference contact is horizontal while the query contact
 is tilted, and the prediction follows the query geometry.</figcaption></figure>
@@ -177,9 +188,16 @@ the main example.</p>
     can be reproduced exactly by the coarse transfer, giving MSE 0 and infinite PSNR. Those
     frames are capped at 100 dB, which is the convention <code>rebot_net/eval.py</code> already
     uses.</li>
-<li><b>Normal-render columns are shown at 4x, not 1x.</b> At 1x the render is mostly empty
-    background and tells the reader nothing; at 4x the object is recognisable and it is also the
-    field of view the matching actually runs at. All three scales are saved as assets.</li>
+<li><b>Normal-render columns are shown at 4x, not 1x</b>, with the 1x sensor footprint outlined
+    in red. At 1x the render is mostly empty background and tells the reader nothing; at 4x the
+    object is recognisable and it is also the field of view the matching actually runs at. All
+    three scales are saved as assets, each with a boxed variant.</li>
+<li><b>Matching modality: the plan contradicts itself, so both were run.</b> The plan text asks for
+    normals at 4x; the script it references
+    (<code>transfer_all_real_data_gt_retrieval_tactile_normal/</code>) passes
+    <code>--transfer_modality curvature</code>. Normals is used as the default, matching the text.
+    The two are statistically indistinguishable on this benchmark &mdash; see the modality table in
+    the Job 2 report &mdash; so this is a naming decision, not a performance one.</li>
 </ul>
 
 <h2>Not run (Dirac jobs)</h2>

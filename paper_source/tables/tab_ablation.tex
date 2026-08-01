@@ -1,0 +1,34 @@
+%% Ablation study on a 20-object subset of the full pipeline benchmark.
+%% Cells are intentionally empty -- fill in the numbers.
+\begin{table}[t]
+  \centering
+  \small
+  \caption{\textbf{Ablation study} on a 20-object subset of the full pipeline benchmark. The top
+    block varies the rendered modality used for retrieval and for feature matching, with the field
+    of view fixed at $4\times$ the sensor footprint. The middle block varies that field of view,
+    with the modality fixed to surface normals. The bottom block removes components of the
+    refinement stage. The last row is our full model.}
+  \label{tab:ablation}
+  \begin{tabular}{l l c c c}
+    \hline
+    & Variant & PSNR $\uparrow$ & SSIM $\uparrow$ & LPIPS $\downarrow$ \\
+    \hline
+    \multirow{4}{*}{\rotatebox{90}{\scriptsize Modality}}
+      & RGB              & & & \\
+      & Height map       & & & \\
+      & Curvature        & & & \\
+      & Surface normals  & & & \\
+    \hline
+    \multirow{3}{*}{\rotatebox{90}{\scriptsize Scale}}
+      & $1\times$        & & & \\
+      & $2\times$        & & & \\
+      & $4\times$        & & & \\
+    \hline
+    \multirow{4}{*}{\rotatebox{90}{\scriptsize Refinement}}
+      & w/o neural refinement       & & & \\
+      & w/o temporal FiLM           & & & \\
+      & w/o normal concatenation    & & & \\
+      & Ours (full)                 & & & \\
+    \hline
+  \end{tabular}
+\end{table}

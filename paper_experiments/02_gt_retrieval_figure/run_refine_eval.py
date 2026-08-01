@@ -43,6 +43,8 @@ def parse_args():
     p.add_argument("--last_obj", type=int, default=1000)
     p.add_argument("--out_dir", default=f"{ROOT}/log/paper_job02_gt_retrieval_figure")
     p.add_argument("--ckpt", default=CKPT)
+    p.add_argument("--transfer_dir", default=TRANSFER,
+                   help="Coarse-transfer directory to refine and score.")
     return p.parse_args()
 
 
@@ -93,11 +95,12 @@ def main():
     for p in lpips_model.parameters():
         p.requires_grad_(False)
 
+    transfer_dir = args.transfer_dir
     obj_ids = [o for o in range(args.first_obj, args.last_obj + 1)
-               if os.path.isdir(os.path.join(TRANSFER, str(o)))]
+               if os.path.isdir(os.path.join(transfer_dir, str(o)))]
     print(f"{len(obj_ids)} objects available in the transfer directory")
 
-    ds = TactileTransferDataset(TRANSFER, obj_ids, split="test", cond_dir=COND,
+    ds = TactileTransferDataset(transfer_dir, obj_ids, split="test", cond_dir=COND,
                                 film_modality="normal", film_scale=100,
                                 geom_concat=True, video_type="tactile_normal",
                                 time_cond="film")
@@ -150,7 +153,7 @@ def main():
             save_png(f"{base}_04_coarse.png", coarses[k])
             save_png(f"{base}_05_refined.png", preds[k])
             save_png(f"{base}_06_gt_query.png", gts[k])
-            rf = read_frame(os.path.join(TRANSFER, str(obj), f"{pair}_ref_tactile_normal.mp4"), k)
+            rf = read_frame(os.path.join(transfer_dir, str(obj), f"{pair}_ref_tactile_normal.mp4"), k)
             if rf is not None:
                 save_png(f"{base}_01_ref_touch.png", rf)
             ridx = ref_of_query.get(pair, pair)
@@ -174,6 +177,7 @@ def main():
 
     summary = dict(n_touches=len(records), n_objects=len(obj_ids),
                    checkpoint=args.ckpt, epoch=ck.get("epoch"),
+                   transfer_dir=transfer_dir,
                    coarse=agg("coarse"), refined=agg("refined"))
     with open(os.path.join(args.out_dir, "summary.pkl"), "wb") as f:
         pickle.dump(summary, f)
