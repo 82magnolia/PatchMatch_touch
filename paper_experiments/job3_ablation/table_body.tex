@@ -1,0 +1,13 @@
+% --- coarse-alignment ablations ---
+Modality: surface normal (4x)  [default] & 27.71 & 0.8244 & 0.2797 \\
+Modality: RGB colour (4x) & 26.01 & 0.8211 & 0.2873 \\
+Modality: curvature (4x) & 27.03 & 0.8172 & 0.2895 \\
+Modality: height map (4x) & 26.61 & 0.8153 & 0.2853 \\
+Scale: 1x sensor & 28.49 & 0.8236 & 0.2919 \\
+Scale: 2x sensor & 28.36 & 0.8216 & 0.2908 \\
+Scale: 4x sensor  [default, same run as mod_normal] & 27.71 & 0.8244 & 0.2797 \\
+% --- network ablations ---
+w/o neural-network refinement & 27.71 & 0.8244 & 0.2797 \\
+Ours (full model) & 31.40 & 0.9074 & 0.1522 \\
+w/o temporal FiLM & 29.90 & 0.9022 & 0.1735 \\
+w/o normal concatenation & 25.38 & 0.8540 & 0.2722 \\
