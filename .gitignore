@@ -11,3 +11,6 @@ real_data_transfer/Fast-FoundationStereo/weights/
 # Written unconditionally to cwd by imcui.hloc's logging setup (imcui_match.py)
 log.txt
 *.log
+
+# Scratch run logs from paper_experiments jobs (outputs are regenerable)
+paper_experiments/_logs/

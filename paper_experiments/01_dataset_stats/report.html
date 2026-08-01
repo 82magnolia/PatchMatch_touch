@@ -1,0 +1,94 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Job 1 &mdash; Dataset generation statistics</title>
+<style>
+ body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+      max-width:960px;margin:2rem auto;padding:0 1.2rem;line-height:1.6;color:#1b1b1f}
+ h1{border-bottom:2px solid #333;padding-bottom:.4rem}
+ h2{margin-top:2.4rem;border-bottom:1px solid #ddd;padding-bottom:.3rem}
+ h3{margin-top:1.6rem;color:#333}
+ table{border-collapse:collapse;width:100%;margin:.8rem 0;font-size:.94rem}
+ th,td{border:1px solid #ddd;padding:.45rem .7rem;text-align:left;vertical-align:top}
+ table.kv th{width:230px;background:#f7f7f9;font-weight:600}
+ table.grid thead th{background:#f0f2f5}
+ table.grid td{text-align:right}
+ .sub{font-weight:400;color:#666;font-size:.82rem}
+ code{background:#f4f4f6;padding:.1rem .3rem;border-radius:3px;font-size:.88em}
+ .big{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0}
+ .big div{flex:1 1 150px;background:#f7f7f9;border:1px solid #e3e3e8;border-radius:8px;
+           padding:.8rem 1rem;text-align:center}
+ .big b{display:block;font-size:1.5rem;color:#1a4f8a}
+ .note{background:#fffbe6;border-left:4px solid #e0b400;padding:.7rem 1rem;margin:1rem 0}
+</style></head><body>
+<h1>Job 1 &mdash; Dataset generation statistics</h1>
+<p>This job counts what was actually generated for the tactile-analogies benchmark:
+how many objects, how many touch locations, how long each tactile video is, and which
+extra renderings accompany every touch. Nothing is trained or predicted here &mdash; it is a
+pure inventory of the data on disk, so that the paper can state the benchmark size exactly.</p>
+
+<div class="big">
+ <div><b>1000</b>ObjectFolder object meshes</div>
+ <div><b>17,522</b>touch locations in total</div>
+ <div><b>876,100</b>tactile video frames</div>
+ <div><b>262,830</b>accompanying rendered maps</div>
+ <div><b>16.82 GB</b>on disk</div>
+</div>
+
+<h2>How a touch is simulated</h2>
+<p>Every touch is produced by the tactile simulator <b>Taxim</b> pressing a virtual
+GelSight-style sensor into an ObjectFolder mesh. The settings are identical across all
+three datasets:</p>
+<table class="kv"><tr><th>Sensor calibration</th><td><code>Taxim/calibs/gelsight_pseudo_mini</code> (a scaled-down GelSight Mini)</td></tr><tr><th>Sensor resolution</th><td>240 &times; 320 pixels</td></tr><tr><th>Press motion</th><td><code>back_forth_press</code> &mdash; the sensor presses in and then withdraws</td></tr><tr><th>Press depth schedule</th><td>0 &rarr; 10 simulator depth units, sampled at 50 steps</td></tr><tr><th>Video produced</th><td>50 frames at 5 fps (one frame per depth step)</td></tr><tr><th>Recorded modality</th><td><code>tactile_normal</code> &mdash; the gel surface normal, colour-coded per pixel</td></tr></table>
+<p>Alongside the tactile video, each touch also stores a <code>mask</code> video (which
+pixels are in contact) and a <code>render_mask</code> video (which pixels the renderer
+could actually cover).</p>
+
+<h2>The three datasets</h2>
+
+<h3>Reference touches (ground-truth-retrieval benchmark)</h3>
+<table class="kv"><tr><th>Folder</th><td><code>Taxim/results/gen_contact_full_tactile_normal_pseudo_mini</code></td></tr><tr><th>Generation script</th><td><code>train_refine_scripts/gen_contact_ref_tactile_normal_pseudo_mini/</code></td></tr><tr><th>Objects</th><td>1000 (ObjectFolder ids 1&ndash;1000)</td></tr><tr><th>Touch locations</th><td>8 per object (fixed)</td></tr><tr><th>Total touch locations</th><td><b>8000</b></td></tr><tr><th>Contact points from</th><td>picked_points_fps.ply (farthest-point sampled)</td></tr><tr><th>In-plane rotation jitter</th><td>none (0 deg)</td></tr><tr><th>Tactile normal video</th><td>50 frames, 240&times;320 pixels, 5 fps</td></tr><tr><th>Total video frames</th><td>400,000</td></tr><tr><th>Videos per touch</th><td><code>mask</code>, <code>render_mask</code>, <code>tactile_normal</code></td></tr><tr><th>Disk footprint</th><td>7.11 GB</td></tr></table>
+
+
+<h3>Query touches (ground-truth-retrieval benchmark)</h3>
+<table class="kv"><tr><th>Folder</th><td><code>Taxim/results/gen_contact_full_query_tactile_normal_pseudo_mini</code></td></tr><tr><th>Generation script</th><td><code>train_refine_scripts/gen_contact_query_tactile_normal_pseudo_mini/</code></td></tr><tr><th>Objects</th><td>1000 (ObjectFolder ids 1&ndash;1000)</td></tr><tr><th>Touch locations</th><td>8 per object (fixed)</td></tr><tr><th>Total touch locations</th><td><b>8000</b></td></tr><tr><th>Contact points from</th><td>picked_points_query.ply</td></tr><tr><th>In-plane rotation jitter</th><td>+/- 15 deg (0.2618 rad)</td></tr><tr><th>Tactile normal video</th><td>50 frames, 240&times;320 pixels, 5 fps</td></tr><tr><th>Total video frames</th><td>400,000</td></tr><tr><th>Videos per touch</th><td><code>mask</code>, <code>render_mask</code>, <code>tactile_normal</code></td></tr><tr><th>Disk footprint</th><td>7.47 GB</td></tr></table>
+
+
+<h3>Full-pipeline benchmark</h3>
+<table class="kv"><tr><th>Folder</th><td><code>Taxim/results/gen_contact_raw_eval_tactile_normal_pseudo_mini</code></td></tr><tr><th>Generation script</th><td><code>train_refine_scripts/gen_contact_raw_eval_tactile_normal_pseudo_mini/</code></td></tr><tr><th>Objects</th><td>100 (ObjectFolder ids 1&ndash;100)</td></tr><tr><th>Touch locations</th><td>15.2 on average per object (min 6, max 31)</td></tr><tr><th>Total touch locations</th><td><b>1522</b></td></tr><tr><th>Contact points from</th><td>objfolder_pts_real_eval/&lt;id&gt;/picked_points.ply (all touches pooled per object)</td></tr><tr><th>In-plane rotation jitter</th><td>+/- 30 deg (0.5236 rad)</td></tr><tr><th>Tactile normal video</th><td>50 frames, 240&times;320 pixels, 5 fps</td></tr><tr><th>Total video frames</th><td>76,100</td></tr><tr><th>Videos per touch</th><td><code>mask</code>, <code>render_mask</code>, <code>tactile_normal</code></td></tr><tr><th>Disk footprint</th><td>2.25 GB</td></tr></table>
+
+
+<div class="note">
+The ground-truth-retrieval benchmark is a <b>paired</b> dataset: for the same object, the
+same touch index <i>i</i> exists in both the reference set and the query set, so the correct
+reference for every query is known in advance. The full-pipeline benchmark instead pools all
+touches on an object into one folder, so that a subset can be held out as queries and the
+retrieval step has to find the reference by itself.
+</div>
+
+<h2>Renderings that accompany every touch</h2>
+<p>At each touch location the object surface is also rendered from the sensor's own
+viewpoint, at three different fields of view. "1x" means the rendered patch covers exactly
+the sensor footprint; "2x" and "4x" cover twice and four times that area, letting the
+matching step see more surrounding context. Every rendering is 240 &times; 320 pixels
+regardless of the field of view. Counts below are summed over all three datasets.</p>
+
+<table class="grid"><thead><tr><th>Rendered map</th><th>1x (100)</th><th>2x (50)</th><th>4x (25)</th></tr></thead>
+<tbody><tr><th>color<div class='sub'>RGB colour of the object surface</div></th><td>17,522</td><td>17,522</td><td>17,522</td></tr><tr><th>normal<div class='sub'>surface normal direction</div></th><td>17,522</td><td>17,522</td><td>17,522</td></tr><tr><th>height<div class='sub'>height (distance from the sensor plane)</div></th><td>17,522</td><td>17,522</td><td>17,522</td></tr><tr><th>curvature<div class='sub'>curvature (how sharply the surface bends)</div></th><td>17,522</td><td>17,522</td><td>17,522</td></tr><tr><th>shapeindex<div class='sub'>shape index (a curvature-derived surface-type descriptor)</div></th><td>17,522</td><td>17,522</td><td>17,522</td></tr></tbody></table>
+
+<p>The <code>normal</code> and <code>height</code> maps are additionally stored as raw
+floating-point arrays (<code>.npz</code>), not just as JPEG previews, so they can be used
+numerically: normals are (240, 320, 3) and height maps are
+(240, 320) per touch and scale.</p>
+
+<h2>Train / evaluation split</h2>
+<p>The ground-truth-retrieval benchmark is split by object id: objects 1&ndash;950 are used
+for training the refinement network and objects <b>951&ndash;1000</b> (50 objects,
+400 touch locations) are held out for evaluation. This is the split hard-coded in
+<code>rebot_net/eval.py</code> and it is the split all reported numbers use.</p>
+
+<h2>Files</h2>
+<ul>
+ <li><code>paper_experiments/01_dataset_stats/collect_stats.py</code> &mdash; the scanner</li>
+ <li><code>paper_experiments/01_dataset_stats/stats.json</code> &mdash; raw numbers</li>
+ <li><code>paper_experiments/01_dataset_stats/results.md</code> &mdash; numbers formatted for the paper</li>
+</ul>
+</body></html>
