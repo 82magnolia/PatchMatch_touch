@@ -12,7 +12,7 @@ renderings, with an affine model fitted by RANSAC~\cite{ransac} and a median tra
 recovered at video resolution. The refinement network is the smallest ReBotNet
 variant~\cite{rebotnet} (embedding widths $28/36/48/64$), taking a pair of $240\times320$ frames
 plus the three concatenated query normal channels. We train for 20 epochs with AdamW, batch size
-8, learning rate $2\times10^{-4}$ with a cosine schedule, and $\lambda = 0.1$; the best checkpoint
+8, and learning rate $2\times10^{-4}$ with a cosine schedule; the best checkpoint
 by validation PSNR occurs at epoch 18. Training runs on a single RTX 3090 GPU and takes \tbd{}
 hours.
 

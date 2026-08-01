@@ -150,11 +150,4 @@ sensitive to outliers than a squared error,
   \sqrt{\bigl(\hat{V}_q^{\,t}(x) - V_q^{t}(x)\bigr)^2 + \epsilon^2},
 \end{equation}
 evaluated on the region $\Omega$ where the ground-truth query frame differs from the warped input,
-i.e.\ the part of the frame the network is actually being asked to change. \new{We add a small
-penalty on the magnitude of the correction the network applies,
-\begin{equation}
-  \mathcal{L} \;=\; \mathcal{L}_{\mathrm{ch}}
-  \;+\; \lambda \, \bigl\lVert \hat{V}_q^{\,t} - W^{t} \bigr\rVert_1 ,
-\end{equation}
-which discourages large edits unless the data justifies them and keeps the network anchored to the
-geometrically grounded initial transfer.}
+i.e.\ the part of the frame the network is actually being asked to change.
