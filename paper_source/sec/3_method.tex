@@ -85,17 +85,18 @@ changes across the video is the gel deformation, not the alignment.
 \subsection{Learning-based Refinement}
 \label{sec:refine}
 
-The initial transfer is geometrically plausible but physically naive. It carries whatever gel
-dynamics the reference press happened to exhibit, it inherits any residual misalignment left by
-Eq.~\ref{eq:homography}, and it knows nothing about the surface geometry at the query pose beyond what
-survived the warp. Our final step corrects all three with a neural network. Since we target
+The initial transfer is geometrically plausible but may be physically inaccurate.
+Specifically, the initial transfer carries the gel dynamics the \emph{reference press} happened to exhibit,
+inherits any residual misalignment left by Eq.~\ref{eq:homography}, and 
+knows nothing about the surface geometry at the query pose beyond what survived the homography-based alignment.
+Our final step corrects these artifacts using a neural network. Since we target
 prediction fast enough for AR/VR and robotics, we deliberately balance refinement accuracy against
 efficiency.
 
 \paragraph{Architecture.}
 Our refinement network is based on ReBotNet~\cite{rebotnet}, a lightweight architecture for video
 enhancement. ReBotNet processes a pair of consecutive frames through two branches, a
-ConvNeXt-style spatio-temporal branch and a per-frame token branch, and merges them in a shared
+ConvNeXt-style~\cite{convnext} spatio-temporal branch and a per-frame token branch, and merges them in a shared
 decoder, with a global residual connection that adds the current input frame back to the
 prediction. It was originally designed to remove blur and compression artifacts from natural
 video, so we adapt it in two ways.
@@ -109,9 +110,9 @@ information the warped reference cannot supply.
 query pose and does not change over the press, so on its own it gives the network no sense of
 where in the press it currently is. We therefore inject the frame's normalized timestamp
 $\tau_t = (t-1)/(T-1) \in [0,1]$, which runs from no contact through deepest press to take-off.
-Following the standard diffusion-model recipe, a fixed sinusoidal embedding of $\tau_t$ is passed
-through a small multi-layer perceptron and mapped to a per-stage scale and shift, applied as
-feature-wise linear modulation (FiLM):
+Following the standard diffusion-model recipe~\cite{ldm}, a fixed sinusoidal embedding of $\tau_t$
+is passed through a small multi-layer perceptron and mapped to a per-stage scale and shift, applied
+as feature-wise linear modulation (FiLM)~\cite{film}:
 \begin{equation}
   \mathrm{FiLM}(\mathbf{h}_s; \tau_t) \;=\;
   \bigl(1 + \gamma_s(\tau_t)\bigr) \odot \mathbf{h}_s + \beta_s(\tau_t),
