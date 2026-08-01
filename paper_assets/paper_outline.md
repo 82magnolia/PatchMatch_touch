@@ -192,11 +192,6 @@
               * Taxim/results/gen\_contact\_raw\_eval\_tactile\_normal\_pseudo\_mini/  
     * Baselines  
       * Since we tackle a new task, we adapt various techniques developed from prior works in tactile perception for our task  
-      * Tactile-Augmented Radiance Fields (TaRF)  
-        * Train a diffusion model that takes RGB \+ depth maps as input, and outputs tactile images  
-        * We train a new version of TaRF using the train split from our ground-truth retrieval benchmark  
-          * The tactile frame at the middle of each tactile video is used as the prediction target  
-        * Since the prediction is not a video, we tile the predicted frame to a video of same length to the reference  
       * Tactile Normal Quilting  
         * Baseline adapted from Tactile DreamFusion ([https://arxiv.org/abs/2412.06785](https://arxiv.org/abs/2412.06785))  
         * Uses image quilting to tile the tactile normal from the reference touch to the entire object mesh surface, renders the view-space normal at the query tactile sensor pose  
