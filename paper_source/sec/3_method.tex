@@ -25,7 +25,7 @@ sensor.
 
 We then take a coarse-to-fine approach with three steps: retrieve the most promising reference
 touch using DINOv3 features (Sec.~\ref{sec:retrieval}); coarsely align the two normal maps to
-obtain an affine map that gives an initial transfer of the reference tactile video
+obtain a homography that gives an initial transfer of the reference tactile video
 (Sec.~\ref{sec:coarse}); and refine that initial transfer with a neural network
 (Sec.~\ref{sec:refine}).
 
@@ -60,35 +60,39 @@ Retrieval tells us \emph{which} reference to use; alignment tells us \emph{how} 
 the top-1 retrieval $N_{i^{*}}$, we run a local feature matcher --- SuperPoint
 keypoints~\cite{superpoint} matched by SuperGlue~\cite{superglue} --- between $N_{i^{*}}$ and
 $N_q$, obtaining a set of $K$ two-dimensional pixel correspondences
-$\{(\mathbf{p}_k, \mathbf{q}_k)\}_{k=1}^{K}$. From these we estimate an affine map
-$\mathbf{A} \in \mathbb{R}^{2\times 3}$ under RANSAC~\cite{ransac}:
+$\{(\mathbf{p}_k, \mathbf{q}_k)\}_{k=1}^{K}$. From these we estimate a homography
+$\mathbf{H} \in \mathbb{R}^{3\times 3}$ under RANSAC~\cite{ransac}:
 \begin{equation}
-  \mathbf{A} \;=\; \arg\min_{\mathbf{A}} \sum_{k=1}^{K}
-  \rho\!\left( \bigl\lVert \mathbf{A}\,\tilde{\mathbf{p}}_k - \mathbf{q}_k \bigr\rVert_2 \right),
-  \label{eq:affine}
+  \mathbf{H} \;=\; \arg\min_{\mathbf{H}} \sum_{k=1}^{K}
+  \rho\!\left( \bigl\lVert \pi\bigl(\mathbf{H}\,\tilde{\mathbf{p}}_k\bigr) - \mathbf{q}_k
+  \bigr\rVert_2 \right),
+  \label{eq:homography}
 \end{equation}
-where $\tilde{\mathbf{p}}_k$ is $\mathbf{p}_k$ in homogeneous coordinates and $\rho$ is the
-RANSAC inlier--outlier cost.
+where $\tilde{\mathbf{p}}_k$ is $\mathbf{p}_k$ in homogeneous coordinates,
+$\pi([x, y, w]^{\top}) = [x/w, y/w]^{\top}$ is the perspective division, and $\rho$ is the RANSAC
+inlier--outlier cost.
 
-We estimate $\mathbf{A}$ in two decomposed parts, because the two parts are best measured at
+We estimate $\mathbf{H}$ in two decomposed parts, because the two parts are best measured at
 different fields of view. Matching over the wide, $4\times$ field of view gives many more
-keypoints and therefore a far more stable estimate of the linear part (rotation, scale, shear);
-but that estimate is expressed in wide-field pixels, and rescaling it down to the narrow field of
-view that the tactile video actually covers amplifies any error in its translation component. We
-therefore first solve Eq.~\ref{eq:affine} at the matching scale, rescale the result to video
-resolution, and strip its translation so that the remaining linear map $\mathbf{A}_0$ fixes the
-image centre. We then warp the reference normal map by $\mathbf{A}_0$ and re-match against the
-query at video scale; since the linear part is already removed, the residual displacement is a
-pure translation, and we take its component-wise median over the matches,
+keypoints and therefore a far more stable estimate of everything but the translation --- rotation,
+scale, shear and the projective terms; but that estimate is expressed in wide-field pixels, and
+rescaling it down to the narrow field of view that the tactile video actually covers amplifies any
+error in its translation component. We therefore first solve Eq.~\ref{eq:homography} at the
+matching scale, rescale the result to video resolution, and strip its translation so that the
+remaining transform $\mathbf{H}_0$ fixes the image centre. We then warp the reference normal map
+by $\mathbf{H}_0$ and re-match against the query at video scale; since everything but the
+translation is already accounted for, the residual displacement is a pure shift, and we take its
+component-wise median over the matches,
 \begin{equation}
   \mathbf{t} \;=\; \operatorname{median}_{k} \bigl( \mathbf{q}'_k - \mathbf{p}'_k \bigr),
 \end{equation}
-with $\{(\mathbf{p}'_k, \mathbf{q}'_k)\}$ the matches found after warping. The final affine map is
-$\mathbf{A} = [\,\mathbf{A}_0 \mid \mathbf{t}\,]$.
+with $\{(\mathbf{p}'_k, \mathbf{q}'_k)\}$ the matches found after warping. The final transform
+composes the two, $\mathbf{H} = \mathbf{T}(\mathbf{t})\,\mathbf{H}_0$, where $\mathbf{T}(\mathbf{t})$
+is the translation by $\mathbf{t}$ in homogeneous coordinates.
 
-Applying $\mathbf{A}$ to every frame of the retrieved reference video gives the initial transfer
+Applying $\mathbf{H}$ to every frame of the retrieved reference video gives the initial transfer
 \begin{equation}
-  W^{t} \;=\; \mathcal{W}\bigl( V_{i^{*}}^{t}; \, \mathbf{A} \bigr),
+  W^{t} \;=\; \mathcal{W}\bigl( V_{i^{*}}^{t}; \, \mathbf{H} \bigr),
   \qquad t = 1, \dots, T,
   \label{eq:warp}
 \end{equation}
@@ -101,7 +105,7 @@ changes across the video is the gel deformation, not the alignment.
 
 The initial transfer is geometrically plausible but physically naive. It carries whatever gel
 dynamics the reference press happened to exhibit, it inherits any residual misalignment left by
-Eq.~\ref{eq:affine}, and it knows nothing about the surface geometry at the query pose beyond what
+Eq.~\ref{eq:homography}, and it knows nothing about the surface geometry at the query pose beyond what
 survived the warp. Our final step corrects all three with a neural network. Since we target
 prediction fast enough for AR/VR and robotics, we deliberately balance refinement accuracy against
 efficiency.

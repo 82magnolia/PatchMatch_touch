@@ -4,8 +4,9 @@
 \input{figures/fig_teaser}
 
 Humans have a remarkable ability to imagine what it would feel like to touch an object at a
-particular location. Standing in front of a wicker basket, we already know that the rim will feel
-ribbed and that the handle will feel smooth, long before our fingers arrive there. This ability
+particular location. Looking at a ceramic mug, we already know that its glazed side will feel
+smooth and that the unglazed ring at its base will feel rough and gritty, long before our fingers
+arrive there. This ability
 matters: it lets us plan a grasp, avoid an obstacle, and build a holistic picture of the
 fine-grained surface detail of a scene without having to physically touch every location.
 Crucially, the touch we imagine is not a single snapshot in time. It is a mental simulation of a
@@ -51,7 +52,7 @@ renderings at multiple scales, which give a common, appearance-invariant represe
 local surface. To tame the search space we adopt a coarse-to-fine estimation scheme. For coarse
 alignment we run pre-trained local feature matchers on the normal renderings. Although these
 matchers were trained on multi-view photographs and normal maps are well outside that
-distribution, we find that they match reliably; the resulting correspondences give an affine map
+distribution, we find that they match reliably; the resulting correspondences give a homography
 between the reference and query normal maps, which we then use to warp the reference tactile
 video and produce an initial transfer. For refinement we train a network that takes the initially
 warped tactile normal video and regresses the ground-truth query video. This network is

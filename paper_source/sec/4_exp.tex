@@ -8,7 +8,7 @@ For retrieval we use a DINOv3 ViT-B/16 encoder~\cite{dinov3} on normal rendering
 the sensor footprint, resized to $224\times224$, and rank references by cosine similarity between
 $\ell_2$-normalized class-token features. Coarse alignment uses SuperPoint
 keypoints~\cite{superpoint} matched by SuperGlue~\cite{superglue} on the same $4\times$ normal
-renderings, with an affine model fitted by RANSAC~\cite{ransac} and a median translation offset
+renderings, with a homography fitted by RANSAC~\cite{ransac} and a median translation offset
 recovered at video resolution. The refinement network is the smallest ReBotNet
 variant~\cite{rebotnet} (embedding widths $28/36/48/64$), taking a pair of $240\times320$ frames
 plus the three concatenated query normal channels. We train for 20 epochs with AdamW, batch size
