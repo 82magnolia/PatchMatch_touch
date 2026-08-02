@@ -20,7 +20,7 @@ import argparse
 import os
 import pickle
 
-from figlib import ASSETS, C_GT, C_QRY, C_REF, Page, load, sensor_box
+from figlib import ASSETS, C_GT, C_QRY, C_REF, Page, load, sensor_box, white_bg
 
 OUT = "/home/junhokim/Projects/PatchMatch_gpu/log/paper_job04_paper_figures"
 
@@ -33,37 +33,42 @@ def frames(tag, kind, idxs):
 
 
 def norm_render(tag, kind):
+    """The 4x-field-of-view geometry render, background whitened, sensor footprint boxed."""
     who = "refnorm" if kind == "ref" else "querynorm"
-    return sensor_box(load(f"{ASSETS}/{tag}_{who}_scale25.png"))
+    return sensor_box(white_bg(load(f"{ASSETS}/{tag}_{who}_scale25.png")))
 
 
 # ------------------------------------------------------------------ version 1
 def v1(tag, idxs, meta, out):
-    p = Page(3.35, 1.98)
-    iw, ih, gap = 0.72, 0.54, 0.03
-    x_norm = 0.08
-    x_colon = x_norm + iw + 0.055
-    x_vid = x_colon + 0.16
-    vid_w = 3 * iw + 2 * gap
-    rows = [(0.42, "ref", C_REF, "Given —", "a touch we already made here"),
-            (1.18, "pred", C_QRY, "Predicted —", "what a touch would feel like here")]
+    """Two-column analogy: geometry : video, given over predicted."""
+    n = len(idxs)
+    p = Page(7.0, 2.22)
+    iw, ih, gap = 0.90, 0.675, 0.03
+    x_norm = 0.09
+    x_colon = x_norm + iw + 0.06
+    x_vid = x_colon + 0.18
+    vid_w = n * iw + (n - 1) * gap
+    rows = [(0.44, "ref", C_REF, "Given —", "a touch we already made here"),
+            (1.36, "pred", C_QRY, "Predicted —", "what a touch would feel like here")]
 
-    p.text(x_norm, 0.15, HDR_GEOM, size=4.8, color="0.35")
-    p.text(x_vid, 0.15, HDR_VID, size=4.8, color="0.35")
+    p.text(x_norm, 0.17, HDR_GEOM, size=5.6, color="0.35")
+    p.text(x_vid, 0.17, HDR_VID, size=5.6, color="0.35")
+    p.text(x_vid + vid_w - 0.62, 0.17, "time", size=5.2, ha="right", color="0.5",
+           style="italic")
+    p.arrow(x_vid + vid_w - 0.55, 0.17, x_vid + vid_w, 0.17, color="0.6", lw=0.7, mut=4)
 
     for y, kind, col, lab, sub in rows:
-        p.text(x_norm, y - 0.07, f"{lab} {sub}", size=5.2, color=col)
+        p.text(x_norm, y - 0.10, f"{lab} {sub}", size=6.0, color=col)
         p.img(x_norm, y, iw, ih, norm_render(tag, kind), edge=col, lw=0.9)
         for k, im in enumerate(frames(tag, kind, idxs)):
             p.img(x_vid + k * (iw + gap), y, iw, ih, im, edge=col, lw=0.9)
-        p.text(x_colon + 0.08, y + ih / 2, ":", size=10, ha="center", color="0.35")
+        p.text(x_colon + 0.09, y + ih / 2, ":", size=12, ha="center", color="0.35")
 
-    # the "::" that turns two pairs into an analogy
-    p.text(x_colon + 0.08, rows[0][0] + ih + 0.055, "::", size=8.0, ha="center",
+    p.text(x_colon + 0.09, rows[0][0] + ih + 0.045, "::", size=9.5, ha="center",
            color="0.35")
-    p.text(x_norm, 1.90,
-           "Red box: the patch the sensor covers. The wider view around it is what "
-           "our method compares.", size=4.2, color="0.45")
+    p.text(x_norm, 2.14,
+           "Red box: the patch the sensor covers. The wider view around it is what our method "
+           "compares. " + meta.get("footnote", ""), size=4.8, color="0.45")
     p.save(out)
 
 
@@ -153,23 +158,35 @@ def v3(tag, idxs, meta, out):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tag", default="951_7", help="asset prefix written by prep_assets.py")
-    ap.add_argument("--frames", type=int, nargs=3, default=[4, 25, 45])
+    ap.add_argument("--frames", type=int, nargs="+",
+                    default=[4, 12, 21, 29, 38, 46],
+                    help="frame indices to show; v1 shows all of them, the "
+                         "one-column versions show three")
     ap.add_argument("--versions", nargs="+", default=["v1", "v2", "v3"])
     args = ap.parse_args()
 
     meta = pickle.load(open(f"{ASSETS}/{args.tag}_meta.pkl", "rb"))
-    recs = pickle.load(open("/home/junhokim/Projects/PatchMatch_gpu/log/"
-                            "paper_job02_gt_retrieval_figure_normalmatch/"
-                            "per_touch_metrics.pkl", "rb"))
-    for r in recs:
-        if r["obj"] == meta["obj"] and r["pair"] == meta["pair"]:
-            meta["psnr_refined"] = r["refined"]["PSNR"]
-            meta["psnr_coarse"] = r["coarse"]["PSNR"]
+    if "psnr_refined" not in meta:      # ground-truth-retrieval touches score elsewhere
+        recs = pickle.load(open("/home/junhokim/Projects/PatchMatch_gpu/log/"
+                                "paper_job02_gt_retrieval_figure_normalmatch/"
+                                "per_touch_metrics.pkl", "rb"))
+        for r in recs:
+            if r["obj"] == meta["obj"] and r["pair"] == meta["pair"]:
+                meta["psnr_refined"] = r["refined"]["PSNR"]
+                meta["psnr_coarse"] = r["coarse"]["PSNR"]
+    if meta.get("ref_idx") is not None:
+        meta["footnote"] = (f"Object {meta['obj']}: touch {meta['ref_idx']} was retrieved "
+                            f"by the method itself as the reference for query touch "
+                            f"{meta['pair']}.")
 
     os.makedirs(OUT, exist_ok=True)
     fns = {"v1": v1, "v2": v2, "v3": v3}
+    few = args.frames if len(args.frames) <= 3 else [args.frames[0],
+                                                    args.frames[len(args.frames) // 2],
+                                                    args.frames[-1]]
     for v in args.versions:
-        fns[v](args.tag, args.frames, meta, f"{OUT}/teaser_{v}_{args.tag}")
+        fns[v](args.tag, args.frames if v == "v1" else few, meta,
+               f"{OUT}/teaser_{v}_{args.tag}")
 
 
 if __name__ == "__main__":

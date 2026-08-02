@@ -6,7 +6,9 @@ import pickle
 
 ROOT = "/home/junhokim/Projects/PatchMatch_gpu"
 OUT = f"{ROOT}/log/paper_job04_paper_figures"
-TEASER_TAG = "951_7"
+TEASER_PICKS = ["fp27_11", "fp25_13", "fp29_3", "fp26_12", "fp23_14"]
+TEASER_ALTS = ["fp8_15", "fp18_2", "fp10_5", "fp28_0"]
+TEASER_TAG = TEASER_PICKS[0]
 METHOD_TAG = "1000_7"
 
 
@@ -28,9 +30,26 @@ ret = pickle.load(open(f"{OUT}/assets/bench{METHOD_TAG}_retrieval.pkl", "rb"))
 recs = pickle.load(open(f"{ROOT}/log/paper_job02_gt_retrieval_figure_normalmatch/"
                         "per_touch_metrics.pkl", "rb"))
 score = {(r["obj"], r["pair"]): r for r in recs}
-t_obj, t_pair = (int(x) for x in TEASER_TAG.split("_"))
 m_obj, m_pair = (int(x) for x in METHOD_TAG.split("_"))
-t_rec, m_rec = score[(t_obj, t_pair)], score[(m_obj, m_pair)]
+m_rec = score[(m_obj, m_pair)]
+
+fp = pickle.load(open(f"{ROOT}/log/paper_job04_paper_figures/fullpipe/candidates.pkl", "rb"))
+n_scored, n_objs = len(fp), len({r["obj"] for r in fp})
+meta = {t: pickle.load(open(f"{OUT}/assets/{t}_meta.pkl", "rb"))
+        for t in TEASER_PICKS + TEASER_ALTS}
+
+
+def teaser_block(tags, kind):
+    out = []
+    for t in tags:
+        m = meta[t]
+        out.append(
+            f"<figure>{fig(f'teaser_v1_{t}')}<figcaption><b>{t}</b> &mdash; object "
+            f"{m['obj']}, query touch {m['pair']}. The method retrieved touch "
+            f"{m['ref_idx']} on its own as the reference. Coarse transfer "
+            f"{m['psnr_coarse']:.1f} dB, refined {m['psnr_refined']:.1f} dB "
+            f"({kind}).</figcaption></figure>")
+    return "".join(out)
 top1_sim = float(max(ret["loo_scores"]))
 
 HTML = f"""<!doctype html>
@@ -69,51 +88,92 @@ similarity bars are actual DINOv3 cosine similarities. Nothing is a hand-drawn s
 
 <h2>Where the files are</h2>
 <table>
-<tr><th>Figures</th><td><code>log/paper_job04_paper_figures/teaser_v1_{TEASER_TAG}.png</code>,
- <code>teaser_v2_…</code>, <code>teaser_v3_…</code>, <code>method_v1.png</code>,
- <code>method_v2.png</code>, <code>method_v3.png</code> (each also as <code>.pdf</code>)</td></tr>
+<tr><th>Teaser figures</th><td><code>log/paper_job04_paper_figures/teaser_v1_fp&lt;object&gt;_&lt;touch&gt;.png</code>
+ &mdash; nine of them, the five picks and four runners-up (each also as <code>.pdf</code>)</td></tr>
+<tr><th>Method figures</th><td><code>method_v1.png</code>, <code>method_v2.png</code>,
+ <code>method_v3.png</code> in the same folder (unchanged from the first round)</td></tr>
+<tr><th>Full-pipeline runs</th><td><code>log/paper_job04_paper_figures/fullpipe/</code> &mdash;
+ retrieval results, coarse transfers and per-touch scores for the objects swept;
+ <code>candidates.pkl</code> holds one record per query touch</td></tr>
 <tr><th>Cached image pieces</th><td><code>log/paper_job04_paper_figures/assets/</code> &mdash;
  every video frame, geometry render, correspondence set and similarity score used above</td></tr>
+<tr><th>LaTeX</th><td><code>paper_source/figures/fig_teaser.tex</code> &mdash; switched to
+ <code>figure*</code> (two columns) with an updated caption; the placeholder rule is still in
+ place, no graphic dropped in yet</td></tr>
 <tr><th>Scripts</th><td><code>paper_experiments/04_paper_figures/</code>:
- <code>prep_assets.py</code> (makes the pieces), <code>make_teaser.py</code>,
+ <code>run_full_pipeline_local.py</code> (runs the pipeline here),
+ <code>sweep_teaser.py</code> (ranks and exports examples),
+ <code>prep_assets.py</code> (pieces for the method figure), <code>make_teaser.py</code>,
  <code>make_method.py</code>, <code>figlib.py</code> (shared layout helpers),
  <code>build_report.py</code> (this page)</td></tr>
 </table>
 
 <h2>Teaser figure</h2>
 
-<p>The idea being sold in one column: <i>this is the geometry where we touched, and this is
+<p>The idea being sold across the page: <i>this is the geometry where we touched, and this is
 what that touch felt like; here is the geometry somewhere else, so here is what a touch there
 would feel like.</i> That is the same four-part &ldquo;A is to A&prime; as B is to B&prime;&rdquo;
 arrangement the Image Analogies teaser uses, which is why the colon and double-colon marks are
 kept.</p>
 
-<p>The example is object {t_obj}, touch {t_pair} of the ground-truth-retrieval benchmark. It was
-chosen because the touch has clearly visible dynamics &mdash; the gel is flat at the start,
-deeply pressed in the middle, and flat again at the end &mdash; so three frames really do look
-like a video rather than three copies of one picture. Coarse transfer alone scores
-{t_rec['coarse']['PSNR']:.1f} dB on this touch and the refined prediction scores
-{t_rec['refined']['PSNR']:.1f} dB.</p>
+<p>Three things changed from the first drafts:</p>
+<ul>
+ <li><b>Two columns.</b> The figure is now 7.0 &times; 2.22 inches, so it spans the full page
+     width. <code>paper_source/figures/fig_teaser.tex</code> was switched from
+     <code>figure</code> to <code>figure*</code> to match. The graphic itself was not put into
+     the LaTeX yet &mdash; the placeholder rule is still there.</li>
+ <li><b>Six frames per video instead of three.</b> The extra width pays for a press that
+     actually reads as a press: contact starting, deepening, and releasing.</li>
+ <li><b>White background on the geometry renders.</b> Empty space around the object used to be
+     black, which dominated the figure. Taxim writes empty space as exactly black while surface
+     pixels never come out dark, so a single brightness threshold separates them cleanly &mdash;
+     no hand-drawn masks involved.</li>
+</ul>
 
-<h3>Version 1 &mdash; the plain analogy (2 rows)</h3>
-<figure>{fig(f"teaser_v1_{TEASER_TAG}")}
-<figcaption>Two rows only: what we were given, and what we predict. Nothing about accuracy is
-claimed inside the figure, which keeps it uncluttered; a reader checks the numbers later in the
-paper. 3.35 &times; 1.98 inches (one column).</figcaption></figure>
+<h3>Examples now come from the full-pipeline benchmark</h3>
 
-<h3>Version 2 &mdash; the analogy plus the held-out truth (3 rows)</h3>
-<figure>{fig(f"teaser_v2_{TEASER_TAG}")}
-<figcaption>Adds the real touch that was hidden from the method, so the reader can compare the
-prediction against it immediately. The geometry cell of the third row is deliberately left empty
-(dashed) so it does not look as though the truth row had an extra input.
-3.35 &times; 2.66 inches.</figcaption></figure>
+<p>The earlier drafts used the ground-truth-retrieval benchmark, where the matching reference is
+handed to the method. A teaser should show the whole system, so the examples were re-drawn from
+the <b>full-pipeline benchmark</b>, where the method has to find its own reference among the
+object's other touches. Those runs live on the other machine, so they were reproduced here:
+<code>run_full_pipeline_local.py</code> rebuilds each object's reference / query split from the
+very same manifest the paper reports
+(<code>paper_experiments/job2_full_pipeline/splits.json</code>, seed 0), runs DINOv3 retrieval and
+SuperPoint&nbsp;+&nbsp;SuperGlue coarse alignment with the same flags as
+<code>job2_full_pipeline/run_transfer.sh</code>, then refines with the paper's network.</p>
 
-<h3>Version 3 &mdash; three columns, time running down the page</h3>
-<figure>{fig(f"teaser_v3_{TEASER_TAG}", "62%")}
-<figcaption>A tall, narrow variant: reference, prediction and truth side by side, with the three
-video frames stacked downwards. It reads more like a comparison table and less like an analogy,
-but it fits a narrow column well and leaves room for a long caption beside it.
-3.35 &times; 3.70 inches.</figcaption></figure>
+<p><b>{n_objs} objects, {n_scored} held-out query touches</b> were run and scored. Candidates were
+then ranked by four things measured off the images themselves &mdash; how strong the contact is,
+how much the press changes over time, how different the reference and query geometry are, and the
+prediction's accuracy &mdash; and the top two dozen were laid out as a contact sheet
+(<code>log/paper_job04_paper_figures/teaser_candidates.png</code>) to choose from by eye.</p>
+
+<h3>The five picks</h3>
+{teaser_block(TEASER_PICKS, "full pipeline, retrieval included")}
+
+<h3>Also rendered, not picked</h3>
+<p>Kept because they may suit a different caption: <code>fp8_15</code> and <code>fp18_2</code>
+are clean but the two rows look alike, so the analogy is less striking; <code>fp10_5</code> has
+visible banding in the prediction; <code>fp28_0</code>'s reference touch barely makes contact, so
+the top row looks empty.</p>
+{teaser_block(TEASER_ALTS, "full pipeline, runner-up")}
+
+<h3>The two one-column layouts, for comparison</h3>
+<p>These were the other two drafts. They are still one column and still show three frames; they
+are kept only so the two-column choice can be compared against them. Both are drawn on the same
+full-pipeline example as the first pick.</p>
+<figure>{fig("teaser_v2_" + TEASER_TAG, "48%")}
+<figcaption>Adds the held-out ground truth as a third row so the prediction can be checked against
+it on the spot.</figcaption></figure>
+<figure>{fig("teaser_v3_" + TEASER_TAG, "42%")}
+<figcaption>Three columns &mdash; reference, prediction, truth &mdash; with video time running down
+the page.</figcaption></figure>
+
+<div class="warn">
+The files named <code>teaser_v1_951_7</code>, <code>teaser_v2_951_7</code> and
+<code>teaser_v3_951_7</code> are the earlier drafts on the ground-truth-retrieval benchmark. They
+are superseded by the full-pipeline versions above and are kept only for comparison.
+</div>
 
 <h2>Method overview figure</h2>
 
@@ -182,10 +242,18 @@ step. 7.0 &times; 2.34 inches.</figcaption></figure>
  footprint inside it, so a reader can see that the method compares much more context than the
  patch being predicted.</td></tr>
 <tr><th>Which touches are shown</th>
- <td>The teaser uses object {t_obj} touch {t_pair} (strong press dynamics); the method figure uses
- object {m_obj} touch {m_pair} (a lattice-like surface, so the correspondence lines land on visible
- structure, and retrieval agrees with the benchmark pairing). Neither is the best-scoring touch in
- the benchmark.</td></tr>
+ <td>The teaser examples come from the full-pipeline benchmark and are the five listed above; the
+ method figure still uses object {m_obj} touch {m_pair} of the ground-truth-retrieval benchmark (a
+ lattice-like surface, so the correspondence lines land on visible structure). None of them is the
+ best-scoring touch in its benchmark: the five teaser picks score
+ {", ".join(f"{meta[t]['psnr_refined']:.1f}" for t in TEASER_PICKS)} dB against a benchmark
+ average of 31.6 dB.</td></tr>
+<tr><th>White backgrounds</th>
+ <td>Applied only to the geometry renders, and only to pixels whose brightest channel is below 96.
+ Taxim leaves empty space at exactly zero and surface normals never encode to a dark colour &mdash;
+ across these renders no pixel at all falls between 64 and 120 &mdash; so nothing on the object can
+ be repainted by accident. Where a render shows white <i>inside</i> the object's outline, that is a
+ real gap in the geometry, not a whitened surface.</td></tr>
 </table>
 
 <div class="warn">
@@ -202,18 +270,24 @@ given, so retrieval is not what is being measured. It is written to
 <pre><code>conda activate pm_touch
 cd paper_experiments/04_paper_figures
 
-# cached pieces (only needed once per touch)
-python prep_assets.py --do touch match --obj 951 --pair 7
-python prep_assets.py --do touch match benchret --obj 1000 --pair 7
+# teaser: run the full pipeline here, rank candidates, export the chosen ones
+python run_full_pipeline_local.py --n_objects 30
+python sweep_teaser.py --sheet                       # writes the contact sheet
+python sweep_teaser.py --tags 27_11 25_13 29_3 26_12 23_14
+for t in fp27_11 fp25_13 fp29_3 fp26_12 fp23_14; do
+    python make_teaser.py --tag $t --versions v1
+done
 
-# figures
-python make_teaser.py --tag 951_7 --frames 4 25 45
+# method figure (unchanged)
+python prep_assets.py --do touch match benchret --obj 1000 --pair 7
 python make_method.py --tag 1000_7 --ret_tag bench1000_7
+
 python build_report.py
 </code></pre>
-<p>Both figure scripts take <code>--versions</code> to redraw just one version, and
-<code>make_teaser.py --tag 1000_7</code> would draw the teaser on the method figure's touch
-instead, if a single example across both figures is preferred.</p>
+<p><code>make_teaser.py</code> takes <code>--frames</code> to choose which frames of the press are
+shown (six by default) and <code>--versions</code> to redraw a single layout.
+<code>run_full_pipeline_local.py --n_objects</code> controls how much of the benchmark is swept;
+objects already transferred are skipped, so it can be extended without redoing work.</p>
 
 <footer style="margin-top:2.5rem;color:#777;font-size:.85rem">
 Figures and assets: <code>log/paper_job04_paper_figures/</code> &middot; refinement network:

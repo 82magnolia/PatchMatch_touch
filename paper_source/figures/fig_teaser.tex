@@ -1,19 +1,27 @@
-%% Teaser figure (one column).
-%% Layout follows the teaser of the Image Analogies paper:
+%% Teaser figure (two columns).
+%% Layout follows the teaser of the Image Analogies paper, widened to the full page:
 %%   top row    -- A : A'   (reference normal render  :  reference tactile normal video)
 %%   bottom row -- B : B'   (query normal render      :  predicted tactile normal video)
+%% Each row is one geometry render followed by six frames of the 50-frame press, so the
+%% videos read as videos rather than as single frames. Drafts of the graphic are in
+%%   log/paper_job04_paper_figures/teaser_v1_fp<object>_<touch>.pdf
+%% (built by paper_experiments/04_paper_figures/make_teaser.py).
 %% Replace the \rule placeholder below with the actual graphic.
-\begin{figure}[t]
+\begin{figure*}[t]
   \centering
   % \includegraphics[width=\linewidth]{figures/teaser.pdf}
-  \rule{\linewidth}{4.2cm}% PLACEHOLDER -- remove when the real figure is dropped in
-  \caption{\textbf{Tactile analogies.} Given a reference touch recorded on an object (top right)
-    together with the surface geometry at the location it was taken from (top left), we predict
-    the tactile signal that the sensor would measure at a new, previously untouched location
-    (bottom right) given only the geometry there (bottom left). We represent a touch as a
-    \emph{tactile normal video}, which records how the sensor's deformable gel bends over the
-    course of a press, so the prediction is a short video rather than a single frame. The
-    relationship between the two columns is the analogy our method must transfer: as the reference
-    geometry is to the reference touch, so the query geometry is to the touch we synthesise.}
+  \rule{\linewidth}{5.6cm}% PLACEHOLDER -- remove when the real figure is dropped in
+  \caption{\textbf{Tactile analogies.} Given a reference touch recorded on an object (top row,
+    right) together with the surface geometry at the location it was taken from (top row, left),
+    we predict the tactile signal that the sensor would measure at a new, previously untouched
+    location (bottom row, right) given only the geometry there (bottom row, left). We represent a
+    touch as a \emph{tactile normal video}, which records how the sensor's deformable gel bends
+    over the course of a press, so the prediction is a short video rather than a single frame;
+    six frames spanning the press are shown for each. The reference is the one our method
+    retrieved on its own from the object's remaining touches, so the figure shows the complete
+    pipeline rather than an oracle reference. The relationship between the two columns is the
+    analogy our method must transfer: as the reference geometry is to the reference touch, so the
+    query geometry is to the touch we synthesise. The red box marks the patch the sensor actually
+    covers inside the wider geometry render our method compares.}
   \label{fig:teaser}
-\end{figure}
+\end{figure*}

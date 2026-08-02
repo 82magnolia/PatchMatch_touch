@@ -39,6 +39,20 @@ def load(path):
     return cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
 
 
+def white_bg(img, thr=96):
+    """Repaint a normal render's empty background from black to white.
+
+    Taxim renders empty space as exactly (0, 0, 0), while surface pixels encode a
+    unit normal and so are never dark: across the benchmark renders the darkest
+    surface pixel has a maximum channel of about 122, and no pixel at all falls
+    between 64 and 120. A single threshold on the brightest channel therefore
+    separates the two cleanly, JPEG ringing included.
+    """
+    out = img.copy()
+    out[img.max(axis=2) < thr] = 255
+    return out
+
+
 def sensor_box(img, scale=25):
     """Outline the 1x sensor footprint inside a wider-field-of-view render.
 
