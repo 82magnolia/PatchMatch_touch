@@ -20,7 +20,7 @@ import argparse
 import os
 import pickle
 
-from figlib import ASSETS, C_GT, C_QRY, C_REF, Page, load, sensor_box, white_bg
+from figlib import ASSETS, C_GT, C_QRY, C_REF, Page, load, load_normal, sensor_box
 
 OUT = "/home/junhokim/Projects/PatchMatch_gpu/log/paper_job04_paper_figures"
 
@@ -35,14 +35,14 @@ def frames(tag, kind, idxs):
 def norm_render(tag, kind):
     """The 4x-field-of-view geometry render, background whitened, sensor footprint boxed."""
     who = "refnorm" if kind == "ref" else "querynorm"
-    return sensor_box(white_bg(load(f"{ASSETS}/{tag}_{who}_scale25.png")))
+    return sensor_box(load_normal(f"{ASSETS}/{tag}_{who}_scale25.png"))
 
 
 # ------------------------------------------------------------------ version 1
 def v1(tag, idxs, meta, out):
     """Two-column analogy: geometry : video, given over predicted."""
     n = len(idxs)
-    p = Page(7.0, 2.22)
+    p = Page(7.0, 2.30)
     iw, ih, gap = 0.90, 0.675, 0.03
     x_norm = 0.09
     x_colon = x_norm + iw + 0.06
@@ -66,9 +66,11 @@ def v1(tag, idxs, meta, out):
 
     p.text(x_colon + 0.09, rows[0][0] + ih + 0.045, "::", size=9.5, ha="center",
            color="0.35")
-    p.text(x_norm, 2.14,
-           "Red box: the patch the sensor covers. The wider view around it is what our method "
-           "compares. " + meta.get("footnote", ""), size=4.8, color="0.45")
+    p.text(x_norm, 2.10,
+           "Red box: the patch the sensor covers; the wider view around it is what our method "
+           "compares.", size=4.8, color="0.45")
+    if meta.get("footnote"):
+        p.text(x_norm, 2.19, meta["footnote"], size=4.8, color="0.45")
     p.save(out)
 
 
@@ -174,7 +176,13 @@ def main():
             if r["obj"] == meta["obj"] and r["pair"] == meta["pair"]:
                 meta["psnr_refined"] = r["refined"]["PSNR"]
                 meta["psnr_coarse"] = r["coarse"]["PSNR"]
-    if meta.get("ref_idx") is not None:
+    if meta.get("pinned_ref") is not None:
+        moved = (f" The query has been moved {meta['moved_mm']:.1f} mm across the surface "
+                 f"and re-simulated." if meta.get("moved_mm") else "")
+        meta["footnote"] = (f"Object {meta['obj']}: the reference is touch "
+                            f"{meta['pinned_ref']}, held fixed rather than retrieved."
+                            + moved)
+    elif meta.get("ref_idx") is not None:
         meta["footnote"] = (f"Object {meta['obj']}: touch {meta['ref_idx']} was retrieved "
                             f"by the method itself as the reference for query touch "
                             f"{meta['pair']}.")

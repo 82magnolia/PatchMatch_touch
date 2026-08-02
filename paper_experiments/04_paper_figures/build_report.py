@@ -4,24 +4,40 @@ import json
 import os
 import pickle
 
+import cv2
+
 ROOT = "/home/junhokim/Projects/PatchMatch_gpu"
 OUT = f"{ROOT}/log/paper_job04_paper_figures"
 TEASER_PICKS = ["fp27_11", "fp25_13", "fp29_3", "fp26_12", "fp23_14"]
 TEASER_ALTS = ["fp8_15", "fp18_2", "fp10_5", "fp28_0"]
+TEASER_LAMP = ["fpgt951_6", "fpgt951_7", "fpgt951_4"]
+TEASER_SHIFT = ["pin7_951_9", "pin7_951_11", "pin7_951_13", "pin7_951_15"]
 TEASER_TAG = TEASER_PICKS[0]
 METHOD_TAG = "1000_7"
 
 
-def b64(p):
-    return base64.b64encode(open(p, "rb").read()).decode("ascii")
+def b64(p, max_width=1500, quality=85):
+    """Inline an image, down-scaled and JPEG-encoded.
+
+    The figures are 400 dpi PNGs; at full size the embedded copies pushed this
+    page past 30 MB, which is more than it can be sent as. Screen-sized JPEGs
+    keep it self-contained and roughly a tenth the size. The originals (PNG and
+    PDF) sit next to this file and are what should go into the paper.
+    """
+    im = cv2.imread(p)
+    if im.shape[1] > max_width:
+        h = int(round(im.shape[0] * max_width / im.shape[1]))
+        im = cv2.resize(im, (max_width, h), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", im, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return base64.b64encode(buf.tobytes()).decode("ascii")
 
 
-def fig(name, width="100%"):
-    p = f"{OUT}/{name}.png"
+def fig(name, width="100%", root=None):
+    p = f"{root or OUT}/{name}.png"
     if not os.path.exists(p):
         return f"<p><i>{name}.png not generated</i></p>"
     return (f'<img style="width:{width};display:block;border:1px solid #ddd" '
-            f'src="data:image/png;base64,{b64(p)}">')
+            f'src="data:image/jpeg;base64,{b64(p)}">')
 
 
 rc = json.load(open(f"{OUT}/retrieval_check.json"))
@@ -36,7 +52,10 @@ m_rec = score[(m_obj, m_pair)]
 fp = pickle.load(open(f"{ROOT}/log/paper_job04_paper_figures/fullpipe/candidates.pkl", "rb"))
 n_scored, n_objs = len(fp), len({r["obj"] for r in fp})
 meta = {t: pickle.load(open(f"{OUT}/assets/{t}_meta.pkl", "rb"))
-        for t in TEASER_PICKS + TEASER_ALTS}
+        for t in TEASER_PICKS + TEASER_ALTS + TEASER_LAMP + TEASER_SHIFT}
+lamp = pickle.load(open(f"{ROOT}/log/paper_job04_paper_figures/fullpipe_gtbench/"
+                        "candidates.pkl", "rb"))
+lamp_agree = sum(1 for r in lamp if r["ref_idx"] == r["pair"])
 
 
 def teaser_block(tags, kind):
@@ -151,6 +170,61 @@ prediction's accuracy &mdash; and the top two dozen were laid out as a contact s
 <h3>The five picks</h3>
 {teaser_block(TEASER_PICKS, "full pipeline, retrieval included")}
 
+<h3>The lamp, run through the full pipeline</h3>
+
+<p>The lamp is object 951, which belongs to the <i>other</i> benchmark &mdash; the
+ground-truth-retrieval one, where each query touch is paired with a designated reference. Putting
+it through the full pipeline means letting retrieval choose freely among that object's eight
+reference touches instead. That is what <code>run_full_pipeline_local.py --source gt_bench</code>
+now does, with the same flags as before.</p>
+
+<p>On the lamp, retrieval agreed with the benchmark's pairing on {lamp_agree} of its
+{len(lamp)} query touches, and touch 7 &mdash; the one in the earlier draft &mdash; is one of
+them, so that figure survives unchanged in content but is now honestly a full-pipeline result
+(coarse {meta['fpgt951_7']['psnr_coarse']:.1f} dB, refined
+{meta['fpgt951_7']['psnr_refined']:.1f} dB). Touches 0 and 3 went to a different reference than
+the pairing, so the choice is a real decision rather than an identity by construction.</p>
+
+<p>Of the lamp's touches, the lampshade rim (touch 6) is the most readable: the shade is
+recognisable in the geometry render, and the rim's straight edge is unmistakable in the touch.</p>
+{teaser_block(TEASER_LAMP, "lamp, full pipeline")}
+
+<h3>Making the lamp query harder: same reference, query moved</h3>
+
+<p>In the figure above the query sits close to its reference, which makes the analogy look easy.
+So the reference was <b>held fixed</b> &mdash; touch 7 of the lamp, the same geometry render and
+the same tactile video in every one of the figures below &mdash; and only the query was moved.
+<code>shift_query_touch.py</code> steps the query's contact point across the object's own surface
+by a chosen distance, pulls it back onto the mesh, and re-simulates the touch in Taxim with the
+settings the benchmark itself was built with. Four distances are shown: 0.5, 1.2, 2.4 and 4.1 mm,
+measured on the object as the benchmark scales it (longest axis = 100 mm).</p>
+
+<p>Because the reference is fixed rather than retrieved, these runs use
+<code>--pin_ref 7</code>, and each figure's footnote says so. This is a controlled comparison, not
+a claim about what retrieval would have done; for the record, on the unmoved query DINOv3 does
+pick touch 7 by itself.</p>
+
+<p>The difficulty rises the way you would expect: coarse transfer sits at 13&ndash;16 dB for every
+moved query, against 16.0 dB for the unmoved one, and the refined result varies with how much new
+surface comes into view. <b>My pick is 2.4 mm</b> (<code>pin7_951_13</code>): far enough that the
+two rows plainly show different places on the lamp, close enough that the prediction still looks
+like the same kind of touch.</p>
+{teaser_block(TEASER_SHIFT, "reference fixed, query moved")}
+
+<div class="warn">
+<b>A bug worth remembering, and the figures it cost.</b> <code>gen_contact_video.py</code> sets the
+object's size from the <i>spread of the points in the contact file</i> &mdash; it normalises their
+longest-axis extent to the requested millimetres &mdash; not from the mesh. The first attempt fed
+it a tight cluster of shifted points, so the object was rendered 14&ndash;28 times too large and
+every geometry render came out at the wrong field of view. (Thank you for spotting it: the bottom
+row really was not showing the same 4x view as the top.) The fix is to keep the object's original
+contact points in the file as anchors and append the moved ones after them;
+<code>shift_query_touch.py</code> now does that and refuses to run if the extent changes. The
+earlier <code>fpsh…</code> figures were wrong for this reason and have been deleted. The
+benchmark-derived figures elsewhere in this report were never affected &mdash; they use the
+benchmark's own renders.
+</div>
+
 <h3>Also rendered, not picked</h3>
 <p>Kept because they may suit a different caption: <code>fp8_15</code> and <code>fp18_2</code>
 are clean but the two rows look alike, so the analogy is less striking; <code>fp10_5</code> has
@@ -175,6 +249,30 @@ The files named <code>teaser_v1_951_7</code>, <code>teaser_v2_951_7</code> and
 are superseded by the full-pipeline versions above and are kept only for comparison.
 </div>
 
+<h2>Renders of the object itself</h2>
+
+<p>Everything else in this job looks at the object through the sensor's own narrow window.
+<code>render_object.py</code> renders the whole mesh with its real texture, which gives a reader
+something to recognise, and can mark where the touches sit. Object 951 is the lamp used in the
+teaser: a brass-coloured stand with a black shade.</p>
+
+<p>One thing to know if this is reused for other objects: ObjectFolder's material file names its
+texture maps without the <code>textures/</code> folder they actually live in, so a plain load comes
+out flat grey. The script reads the material file itself and attaches the albedo by hand.</p>
+
+<figure>{fig("951_sheet", root=f"{OUT}/object_renders")}
+<figcaption>Six views around the lamp, one every 60 degrees, framed so the whole object
+fits.</figcaption></figure>
+
+<figure>{fig("951_sheet", root=f"{OUT}/object_renders/marked")}
+<figcaption>The same object with the touches marked: blue is the reference touch the teaser uses
+(touch 7), red are the four moved query locations of the distance series.</figcaption></figure>
+
+<figure>{fig("951_sheet", root=f"{OUT}/object_renders/closeup")}
+<figcaption>Close-ups of that stretch of the lamp's arm, so the spacing between the reference touch
+and the moved queries is visible. The whole series spans about four millimetres of
+surface.</figcaption></figure>
+
 <h2>Method overview figure</h2>
 
 <p>Three steps, in the order the method runs them:</p>
@@ -198,6 +296,10 @@ similarity {top1_sim:.2f}, which is the reference the benchmark pairs with this 
 of the figure follows on from it. SuperPoint + SuperGlue then produce {len(md['xy_l'])} matches, of
 which {int(md['inlier'].sum())} agree on a single warp. Coarse transfer scores
 {m_rec['coarse']['PSNR']:.1f} dB here, refinement {m_rec['refined']['PSNR']:.1f} dB.</p>
+
+<p>The two steps work at different fields of view, which the figure now says out loud: retrieval
+compares the renders covering the sensor's own footprint (1x), while feature matching uses the
+wider 4x renders.</p>
 
 <h3>Version 1 &mdash; one column, three shaded panels</h3>
 <figure>{fig("method_v1", "70%")}
@@ -257,13 +359,25 @@ step. 7.0 &times; 2.34 inches.</figcaption></figure>
 </table>
 
 <div class="warn">
-<b>One number that is easy to over-claim.</b> While picking a touch for the method figure, DINOv3
-retrieval was run over all {rc['queries']} queries of the {rc['objects']}-object
-ground-truth-retrieval benchmark. Its top pick matches the reference the benchmark pairs the query
-with in {rc['top1_equals_gt_pair']} of {rc['queries']} cases ({100 * rc['rate']:.0f}%). That is a
-side observation from choosing an example, not a benchmark result: on that benchmark the pairing is
-given, so retrieval is not what is being measured. It is written to
-<code>log/paper_job04_paper_figures/retrieval_check.json</code> in case it is useful later.
+<b>A correction from this round.</b> The first version of the method figure computed its
+similarity numbers on the 4x geometry renders. The pipeline does not retrieve on those: it
+retrieves on the <b>1x</b> renders (<code>transfer_pipeline.py --scale 100</code>, exactly as in
+<code>job2_full_pipeline/run_transfer.sh</code>) and only uses the 4x renders later, for feature
+matching. The retrieval panel and the numbers below have been recomputed at 1x, and both scales
+are now named on the figure itself. Note that the plan text in
+<code>paper_assets/paper_outline.md</code> says retrieval uses &ldquo;normal maps at higher scale
+than the sensor size&rdquo;, which is <b>not</b> what the scripts do &mdash; worth settling before
+the method section is written.
+</div>
+
+<div class="note">
+<b>One number that is easy to over-claim.</b> With that fixed, DINOv3 retrieval was run over all
+{rc['queries']} queries of the {rc['objects']}-object ground-truth-retrieval benchmark. Its top
+pick matches the reference the benchmark pairs the query with in
+{rc['top1_equals_gt_pair']} of {rc['queries']} cases ({100 * rc['rate']:.0f}%). That is a side
+observation from choosing examples, not a benchmark result: on that benchmark the pairing is given,
+so retrieval is not what is being measured. It is written to
+<code>log/paper_job04_paper_figures/retrieval_check.json</code>.
 </div>
 
 <h2>Regenerating</h2>
@@ -274,6 +388,19 @@ cd paper_experiments/04_paper_figures
 python run_full_pipeline_local.py --n_objects 30
 python sweep_teaser.py --sheet                       # writes the contact sheet
 python sweep_teaser.py --tags 27_11 25_13 29_3 26_12 23_14
+
+# the lamp: same pipeline, on a ground-truth-retrieval benchmark object
+python run_full_pipeline_local.py --source gt_bench --objects 951
+python sweep_teaser.py --source gt_bench --tags 951_6 951_7 951_4
+python make_teaser.py --tag fpgt951_6 --versions v1
+
+# harder version: move the query touch across the surface and re-simulate it
+python shift_query_touch.py --obj 951 --touch 6 --dists 0.02 0.05 --n_dirs 4
+python run_full_pipeline_local.py --source gt_bench --objects 951 \
+    --query_root  .../log/paper_job04_paper_figures/shifted/951_t6 \
+    --out_root    .../log/paper_job04_paper_figures/fullpipe_gtbench_shifted6
+python sweep_teaser.py --source gt_bench_shifted6 --tags 951_2
+python make_teaser.py --tag fpsh6_951_2 --versions v1
 for t in fp27_11 fp25_13 fp29_3 fp26_12 fp23_14; do
     python make_teaser.py --tag $t --versions v1
 done
@@ -281,6 +408,12 @@ done
 # method figure (unchanged)
 python prep_assets.py --do touch match benchret --obj 1000 --pair 7
 python make_method.py --tag 1000_7 --ret_tag bench1000_7
+
+# textured views of the object itself
+python render_object.py --obj 951 --views 6
+python render_object.py --obj 951 --views 4 --start_az 40 --elev 8 --mark_ref 7 \\
+    --mark_query_ply .../shifted/951_t7_anchored/contact_points.ply \\
+    --mark_query_ply_idx 9 11 13 15 --out .../object_renders/marked
 
 python build_report.py
 </code></pre>

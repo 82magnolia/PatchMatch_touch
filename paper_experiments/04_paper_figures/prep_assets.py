@@ -174,7 +174,7 @@ def do_retrieval(obj, query_idx, tag):
                 open(f"{ASSETS}/{tag}_retrieval.pkl", "wb"))
 
 
-def do_benchret(obj, query_idx, tag):
+def do_benchret(obj, query_idx, tag, scale="100"):
     """DINOv3 retrieval for one query of the ground-truth-retrieval benchmark.
 
     The database is that object's reference touches and the query is the
@@ -187,12 +187,17 @@ def do_benchret(obj, query_idx, tag):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, transform = load_dino_model("dinov3_vitb16", DINO_W, device)
 
+    # The pipeline retrieves on the 1x renders (transfer_pipeline.py --scale 100,
+    # as in job2_full_pipeline/run_transfer.sh); the 4x renders are used later, for
+    # feature matching. Keep this identical to the run.
     idxs = sorted(int(f.split("_")[0]) for f in os.listdir(f"{REF_RENDER}/{obj}")
-                  if f.endswith("_scale25_normal.jpg"))
+                  if f.endswith(f"_scale{scale}_normal.jpg"))
     ref_feats = extract_features(
-        model, transform, [f"{REF_RENDER}/{obj}/{i}_scale25_normal.jpg" for i in idxs], device)
+        model, transform,
+        [f"{REF_RENDER}/{obj}/{i}_scale{scale}_normal.jpg" for i in idxs], device)
     q_feat = extract_features(
-        model, transform, [f"{QUERY_RENDER}/{obj}/{query_idx}_scale25_normal.jpg"], device)
+        model, transform,
+        [f"{QUERY_RENDER}/{obj}/{query_idx}_scale{scale}_normal.jpg"], device)
     scores = (q_feat @ ref_feats.T).numpy()[0]
     order = [idxs[i] for i in np.argsort(-scores)]
     print(f"object {obj}, query {query_idx}: top-1 reference is {order[0]} "
@@ -200,17 +205,18 @@ def do_benchret(obj, query_idx, tag):
           f"ground-truth pairing is {query_idx}")
 
     cv2.imwrite(f"{ASSETS}/{tag}_query_normal.png",
-                cv2.imread(f"{QUERY_RENDER}/{obj}/{query_idx}_scale25_normal.jpg"))
+                cv2.imread(f"{QUERY_RENDER}/{obj}/{query_idx}_scale{scale}_normal.jpg"))
     for i in idxs:
         cv2.imwrite(f"{ASSETS}/{tag}_db{i}_normal.png",
-                    cv2.imread(f"{REF_RENDER}/{obj}/{i}_scale25_normal.jpg"))
+                    cv2.imread(f"{REF_RENDER}/{obj}/{i}_scale{scale}_normal.jpg"))
         vid = f"{TRANSFER}/{obj}/{i}_ref_tactile_normal.mp4"
         if os.path.exists(vid):
             frames = read_video(vid)
             if frames:
                 save_png(f"{ASSETS}/{tag}_db{i}_touch.png", frames[len(frames) // 2])
     pickle.dump(dict(obj=obj, idxs=idxs, query_idx=query_idx, loo_scores=scores,
-                     order=order), open(f"{ASSETS}/{tag}_retrieval.pkl", "wb"))
+                     order=order, scale=scale),
+                open(f"{ASSETS}/{tag}_retrieval.pkl", "wb"))
 
 
 def main():

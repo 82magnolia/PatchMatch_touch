@@ -53,6 +53,17 @@ def white_bg(img, thr=96):
     return out
 
 
+def load_normal(path):
+    """Load a surface-normal render for display: background repainted white.
+
+    Use this rather than plain load() for anything that came out of Taxim's
+    normal renderer, so every figure shows the geometry on white instead of on
+    a black frame. Feature matching and retrieval still run on the untouched
+    renders -- only what the reader sees is repainted.
+    """
+    return white_bg(load(path))
+
+
 def sensor_box(img, scale=25):
     """Outline the 1x sensor footprint inside a wider-field-of-view render.
 

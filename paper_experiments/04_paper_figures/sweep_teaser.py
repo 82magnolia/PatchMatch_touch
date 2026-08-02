@@ -17,6 +17,7 @@ A good teaser example needs three things beyond a decent score:
 Each is measured directly from the images rather than guessed.
 """
 import argparse
+import glob
 import os
 import pickle
 
@@ -31,6 +32,40 @@ sys.path.insert(0, f"{ROOT}/rebot_net")
 
 SRC = f"{ROOT}/Taxim/results/gen_contact_raw_eval_tactile_normal_pseudo_mini"
 FP = f"{ROOT}/log/paper_job04_paper_figures/fullpipe"
+
+# Two sources of full-pipeline runs (see run_full_pipeline_local.py --source):
+#   raw_eval  the full-pipeline benchmark, one flat directory per object
+#   gt_bench  the ground-truth-retrieval benchmark objects, run through the same
+#             pipeline; their reference and query touches live in two directories,
+#             so reference renders and query renders come from different roots
+SOURCES = {
+    "raw_eval": dict(
+        out=FP, ref_root=SRC, query_root=SRC, prefix="fp"),
+    "gt_bench": dict(
+        out=f"{ROOT}/log/paper_job04_paper_figures/fullpipe_gtbench",
+        ref_root=f"{ROOT}/Taxim/results/gen_contact_full_tactile_normal_pseudo_mini",
+        query_root=f"{ROOT}/Taxim/results/gen_contact_full_query_tactile_normal_pseudo_mini",
+        prefix="fpgt"),
+    # the same object, but with query touches moved along the surface and
+    # re-simulated by shift_query_touch.py
+    "gt_bench_shifted": dict(
+        out=f"{ROOT}/log/paper_job04_paper_figures/fullpipe_gtbench_shifted",
+        ref_root=f"{ROOT}/Taxim/results/gen_contact_full_tactile_normal_pseudo_mini",
+        query_root=f"{ROOT}/log/paper_job04_paper_figures/shifted/951_t7",
+        prefix="fpsh"),
+    "gt_bench_shifted6": dict(
+        out=f"{ROOT}/log/paper_job04_paper_figures/fullpipe_gtbench_shifted6",
+        ref_root=f"{ROOT}/Taxim/results/gen_contact_full_tactile_normal_pseudo_mini",
+        query_root=f"{ROOT}/log/paper_job04_paper_figures/shifted/951_t6",
+        prefix="fpsh6_"),
+    # reference pinned to touch 7, query moved by varying amounts (anchored PLY,
+    # so the renders keep the benchmark's field of view)
+    "pinned7": dict(
+        out=f"{ROOT}/log/paper_job04_paper_figures/pinned_ref7_anchored",
+        ref_root=f"{ROOT}/Taxim/results/gen_contact_full_tactile_normal_pseudo_mini",
+        query_root=f"{ROOT}/log/paper_job04_paper_figures/shifted/951_t7_anchored",
+        prefix="pin7_"),
+}
 ASSETS = f"{ROOT}/log/paper_job04_paper_figures/assets"
 SHEET = f"{ROOT}/log/paper_job04_paper_figures/teaser_candidates.png"
 CKPT = f"{ROOT}/log/rebot_checkpoints_S_geomcat_film/best.pth"
@@ -111,12 +146,14 @@ def contact_sheet(ranked, n, cols=6):
     print("wrote", SHEET)
 
 
-def export(obj, pair, ref_idx):
+def export(obj, pair, ref_idx, source="raw_eval"):
     """Cache every frame the teaser needs for one full-pipeline touch."""
     from dataset import TactileTransferDataset
     from train import build_model
 
-    tag = f"fp{obj}_{pair}"
+    cfg = SOURCES[source]
+    fp_root, ref_root, query_root = cfg["out"], cfg["ref_root"], cfg["query_root"]
+    tag = f"{cfg['prefix']}{obj}_{pair}"
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = build_model("rebot_S", cond_chans=3, film_chans=0, bottleneck_hw=24,
                         time_cond="film").to(device)
@@ -132,7 +169,7 @@ def export(obj, pair, ref_idx):
         def _obj_dir(self, obj_id):
             return os.path.join(self.transfer_dir, str(obj_id), "transfer")
 
-    ds = Nested(FP, [obj], split="test", cond_dir=SRC, film_modality="normal",
+    ds = Nested(fp_root, [obj], split="test", cond_dir=query_root, film_modality="normal",
                 film_scale=100, geom_concat=True, video_type="tactile_normal",
                 time_cond="film")
     preds, gts, coarses = [], [], []
@@ -143,7 +180,7 @@ def export(obj, pair, ref_idx):
             preds.append(pr.cpu().clamp(0, 1).permute(1, 2, 0).numpy())
             gts.append(gt.permute(1, 2, 0).numpy())
             coarses.append(lq[1, :3].permute(1, 2, 0).numpy())
-    refs = read_video(f"{FP}/{obj}/transfer/{pair}_ref_tactile_normal.mp4")
+    refs = read_video(f"{fp_root}/{obj}/transfer/{pair}_ref_tactile_normal.mp4")
 
     os.makedirs(ASSETS, exist_ok=True)
     for i in range(len(preds)):
@@ -152,18 +189,39 @@ def export(obj, pair, ref_idx):
         save_png(f"{ASSETS}/{tag}_coarse_{i:03d}.png", coarses[i])
     for i, fr in enumerate(refs):
         save_png(f"{ASSETS}/{tag}_ref_{i:03d}.png", fr)
-    for who, idx in (("refnorm", ref_idx), ("querynorm", pair)):
+    for who, idx, root in (("refnorm", ref_idx, ref_root), ("querynorm", pair, query_root)):
         for sc in ("100", "25"):
-            src = f"{SRC}/{obj}/{idx}_scale{sc}_normal.jpg"
+            src = f"{root}/{obj}/{idx}_scale{sc}_normal.jpg"
             if os.path.exists(src):
                 cv2.imwrite(f"{ASSETS}/{tag}_{who}_scale{sc}.png", cv2.imread(src))
 
-    recs = {(r["obj"], r["pair"]): r for r in pickle.load(open(f"{FP}/candidates.pkl", "rb"))}
+    recs = {(r["obj"], r["pair"]): r
+            for r in pickle.load(open(f"{fp_root}/candidates.pkl", "rb"))}
     r = recs[(obj, pair)]
+
+    # Was the reference pinned rather than retrieved, and if this is a moved
+    # query, how far did it move? Both belong in the figure's footnote.
+    pinned = glob.glob(f"{fp_root}/{obj}/pinned_ref*.tsv")
+    pinned_ref = int(os.path.basename(pinned[0])[len("pinned_ref"):-4]) if pinned else None
+    moved_mm = None
+    lab_path = f"{query_root}/labels.npy"
+    if os.path.exists(lab_path):
+        import open3d as o3d
+        labels = list(np.load(lab_path, allow_pickle=True))
+        by_index = {int(m["index"]): m for m in labels}
+        if pair in by_index:
+            pts = np.asarray(o3d.io.read_point_cloud(
+                f"{query_root}/contact_points.ply").points)
+            anchors = pts[:min(by_index)]
+            a = int((anchors.max(axis=0) - anchors.min(axis=0)).argmax())
+            ext = float(anchors[:, a].max() - anchors[:, a].min())
+            moved_mm = by_index[pair]["moved_mm_of_bbox"] / ext * 100.0
     pickle.dump(dict(obj=obj, pair=pair, ref_idx=ref_idx, n_frames=len(preds),
                      n_ref_frames=len(refs), epoch=ck.get("epoch"),
                      psnr_coarse=r["psnr_coarse"], psnr_refined=r["psnr_refined"],
-                     benchmark="full pipeline (retrieval included)"),
+                     pinned_ref=pinned_ref, moved_mm=moved_mm,
+                     benchmark=("full pipeline, reference held fixed" if pinned_ref
+                                else "full pipeline (retrieval included)")),
                 open(f"{ASSETS}/{tag}_meta.pkl", "wb"))
     print(f"exported {tag}: reference touch {ref_idx}, {len(preds)} frames, "
           f"{r['psnr_refined']:.1f} dB")
@@ -176,9 +234,10 @@ def main():
     ap.add_argument("--min_psnr", type=float, default=28.0)
     ap.add_argument("--tags", nargs="*", default=None,
                     help="'obj_pair' touches to export, e.g. 12_3 27_9")
+    ap.add_argument("--source", default="raw_eval", choices=list(SOURCES))
     args = ap.parse_args()
 
-    recs = pickle.load(open(f"{FP}/candidates.pkl", "rb"))
+    recs = pickle.load(open(f"{SOURCES[args.source]['out']}/candidates.pkl", "rb"))
     by = {(r["obj"], r["pair"]): r for r in recs}
     if args.sheet:
         ranked = rank(recs, args.min_psnr)
@@ -190,7 +249,7 @@ def main():
         contact_sheet(ranked, args.n_sheet)
     for t in args.tags or []:
         o, p = (int(x) for x in t.split("_"))
-        export(o, p, by[(o, p)]["ref_idx"])
+        export(o, p, by[(o, p)]["ref_idx"], args.source)
 
 
 if __name__ == "__main__":

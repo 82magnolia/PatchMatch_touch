@@ -1,27 +1,26 @@
-%% Teaser figure (two columns).
-%% Layout follows the teaser of the Image Analogies paper, widened to the full page:
-%%   top row    -- A : A'   (reference normal render  :  reference tactile normal video)
-%%   bottom row -- B : B'   (query normal render      :  predicted tactile normal video)
-%% Each row is one geometry render followed by six frames of the 50-frame press, so the
-%% videos read as videos rather than as single frames. Drafts of the graphic are in
-%%   log/paper_job04_paper_figures/teaser_v1_fp<object>_<touch>.pdf
-%% (built by paper_experiments/04_paper_figures/make_teaser.py).
-%% Replace the \rule placeholder below with the actual graphic.
+%% Teaser figure (two columns). Graphic: figures/teaser.png
+%% Layout actually used, left to right:
+%%   1. the object of interest, with the reference location boxed in blue and the
+%%      query location boxed in orange
+%%   2. the surface normal render at each of the two sensor poses (4x the sensor
+%%      footprint), with the sensor's own footprint boxed in red
+%%   3. the tactile normal videos, four frames spanning the press, time left to right
+%% Rows: top = reference (blue), bottom = query (orange).
 \begin{figure*}[t]
   \centering
-  % \includegraphics[width=\linewidth]{figures/teaser.pdf}
-  \rule{\linewidth}{5.6cm}% PLACEHOLDER -- remove when the real figure is dropped in
-  \caption{\textbf{Tactile analogies.} Given a reference touch recorded on an object (top row,
-    right) together with the surface geometry at the location it was taken from (top row, left),
-    we predict the tactile signal that the sensor would measure at a new, previously untouched
-    location (bottom row, right) given only the geometry there (bottom row, left). We represent a
-    touch as a \emph{tactile normal video}, which records how the sensor's deformable gel bends
-    over the course of a press, so the prediction is a short video rather than a single frame;
-    six frames spanning the press are shown for each. The reference is the one our method
-    retrieved on its own from the object's remaining touches, so the figure shows the complete
-    pipeline rather than an oracle reference. The relationship between the two columns is the
-    analogy our method must transfer: as the reference geometry is to the reference touch, so the
-    query geometry is to the touch we synthesise. The red box marks the patch the sensor actually
-    covers inside the wider geometry render our method compares.}
+  \includegraphics[width=\linewidth]{figures/teaser.png}
+  \caption{\textbf{Tactile analogies.} \emph{Left:} the object of interest, with the location of a
+    reference touch we have already made boxed in blue and a new, previously untouched query
+    location boxed in orange. \emph{Middle:} the surface normal render at each of the two sensor
+    poses, covering a field of view four times the sensor footprint, where the red box marks the
+    patch the sensor itself covers. \emph{Right:} the corresponding tactile normal videos, four
+    frames spanning a press that pushes into the surface and then withdraws, with time running
+    left to right. We represent a touch as a \emph{tactile normal video}, which records how the
+    sensor's deformable gel bends over the course of the press, so what we predict is a short
+    video rather than a single frame. Given the reference touch and the geometry at both
+    locations, our method predicts the tactile signal that the sensor would measure at the query
+    location, shown on the bottom right. The relationship between the two rows is the analogy our
+    method must transfer, namely the relationship between the reference geometry and the reference touch, 
+    which should be seamlessely mapped to reflect that between the query geometry and the touch we synthesize.}
   \label{fig:teaser}
 \end{figure*}

@@ -33,10 +33,28 @@ CH, CW = 210, 280
 BOX_BGR = (0, 0, 255)
 
 
-def cell(path):
+def cell(path, whiten=False):
     if not os.path.exists(path):
         return np.zeros((CH, CW, 3), np.uint8)
-    return cv2.resize(cv2.imread(path), (CW, CH))
+    im = cv2.imread(path)
+    if whiten:
+        im = white_bg(im)
+    return cv2.resize(im, (CW, CH))
+
+
+def white_bg(img, thr=96):
+    """Repaint a normal render's empty background from black to white.
+
+    Taxim renders empty space as exactly (0, 0, 0), while surface pixels encode
+    a unit normal and so are never dark: across the benchmark renders the
+    darkest surface pixel has a maximum channel of about 122, and no pixel at
+    all falls between 64 and 120. A single threshold on the brightest channel
+    therefore separates the two cleanly, JPEG ringing included. The red sensor
+    box drawn by draw_sensor_box is well above the threshold and survives.
+    """
+    out = img.copy()
+    out[img.max(axis=2) < thr] = 255
+    return out
 
 
 def draw_sensor_box(img, scale, thickness=2):
@@ -138,7 +156,9 @@ def main():
                     if os.path.exists(cand):
                         p = cand
                         break
-            cells.append(cell(p))
+            # the cached assets stay as the renderer produced them; the empty
+            # background is repainted white only for what goes on the page
+            cells.append(cell(p, whiten=tag in render_src))
         rows.append(np.hstack(cells))
         meta.append(r)
 

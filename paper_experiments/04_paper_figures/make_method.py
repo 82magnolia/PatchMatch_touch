@@ -19,7 +19,7 @@ import pickle
 
 import numpy as np
 
-from figlib import ASSETS, C_QRY, C_REF, Page, load, sensor_box
+from figlib import ASSETS, C_QRY, C_REF, Page, load, load_normal, sensor_box
 
 OUT = "/home/junhokim/Projects/PatchMatch_gpu/log/paper_job04_paper_figures"
 C_MATCH = "#f2c200"
@@ -91,7 +91,7 @@ def v1(d, out):
 
     qw, qh = 0.60, 0.45
     qx, qy = L, 0.46
-    p.img(qx, qy, qw, qh, sensor_box(load(ret["qimg"])), edge=C_QRY, lw=0.9)
+    p.img(qx, qy, qw, qh, sensor_box(load_normal(ret["qimg"])), edge=C_QRY, lw=0.9)
     p.text(qx, qy - 0.06, "query location", size=4.8, color=C_QRY)
     p.text(qx, qy + qh + 0.09, "geometry only,\nnever touched", size=4.3, color="0.45")
 
@@ -108,7 +108,7 @@ def v1(d, out):
         x = ex0 + k * (ew + gap)
         top1 = idx == ret["top1"]
         col = C_REF if top1 else "0.72"
-        p.img(x, 0.46, ew, 0.30, load(f"{ASSETS}/{ret['tag']}_db{idx}_normal.png"),
+        p.img(x, 0.46, ew, 0.30, load_normal(f"{ASSETS}/{ret['tag']}_db{idx}_normal.png"),
               edge=col, lw=0.9)
         p.img(x, 0.79, ew, 0.30, load(f"{ASSETS}/{ret['tag']}_db{idx}_touch.png"),
               edge=col, lw=0.9)
@@ -117,7 +117,8 @@ def v1(d, out):
                color=C_REF if top1 else "0.5", weight="bold" if top1 else "normal")
         if top1:
             p.text(x + ew / 2, 0.41, "best match", size=4.4, ha="center", color=C_REF)
-    p.text(ex0, 1.38, "top: geometry     bottom: the touch measured there", size=4.2,
+    p.text(ex0, 1.38, "top: geometry at 1x the sensor     bottom: the touch measured there",
+           size=4.2,
            color="0.45")
 
     # ------------------------------------------------------ 2 coarse alignment
@@ -127,14 +128,14 @@ def v1(d, out):
 
     mw, mh, my = 1.05, 0.79, 1.98
     mxl, mxr = L, L + mw + 0.28
-    p.img(mxl, my, mw, mh, load(f"{ASSETS}/{tag}_match_left.png"), edge=C_REF, lw=0.9)
-    p.img(mxr, my, mw, mh, load(f"{ASSETS}/{tag}_match_right.png"), edge=C_QRY, lw=0.9)
+    p.img(mxl, my, mw, mh, load_normal(f"{ASSETS}/{tag}_match_left.png"), edge=C_REF, lw=0.9)
+    p.img(mxr, my, mw, mh, load_normal(f"{ASSETS}/{tag}_match_right.png"), edge=C_QRY, lw=0.9)
     shown = draw_matches(p, mxl, my, mxr, my, mw, mh, md)
     p.text(mxl, my - 0.06, "best match", size=4.6, color=C_REF)
     p.text(mxr, my - 0.06, "query", size=4.6, color=C_QRY)
     p.text(mxl, my + mh + 0.09,
-           f"{shown} of the {int(md['inlier'].sum())} agreeing SuperPoint + SuperGlue "
-           f"correspondences drawn", size=4.2, color="0.45")
+           f"geometry at 4x the sensor; {shown} of the {int(md['inlier'].sum())} agreeing "
+           f"SuperPoint + SuperGlue correspondences drawn", size=4.2, color="0.45")
 
     cx, cw, ch = 2.60, 0.55, 0.41
     p.text(cx, my + 0.06, "fit one warp\n(homography),\nwarp the video", size=4.4, color="0.25")
@@ -154,7 +155,7 @@ def v1(d, out):
     ys = [3.46, 3.815, 4.17]
     p.img(L, ys[0], tw, th, load(f"{ASSETS}/{tag}_coarse_{mid - 1:03d}.png"), edge="0.55")
     p.img(L, ys[1], tw, th, load(f"{ASSETS}/{tag}_coarse_{mid:03d}.png"), edge="0.55")
-    p.img(L, ys[2], tw, th, load(f"{ASSETS}/{tag}_querynorm_scale100.png"), edge=C_QRY)
+    p.img(L, ys[2], tw, th, load_normal(f"{ASSETS}/{tag}_querynorm_scale100.png"), edge=C_QRY)
 
     bx, ey, eh = 0.73, 3.66, 0.62
     ymid = ey + eh / 2
@@ -193,19 +194,19 @@ def v2(d, out):
          f"{len(ret['show'])} of {ret['n_db']} references")
     qw, qh = 0.72, 0.54
     qx, qy = L, 0.36
-    p.img(qx, qy, qw, qh, sensor_box(load(ret["qimg"])), edge=C_QRY, lw=0.9)
+    p.img(qx, qy, qw, qh, sensor_box(load_normal(ret["qimg"])), edge=C_QRY, lw=0.9)
     p.text(qx, qy + qh + 0.09, "query location:\ngeometry only", size=4.4, color=C_QRY)
     p.text(qx, qy + qh + 0.34, "compared using DINOv3\nfeatures (cosine similarity)",
            size=4.2, color="0.45")
 
     ex, ew, eh = 1.00, 0.40, 0.30
-    p.text(ex, 0.30, "geometry", size=4.2, color="0.45")
+    p.text(ex, 0.30, "geometry (1x)", size=4.2, color="0.45")
     p.text(ex + ew + 0.04, 0.30, "the touch measured there", size=4.2, color="0.45")
     for k, (idx, sim) in enumerate(ret["show"]):
         y = 0.34 + k * 0.345
         top1 = idx == ret["top1"]
         col = C_REF if top1 else "0.72"
-        p.img(ex, y, ew, eh, load(f"{ASSETS}/{ret['tag']}_db{idx}_normal.png"), edge=col)
+        p.img(ex, y, ew, eh, load_normal(f"{ASSETS}/{ret['tag']}_db{idx}_normal.png"), edge=col)
         p.img(ex + ew + 0.04, y, ew, eh, load(f"{ASSETS}/{ret['tag']}_db{idx}_touch.png"),
               edge=col)
         bx = ex + 2 * ew + 0.14
@@ -219,8 +220,8 @@ def v2(d, out):
     head(1.80, "2", "Line the two geometry renders up")
     mw, mh, my = 1.05, 0.79, 2.06
     mxl, mxr = L, L + mw + 0.28
-    p.img(mxl, my, mw, mh, load(f"{ASSETS}/{tag}_match_left.png"), edge=C_REF, lw=0.9)
-    p.img(mxr, my, mw, mh, load(f"{ASSETS}/{tag}_match_right.png"), edge=C_QRY, lw=0.9)
+    p.img(mxl, my, mw, mh, load_normal(f"{ASSETS}/{tag}_match_left.png"), edge=C_REF, lw=0.9)
+    p.img(mxr, my, mw, mh, load_normal(f"{ASSETS}/{tag}_match_right.png"), edge=C_QRY, lw=0.9)
     shown = draw_matches(p, mxl, my, mxr, my, mw, mh, md)
     p.text(mxl, my - 0.06, "best match", size=4.6, color=C_REF)
     p.text(mxr, my - 0.06, "query", size=4.6, color=C_QRY)
@@ -230,8 +231,8 @@ def v2(d, out):
     p.arrow(mxr + mw + 0.02, my + mh / 2, cx - 0.02, my + mh / 2, lw=0.8, mut=4)
     p.text(cx, my + 0.14, "coarse transfer", size=4.4, color="0.3")
     p.text(mxl, my + mh + 0.09,
-           f"{shown} of the {int(md['inlier'].sum())} agreeing correspondences drawn; "
-           f"they fix one warp, which is applied to the reference video", size=4.2,
+           f"geometry at 4x the sensor; {shown} of the {int(md['inlier'].sum())} agreeing "
+           f"correspondences drawn, fixing one warp for the reference video", size=4.2,
            color="0.45")
 
     # ---------------------------------------------------------- 3 refinement
@@ -239,7 +240,7 @@ def v2(d, out):
     tw, th = 0.44, 0.33
     ix, iy = L, 3.38
     p.img(ix, iy, tw, th, load(f"{ASSETS}/{tag}_coarse_{mid:03d}.png"), edge="0.55")
-    p.img(ix, iy + th + 0.05, tw, th, load(f"{ASSETS}/{tag}_querynorm_scale100.png"),
+    p.img(ix, iy + th + 0.05, tw, th, load_normal(f"{ASSETS}/{tag}_querynorm_scale100.png"),
           edge=C_QRY)
     p.text(ix, iy + 2 * th + 0.17, "coarse frames +\nquery normal map", size=4.2,
            color="0.45")
@@ -273,7 +274,7 @@ def v3(d, out):
 
     # --- 1 retrieval
     x0 = cols[0] + 0.08
-    p.img(x0, 0.42, 0.62, 0.465, sensor_box(load(ret["qimg"])), edge=C_QRY, lw=0.9)
+    p.img(x0, 0.42, 0.62, 0.465, sensor_box(load_normal(ret["qimg"])), edge=C_QRY, lw=0.9)
     p.text(x0, 0.36, "query", size=4.8, color=C_QRY)
     p.text(x0, 0.96, "geometry only,\nnever touched", size=4.3, color="0.45")
     net_block(p, x0 + 0.76, 0.57, 0.34, 0.17, "DINOv3", size=4.8)
@@ -284,7 +285,7 @@ def v3(d, out):
         x = x0 + k * (ew + 0.075)
         top1 = idx == ret["top1"]
         col = C_REF if top1 else "0.72"
-        p.img(x, 1.24, ew, ew * 0.75, load(f"{ASSETS}/{ret['tag']}_db{idx}_normal.png"),
+        p.img(x, 1.24, ew, ew * 0.75, load_normal(f"{ASSETS}/{ret['tag']}_db{idx}_normal.png"),
               edge=col)
         p.img(x, 1.24 + ew * 0.75 + 0.03, ew, ew * 0.75,
               load(f"{ASSETS}/{ret['tag']}_db{idx}_touch.png"), edge=col)
@@ -302,8 +303,8 @@ def v3(d, out):
     # --- 2 coarse alignment
     x0 = cols[1] + 0.08
     mw, mh, my = 0.95, 0.71, 0.46
-    p.img(x0, my, mw, mh, load(f"{ASSETS}/{tag}_match_left.png"), edge=C_REF, lw=0.9)
-    p.img(x0 + mw + 0.12, my, mw, mh, load(f"{ASSETS}/{tag}_match_right.png"),
+    p.img(x0, my, mw, mh, load_normal(f"{ASSETS}/{tag}_match_left.png"), edge=C_REF, lw=0.9)
+    p.img(x0 + mw + 0.12, my, mw, mh, load_normal(f"{ASSETS}/{tag}_match_right.png"),
           edge=C_QRY, lw=0.9)
     shown = draw_matches(p, x0, my, x0 + mw + 0.12, my, mw, mh, md, n_lines=12)
     p.text(x0, my - 0.06, "best match", size=4.6, color=C_REF)
@@ -321,7 +322,7 @@ def v3(d, out):
     x0 = cols[2] + 0.08
     tw, th = 0.36, 0.27
     p.img(x0, 0.62, tw, th, load(f"{ASSETS}/{tag}_coarse_{mid:03d}.png"), edge="0.55")
-    p.img(x0, 0.62 + th + 0.04, tw, th, load(f"{ASSETS}/{tag}_querynorm_scale100.png"),
+    p.img(x0, 0.62 + th + 0.04, tw, th, load_normal(f"{ASSETS}/{tag}_querynorm_scale100.png"),
           edge=C_QRY)
     p.text(x0, 0.62 + 2 * th + 0.15, "coarse frames +\nquery normal map", size=4.2,
            color="0.45")
@@ -350,6 +351,8 @@ def main():
     ap.add_argument("--n_db", type=int, default=4, help="reference touches shown")
     ap.add_argument("--mid", type=int, default=25, help="frame index used for stills")
     ap.add_argument("--versions", nargs="+", default=["v1", "v2", "v3"])
+    ap.add_argument("--name", default="method",
+                    help="output stem; files are <name>_<version>.pdf/.png")
     args = ap.parse_args()
 
     r = pickle.load(open(f"{ASSETS}/{args.ret_tag}_retrieval.pkl", "rb"))
@@ -370,7 +373,7 @@ def main():
     d = dict(ret=ret, md=md, tag=args.tag, mid=args.mid)
     os.makedirs(OUT, exist_ok=True)
     for v in args.versions:
-        {"v1": v1, "v2": v2, "v3": v3}[v](d, f"{OUT}/method_{v}")
+        {"v1": v1, "v2": v2, "v3": v3}[v](d, f"{OUT}/{args.name}_{v}")
 
 
 if __name__ == "__main__":
