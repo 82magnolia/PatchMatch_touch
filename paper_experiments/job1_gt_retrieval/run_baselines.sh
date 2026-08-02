@@ -9,11 +9,19 @@
 #   tarf      Tactile-Augmented Radiance Fields img2touch latent diffusion:
 #             best-of-8 DDIM samples reranked by the two encoder checkpoints.
 #             Predicts ONE image per query, tiled to the reference video length.
+#             Three trained diffusion checkpoints are available; each writes to
+#             its own output directory so the earlier runs stay intact:
+#               tarf     log/tarf_pretrained.ckpt     epoch 5 of the run that
+#                        finetunes from the released TaRF weights
+#               tarf_v2  log/tarf_pretrained_v2.ckpt  epoch 29, trained without
+#                        importing the released diffusion/conditioning weights
+#               tarf_v3  log/tarf_pretrained_v3.ckpt  epoch 29 of the same
+#                        finetune-from-released run that produced `tarf`
 #
 # Usage: bash run_baselines.sh <method> <worker_id> <gpu_id> <num_workers>
 set -o pipefail
 
-METHOD="${1:?Usage: $0 <quilting|inr|tarf> <worker_id> <gpu_id> <num_workers>}"
+METHOD="${1:?Usage: $0 <quilting|inr|tarf|tarf_v2|tarf_v3> <worker_id> <gpu_id> <num_workers>}"
 WORKER_ID="${2:?worker id}"
 GPU_ID="${3:?gpu id}"
 NUM_WORKERS="${4:-5}"
@@ -23,7 +31,12 @@ PY=/home/junhokim/miniconda3/envs/pm_touch/bin/python
 export RQT_PYTHON="$PY"
 export OBJECTFOLDER_PYTHON="$PY"
 export TARF_PYTHON=/home/junhokim/miniconda3/envs/TaRF/bin/python
-TARF_DIFF=$ROOT/log/tarf_pretrained.ckpt
+case "$METHOD" in
+    tarf)    TARF_DIFF=$ROOT/log/tarf_pretrained.ckpt ;;
+    tarf_v2) TARF_DIFF=$ROOT/log/tarf_pretrained_v2.ckpt ;;
+    tarf_v3) TARF_DIFF=$ROOT/log/tarf_pretrained_v3.ckpt ;;
+    *)       TARF_DIFF= ;;
+esac
 TARF_RGB=$ROOT/log/reranking_rgb_enc.ckpt
 TARF_TAC=$ROOT/log/reranking_tac_enc.ckpt
 export CUDA_VISIBLE_DEVICES="$GPU_ID"
@@ -53,7 +66,7 @@ for OBJ in $(seq 951 1000); do
     mkdir -p "$SAVE"
     echo "[$METHOD w$WORKER_ID gpu$GPU_ID] $(date +%H:%M:%S) obj $OBJ"
 
-    if [ "$METHOD" = "tarf" ]; then
+    if [ -n "$TARF_DIFF" ]; then
         TACTILE_NORMAL_OBJECT_ID=$OBJ bash "$ROOT/baselines/TaRF/scripts/run_sim_tactile_normal.sh" \
             --save_dir "$SAVE" \
             --diffusion_ckpt "$TARF_DIFF" \

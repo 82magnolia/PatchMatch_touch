@@ -238,8 +238,16 @@ class TaRFGenerator:
             if self.device.type == "cuda"
             else contextlib.nullcontext()
         )
-        with torch.inference_mode(), autocast, self.model.ema_scope():
+        with torch.inference_mode(), self.model.ema_scope():
+            # The RGB-D conditioning encoder must run in full float32. Some
+            # trained checkpoints produce intermediate activations inside it
+            # that exceed the float16 maximum (65504); under autocast those
+            # become inf and then NaN, the NaN survives sampling, and the final
+            # uint8 cast turns every pixel into 0 -- a silently all-black
+            # prediction rather than a visible error. Its output is small
+            # (|c| ~ 18), so handing it to the half-precision UNet is safe.
             learned = self.model.get_learned_conditioning(prompts)
+        with torch.inference_mode(), autocast, self.model.ema_scope():
             shape = (self.model.channels, self.model.image_size, self.model.image_size)
             latent, _ = self.sampler.sample(
                 S=self.ddim_steps,

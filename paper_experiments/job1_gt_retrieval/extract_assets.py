@@ -36,6 +36,10 @@ REFINE = os.path.join(ROOT, "log/paper_job1_refine_ours_normal/videos")
 BASELINES = {
     "quilting": os.path.join(ROOT, "log/paper_job1_baselines/quilting"),
     "inr": os.path.join(ROOT, "log/paper_job1_baselines/inr"),
+    # One entry per trained TaRF diffusion checkpoint.
+    "tarf_ep5_finetuned": os.path.join(ROOT, "log/paper_job1_baselines/tarf"),
+    "tarf_ep29_scratch": os.path.join(ROOT, "log/paper_job1_baselines/tarf_v2"),
+    "tarf_ep29_finetuned": os.path.join(ROOT, "log/paper_job1_baselines/tarf_v3"),
 }
 
 COLUMNS = [

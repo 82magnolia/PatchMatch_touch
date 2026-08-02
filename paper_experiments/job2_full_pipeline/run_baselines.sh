@@ -9,12 +9,16 @@
 #
 # tarf uses the img2touch latent diffusion checkpoint with best-of-8 DDIM
 # sampling reranked by the two encoder checkpoints; it predicts ONE image per
-# query, tiled to the reference video length.
+# query, tiled to the reference video length. Three trained diffusion
+# checkpoints are available, each writing to its own output directory:
+#   tarf     log/tarf_pretrained.ckpt     epoch 5, finetuned from released TaRF
+#   tarf_v2  log/tarf_pretrained_v2.ckpt  epoch 29, no released weights imported
+#   tarf_v3  log/tarf_pretrained_v3.ckpt  epoch 29 of the same run as `tarf`
 #
-# Usage: bash run_baselines.sh <quilting|inr> <worker_id> <gpu_id> <num_workers>
+# Usage: bash run_baselines.sh <quilting|inr|tarf|tarf_v2|tarf_v3> <worker_id> <gpu_id> <num_workers>
 set -o pipefail
 
-METHOD="${1:?Usage: $0 <quilting|inr|tarf> <worker_id> <gpu_id> <num_workers>}"
+METHOD="${1:?Usage: $0 <quilting|inr|tarf|tarf_v2|tarf_v3> <worker_id> <gpu_id> <num_workers>}"
 WORKER_ID="${2:?worker id}"
 GPU_ID="${3:?gpu id}"
 NUM_WORKERS="${4:-5}"
@@ -25,6 +29,12 @@ export RQT_PYTHON="$PY"
 export OBJECTFOLDER_PYTHON="$PY"
 export TARF_PYTHON=/home/junhokim/miniconda3/envs/TaRF/bin/python
 export CUDA_VISIBLE_DEVICES="$GPU_ID"
+case "$METHOD" in
+    tarf)    TARF_DIFF=$ROOT/log/tarf_pretrained.ckpt ;;
+    tarf_v2) TARF_DIFF=$ROOT/log/tarf_pretrained_v2.ckpt ;;
+    tarf_v3) TARF_DIFF=$ROOT/log/tarf_pretrained_v3.ckpt ;;
+    *)       TARF_DIFF= ;;
+esac
 export NUM_THREADS="${NUM_THREADS:-6}"
 export OMP_NUM_THREADS="$NUM_THREADS"
 export MKL_NUM_THREADS="$NUM_THREADS"
@@ -53,10 +63,10 @@ for obj_dir in "$BENCH"/*/; do
             --scale 100 --video_type tactile_normal
             --retrieval_mode dinov3 --retrieval_modality normal --dino_weights "$DINO")
 
-    if [ "$METHOD" = "tarf" ]; then
+    if [ -n "$TARF_DIFF" ]; then
         "$TARF_PYTHON" "$ROOT/baselines/TaRF/run_baseline.py" \
             "${COMMON[@]}" \
-            --diffusion_ckpt       "$ROOT/log/tarf_pretrained.ckpt" \
+            --diffusion_ckpt       "$TARF_DIFF" \
             --ranking_rgb_enc_ckpt "$ROOT/log/reranking_rgb_enc.ckpt" \
             --ranking_tac_enc_ckpt "$ROOT/log/reranking_tac_enc.ckpt" \
             > "$SAVE/run.log" 2>&1 \

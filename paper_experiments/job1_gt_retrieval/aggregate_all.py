@@ -34,8 +34,19 @@ PER_OBJECT_PKL = {
 PER_OBJECT_DIR = {
     "Ours (coarse transfer, normals)": "log/paper_job1_transfer_normal/{obj}/metrics.pkl",
     "Ours (coarse transfer, curvature)": "log/transfer_feat_match_pseudo_mini_tactile_normal_superpoint_superglue/{obj}/metrics.pkl",
-    "Tactile Normal Quilting": "log/paper_job1_baselines/quilting/{obj}/transfer/metrics.pkl",
+    # Press-sequence variant: the baseline as shipped tiled one quilted image
+    # across the press (run_baseline.py:446). paper_experiments/baselines/
+    # quilting_video.py re-renders the quilted relief through the benchmark's own
+    # press profile instead, which is a fairer rendering of the same method
+    # (+2.53 dB over the tiled version). The tiled runs are kept for reference.
+    "Tactile Normal Quilting": "log/paper_job1_baselines/quilting_video/{obj}/transfer/metrics.pkl",
+    "Tactile Normal Quilting (tiled still)": "log/paper_job1_baselines/quilting/{obj}/transfer/metrics.pkl",
     "ObjectFolder INR": "log/paper_job1_baselines/inr/{obj}/transfer/metrics.pkl",
+    # Three trained TaRF diffusion checkpoints. All were run with the float32
+    # conditioning-encoder fix, so they are comparable with each other.
+    "TaRF (epoch 5, finetuned)": "log/paper_job1_baselines/tarf/{obj}/transfer/metrics.pkl",
+    "TaRF (epoch 29, from scratch)": "log/paper_job1_baselines/tarf_v2/{obj}/transfer/metrics.pkl",
+    "TaRF (epoch 29, finetuned)": "log/paper_job1_baselines/tarf_v3/{obj}/transfer/metrics.pkl",
 }
 
 
@@ -86,19 +97,22 @@ def main():
                        "note": r["note"],
                        **summarise(r["per_object"])}
 
-    order = ["Tactile Normal Quilting", "ObjectFolder INR",
+    order = ["Tactile Normal Quilting", "Tactile Normal Quilting (tiled still)",
+             "ObjectFolder INR",
+             "TaRF (epoch 5, finetuned)", "TaRF (epoch 29, from scratch)",
+             "TaRF (epoch 29, finetuned)",
              "Ours (coarse transfer, normals)", "Ours (refined, normals)",
              "Ours (coarse transfer, curvature)", "Ours (refined, curvature)",
              "w/o temporal FiLM", "w/o normal concatenation"]
 
-    print(f"{'Method':30s} {'n':>4s} {'PSNR':>7s} {'SSIM':>7s} {'LPIPS':>7s} {'MSE':>9s}")
-    print("-" * 70)
+    print(f"{'Method':34s} {'n':>4s} {'PSNR':>7s} {'SSIM':>7s} {'LPIPS':>7s} {'MSE':>9s}")
+    print("-" * 74)
     for name in order:
         t = table.get(name, {})
         if not t.get("n_objects"):
-            print(f"{name:30s} {'-':>4s}   {t.get('status', 'pending')}")
+            print(f"{name:34s} {'-':>4s}   {t.get('status', 'pending')}")
             continue
-        print(f"{name:30s} {t['n_objects']:4d} {t['PSNR']:7.2f} {t['SSIM']:7.4f} "
+        print(f"{name:34s} {t['n_objects']:4d} {t['PSNR']:7.2f} {t['SSIM']:7.4f} "
               f"{t['LPIPS']:7.4f} {t['MSE']:9.5f}")
 
     with open(os.path.join(OUT_DIR, "results.json"), "w") as f:

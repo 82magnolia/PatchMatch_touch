@@ -1,0 +1,48 @@
+{
+  "touch_index": 0,
+  "note": "mean abs difference between middle frames of different objects' predictions; compared to ground truth on the same objects",
+  "methods": {
+    "TaRF (epoch 5, finetuned)": {
+      "n_objects": 50,
+      "spread": 0.08975384384393692,
+      "ground_truth_spread_same_objects": 0.1823992282152176,
+      "percent_of_ground_truth": 49.20735944015839
+    },
+    "TaRF (epoch 29, from scratch)": {
+      "n_objects": 50,
+      "spread": 0.2349518984556198,
+      "ground_truth_spread_same_objects": 0.1823992282152176,
+      "percent_of_ground_truth": 128.81189287620995
+    },
+    "TaRF (epoch 29, finetuned)": {
+      "n_objects": 50,
+      "spread": 0.07346436381340027,
+      "ground_truth_spread_same_objects": 0.1823992282152176,
+      "percent_of_ground_truth": 40.27668567035698
+    },
+    "Tactile Normal Quilting": {
+      "n_objects": 50,
+      "spread": 0.1707436442375183,
+      "ground_truth_spread_same_objects": 0.1823992282152176,
+      "percent_of_ground_truth": 93.6098501667197
+    },
+    "ObjectFolder INR": {
+      "n_objects": 50,
+      "spread": 0.007066751830279827,
+      "ground_truth_spread_same_objects": 0.1823992282152176,
+      "percent_of_ground_truth": 3.8743320897945814
+    },
+    "Ours (coarse transfer, normals)": {
+      "n_objects": 50,
+      "spread": 0.17150849103927612,
+      "ground_truth_spread_same_objects": 0.1823992282152176,
+      "percent_of_ground_truth": 94.02917584547495
+    },
+    "Ours (refined, normals)": {
+      "n_objects": 8,
+      "spread": 0.2007361203432083,
+      "ground_truth_spread_same_objects": 0.20830607414245605,
+      "percent_of_ground_truth": 96.3659466818664
+    }
+  }
+}

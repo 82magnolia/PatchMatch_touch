@@ -145,7 +145,8 @@ def job2(args):
         "log/paper_job2_refine_ours_normal/metrics.json", (1, 0),
         require=["log/paper_job2_refine_ours_normal/videos/{obj}_{touch}_enhanced.mp4",
                  "log/paper_job2_baselines/quilting/{obj}/transfer/{touch}_transferred.mp4",
-                 "log/paper_job2_baselines/inr/{obj}/transfer/{touch}_transferred.mp4"])
+                 "log/paper_job2_baselines/inr/{obj}/transfer/{touch}_transferred.mp4",
+                 args.tarf_variant + "/{obj}/transfer/{touch}_transferred.mp4"])
     if args.object is not None:
         obj, touch = args.object, (args.touch if args.touch is not None else touch)
     print(f"job2 figure: object {obj}, touch {touch}")
@@ -157,6 +158,9 @@ def job2(args):
             ROOT, "log/paper_job2_baselines/quilting", str(obj), "transfer", f"{touch}_transferred.mp4")), True),
         ("ObjectFolder INR", read_frames(os.path.join(
             ROOT, "log/paper_job2_baselines/inr", str(obj), "transfer", f"{touch}_transferred.mp4")), False),
+        # TaRF predicts a single still image per query, so it is an image-only row.
+        ("TaRF", read_frames(os.path.join(
+            ROOT, args.tarf_variant, str(obj), "transfer", f"{touch}_transferred.mp4")), True),
         ("Ours: coarse transfer", read_frames(os.path.join(tdir, f"{touch}_transferred.mp4")), False),
         ("Ours: refined", read_frames(os.path.join(
             ROOT, "log/paper_job2_refine_ours_normal/videos", f"{obj}_{touch}_enhanced.mp4")), False),
@@ -198,6 +202,9 @@ def main():
     p.add_argument("--cols", type=int, default=5, help="Number of frames shown")
     p.add_argument("--object", type=int, default=None)
     p.add_argument("--touch", type=int, default=None)
+    p.add_argument("--tarf_variant", default="log/paper_job2_baselines/tarf_v3",
+                   help="Which trained TaRF checkpoint's predictions to show "
+                        "(tarf, tarf_v2 or tarf_v3); job2 figure only")
     args = p.parse_args()
     (job2 if args.figure == "job2" else job3)(args)
 

@@ -160,7 +160,9 @@ def page(title, subtitle, body):
 def job1():
     d = load("paper_experiments/job1_gt_retrieval/results.json")
     order = ["Tactile Normal Quilting", "ObjectFolder INR",
-             "Ours (coarse transfer)", "Ours (refined)"]
+             "TaRF (epoch 5, finetuned)", "TaRF (epoch 29, from scratch)",
+             "TaRF (epoch 29, finetuned)",
+             "Ours (coarse transfer, normals)", "Ours (refined, normals)"]
     abl = ["w/o temporal FiLM", "w/o normal concatenation"]
     rows, abl_rows = [], []
     if d:
@@ -191,15 +193,38 @@ locations each.</p>
 <p><strong>Status:</strong> {badge(done)}</p>
 </div>
 <div class="panel">
-<p><strong>Why TaRF is not in these tables.</strong> The baseline was run end to
-end on both benchmarks (50 and 100 objects, no failures) using the img2touch
-checkpoint at <code>log/tarf_pretrained.ckpt</code>. That checkpoint reports
-<em>epoch 5, global step 5700</em>, and its predictions are near-identical blur
-regardless of which object it is conditioned on &mdash; an early snapshot rather
-than a converged model. Reporting it would present a strawman baseline, so the
-row is withheld until a fully trained model is available. The raw runs are kept
-under <code>log/paper_job{1,2}_baselines/tarf/</code> and both aggregators can
-re-add the row with a one-line source path.</p>
+<p><strong>The three TaRF rows.</strong> TaRF (Tactile-Augmented Radiance Fields)
+is the diffusion baseline. Three trained checkpoints of its image-to-touch
+diffusion model are now available, and all three are reported rather than only
+the best, because they differ in how they were trained rather than in how they
+are evaluated:</p>
+<ul>
+<li><strong>epoch 5, finetuned</strong> &mdash; <code>log/tarf_pretrained.ckpt</code>,
+an early snapshot of a run that starts from the released TaRF weights.</li>
+<li><strong>epoch 29, from scratch</strong> &mdash; <code>log/tarf_pretrained_v2.ckpt</code>,
+a full 30-epoch run that deliberately does <em>not</em> import the released
+diffusion weights, so it never sees TaRF's original real-world touch domain.</li>
+<li><strong>epoch 29, finetuned</strong> &mdash; <code>log/tarf_pretrained_v3.ckpt</code>,
+the same run as the first row, trained to completion.</li>
+</ul>
+<p>All three predict a single still image per query, which is then repeated to the
+length of the reference video &mdash; TaRF has no way to produce the frame-by-frame
+change that a touch sequence contains.</p>
+</div>
+<div class="panel">
+<p><strong>A numerical bug had to be fixed first.</strong> TaRF's inference ran the
+whole model in mixed precision (16-bit floating point). Inside the encoder that
+turns the RGB and depth condition images into a conditioning vector, one
+checkpoint produced intermediate values larger than the largest number 16-bit
+floating point can represent (65504). Those values became infinity, then
+not-a-number, and the final conversion to 8-bit pixels turned every not-a-number
+into 0 &mdash; a completely black prediction with no error message anywhere. That
+is what made the epoch-29 finetuned checkpoint score 3.4 dB PSNR before the fix
+and 11.3 dB after it on the same object. The conditioning encoder now runs in
+full 32-bit precision (<code>baselines/TaRF/patchmatch_tarf/generator.py</code>);
+the rest of the model still runs in mixed precision, and the change costs no
+measurable time. Every TaRF number in these tables was produced after the fix, so
+the three rows are comparable with each other.</p>
 </div>
 <h3>Comparison against baselines</h3>
 {metric_table(rows)}
@@ -228,7 +253,13 @@ in <code>--time_cond</code>.</p>
     md = f"""# Job 1 — Ground-truth retrieval benchmark
 
 Ground-truth reference touch supplied to every method; 50 held-out objects
-(951–1000), 8 touch locations each. TaRF excluded (model still training).
+(951–1000), 8 touch locations each.
+
+All three trained TaRF checkpoints are reported: `tarf_pretrained.ckpt` (epoch 5
+of a run finetuned from the released TaRF weights), `tarf_pretrained_v2.ckpt`
+(epoch 29, released weights not imported) and `tarf_pretrained_v3.ckpt` (epoch 29
+of the same run as the first). All were run after the float32 conditioning-encoder
+fix described in the HTML report, so the rows are comparable.
 
 ## Main comparison
 
@@ -262,6 +293,8 @@ def job2():
     d = load("paper_experiments/job2_full_pipeline/results.json")
     splits = load("paper_experiments/job2_full_pipeline/splits.json")
     order = ["Tactile Normal Quilting", "ObjectFolder INR",
+             "TaRF (epoch 5, finetuned)", "TaRF (epoch 29, from scratch)",
+             "TaRF (epoch 29, finetuned)",
              "Ours (coarse transfer, normals)", "Ours (refined, normals)",
              "Ours (coarse transfer, curvature)", "Ours (refined, curvature)"]
     rows = []
@@ -286,7 +319,8 @@ retrieval errors are allowed to propagate.</p>
 <p><strong>Split:</strong> {n_obj} objects, {n_q} held-out query touches,
 {n_r} reference touches. 4 queries per object (3 for objects with fewer than 9
 touches), chosen by a seeded random draw so the split is reproducible.</p>
-<p><strong>Status:</strong> {badge(done)} &nbsp; TaRF excluded, as above.</p>
+<p><strong>Status:</strong> {badge(done)} &nbsp; All three trained TaRF checkpoints
+included, as in Job 1.</p>
 <p><strong>Why two "ours" pairs.</strong> The method's default coarse alignment is
 surface normals at 4x the sensor footprint (the normals rows). The curvature rows
 are kept because the refinement checkpoints were <em>trained</em> on a
@@ -297,14 +331,15 @@ than 0.1 dB, so the network is insensitive to which modality drove the alignment
 {metric_table(rows)}
 {matrix_figure("log/paper_job2_figure_assets",
                "One row per method, one column per video frame sampled evenly across "
-               "the touch. The quilting baseline tiles a single quilted image to the "
-               "video length, so only its first frame carries information.")}
+               "the touch. The quilting and TaRF baselines each produce a single image "
+               "that is repeated to the video length, so only their first frame carries "
+               "information.")}
 """
     md = f"""# Job 2 — Full-pipeline benchmark
 
 Retrieval is part of the system under test. {n_obj} objects, {n_q} held-out query
 touches, {n_r} reference touches; 4 queries per object (3 when an object has fewer
-than 9 touches), seeded random draw. TaRF excluded.
+than 9 touches), seeded random draw. All three trained TaRF checkpoints included.
 
 {md_table(rows)}
 

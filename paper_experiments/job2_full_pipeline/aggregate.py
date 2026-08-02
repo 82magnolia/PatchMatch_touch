@@ -25,6 +25,11 @@ KEYS = ["PSNR", "SSIM", "LPIPS", "MSE"]
 DIR_SOURCES = {
     "Tactile Normal Quilting": "log/paper_job2_baselines/quilting/{obj}/transfer/metrics.pkl",
     "ObjectFolder INR": "log/paper_job2_baselines/inr/{obj}/transfer/metrics.pkl",
+    # Three trained TaRF diffusion checkpoints, all run with the float32
+    # conditioning-encoder fix so the rows are comparable with each other.
+    "TaRF (epoch 5, finetuned)": "log/paper_job2_baselines/tarf/{obj}/transfer/metrics.pkl",
+    "TaRF (epoch 29, from scratch)": "log/paper_job2_baselines/tarf_v2/{obj}/transfer/metrics.pkl",
+    "TaRF (epoch 29, finetuned)": "log/paper_job2_baselines/tarf_v3/{obj}/transfer/metrics.pkl",
     "Ours (coarse transfer, normals)": "log/paper_job2_pipeline_normal/{obj}/transfer/metrics.pkl",
     "Ours (coarse transfer, curvature)": "log/paper_job2_pipeline/{obj}/transfer/metrics.pkl",
 }
@@ -33,6 +38,8 @@ JSON_SOURCES = {
     "Ours (refined, curvature)": "log/paper_job2_refine_ours/metrics.json",
 }
 ORDER = ["Tactile Normal Quilting", "ObjectFolder INR",
+         "TaRF (epoch 5, finetuned)", "TaRF (epoch 29, from scratch)",
+         "TaRF (epoch 29, finetuned)",
          "Ours (coarse transfer, normals)", "Ours (refined, normals)",
          "Ours (coarse transfer, curvature)", "Ours (refined, curvature)"]
 
@@ -85,15 +92,15 @@ def main():
                        "metrics": summarise(per_obj)}
 
     print(f"Full-pipeline benchmark: {len(ids)} objects\n")
-    print(f"{'Method':30s} {'n':>4s} {'PSNR':>7s} {'SSIM':>7s} {'LPIPS':>7s} {'MSE':>9s}")
-    print("-" * 70)
+    print(f"{'Method':34s} {'n':>4s} {'PSNR':>7s} {'SSIM':>7s} {'LPIPS':>7s} {'MSE':>9s}")
+    print("-" * 74)
     for name in ORDER:
         t = table.get(name, {})
         m = t.get("metrics")
         if not m:
-            print(f"{name:30s} {'-':>4s}   pending ({t.get('n_missing', '?')} missing)")
+            print(f"{name:34s} {'-':>4s}   pending ({t.get('n_missing', '?')} missing)")
             continue
-        print(f"{name:30s} {t['n_objects']:4d} {m['PSNR']:7.2f} {m['SSIM']:7.4f} "
+        print(f"{name:34s} {t['n_objects']:4d} {m['PSNR']:7.2f} {m['SSIM']:7.4f} "
               f"{m['LPIPS']:7.4f} {m['MSE']:9.5f}")
 
     with open(os.path.join(OUT_DIR, "results.json"), "w") as f:

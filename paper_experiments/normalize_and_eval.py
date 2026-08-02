@@ -40,7 +40,9 @@ EPS = 1e-6
 
 # method -> (directory template holding {q}_transferred.mp4, gt template)
 JOB1_SOURCES = {
-    "TaRF": ("log/paper_job1_baselines/tarf/{obj}/transfer", "{q}_transferred.mp4"),
+    "TaRF (epoch 5, finetuned)": ("log/paper_job1_baselines/tarf/{obj}/transfer", "{q}_transferred.mp4"),
+    "TaRF (epoch 29, from scratch)": ("log/paper_job1_baselines/tarf_v2/{obj}/transfer", "{q}_transferred.mp4"),
+    "TaRF (epoch 29, finetuned)": ("log/paper_job1_baselines/tarf_v3/{obj}/transfer", "{q}_transferred.mp4"),
     "Tactile Normal Quilting": ("log/paper_job1_baselines/quilting/{obj}/transfer", "{q}_transferred.mp4"),
     "ObjectFolder INR": ("log/paper_job1_baselines/inr/{obj}/transfer", "{q}_transferred.mp4"),
     "Ours (coarse transfer, normals)": ("log/paper_job1_transfer_normal/{obj}", "{q}_transferred.mp4"),

@@ -24,7 +24,14 @@ import cv2
 import numpy as np
 
 ROOT = "/data1/junhokim/Projects/PatchMatch_touch"
-TARF = os.path.join(ROOT, "log/paper_job1_baselines/tarf")
+# The three trained diffusion checkpoints, newest training run last.
+TARF_VARIANTS = [
+    ("TaRF ep5 finetuned", os.path.join(ROOT, "log/paper_job1_baselines/tarf")),
+    ("TaRF ep29 scratch", os.path.join(ROOT, "log/paper_job1_baselines/tarf_v2")),
+    ("TaRF ep29 finetuned", os.path.join(ROOT, "log/paper_job1_baselines/tarf_v3")),
+]
+# Candidate panel is drawn for the strongest checkpoint.
+TARF = TARF_VARIANTS[-1][1]
 OURS_TRANSFER = os.path.join(ROOT, "log/paper_job1_transfer_normal")
 OURS_REFINE = os.path.join(ROOT, "log/paper_job1_refine_ours_normal/videos")
 QUERY_BASE = os.path.join(ROOT, "Taxim/results/gen_contact_full_query_tactile_normal_pseudo_mini")
@@ -72,16 +79,15 @@ def cell(img, caption, border=None):
 def panel_vs_gt(pairs):
     rows = []
     for obj, q in pairs:
-        tarf = mid_frame(os.path.join(TARF, str(obj), "transfer", f"{q}_transferred.mp4"))
         gt = mid_frame(os.path.join(OURS_TRANSFER, str(obj), f"{q}_query_tactile_normal.mp4"))
         ours = mid_frame(os.path.join(OURS_REFINE, f"{obj}_{q}_enhanced.mp4"))
         qn = read_img(os.path.join(QUERY_BASE, str(obj), f"{q}_scale100_normal.jpg"))
-        rows.append(np.hstack([
-            cell(qn, f"obj {obj} touch {q}: query normal"),
-            cell(tarf, "TaRF prediction"),
-            cell(ours, "Ours (refined)"),
-            cell(gt, "Ground truth"),
-        ]))
+        cells = [cell(qn, f"obj {obj} touch {q}: query normal")]
+        for name, base in TARF_VARIANTS:
+            cells.append(cell(mid_frame(os.path.join(
+                base, str(obj), "transfer", f"{q}_transferred.mp4")), name))
+        cells += [cell(ours, "Ours (refined)"), cell(gt, "Ground truth")]
+        rows.append(np.hstack(cells))
     return np.vstack(rows)
 
 

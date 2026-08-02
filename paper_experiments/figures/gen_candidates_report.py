@@ -3,6 +3,10 @@
 Reads log/paper_figure_candidates/candidates.json and embeds each candidate's
 preview, together with the numbers that got it selected, so the choice can be
 checked rather than taken on trust.
+
+The previews shown here are the spaced ones written by space_and_export.py (white
+space between the frames), and each candidate links to its raw panels and its PDF
+under log/paper_figure_assets/. Run space_and_export.py before this script.
 """
 import base64
 import datetime
@@ -13,6 +17,7 @@ import os
 ROOT = "/data1/junhokim/Projects/PatchMatch_touch"
 CAND = os.path.join(ROOT, "log/paper_figure_candidates/candidates.json")
 OUT = os.path.join(ROOT, "log/paper_figure_candidates_report.html")
+ASSETS = "log/paper_figure_assets"
 
 FIGURES = [
     ("teaser", "fig_teaser.tex", "Teaser (one column)",
@@ -31,8 +36,12 @@ FIGURES = [
      "Rows: reference video, quilting, ObjectFolder INR, ours coarse, ours refined, ground "
      "truth. Columns are frames across the press.",
      "Ranked by structure and by our margin over the best baseline on that touch, so the "
-     "figure agrees with the quantitative table.",
-     ["structure", "psnr_ours", "best_baseline", "margin"]),
+     "figure agrees with the quantitative table. Touches whose ObjectFolder INR row comes "
+     "out as a single flat colour are passed over, since a blank baseline row makes the "
+     "comparison pointless; inr_content below is how much that row actually draws (0 is "
+     "flat, the best touches here reach about 0.024). Columns are sampled from the part of "
+     "the press that is in contact, so no row opens or closes on an empty panel.",
+     ["structure", "psnr_ours", "best_baseline", "margin", "inr_content"]),
     ("ablation", "fig_ablation.tex", "Ablation of the refinement stage (one column)",
      "Panels: w/o refinement, w/o temporal FiLM, w/o normal concatenation, ours, ground truth.",
      "Ranked by ablation gap (ours minus the better ablation) so removing a component is "
@@ -75,6 +84,7 @@ h2{font-size:1.2rem;margin:2.6rem 0 .3rem;padding-bottom:.3rem;border-bottom:1px
 .badge{font-size:11.5px;font-weight:650;padding:.1rem .5rem;border-radius:999px;
  background:color-mix(in srgb,var(--acc) 17%,transparent);color:var(--acc)}
 .stats{color:var(--mut);font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.files{margin-top:.5rem;font-size:12.5px;color:var(--mut)}
 img{max-width:100%;height:auto;display:block;border-radius:5px;border:1px solid var(--line);background:#000}
 .scroll{overflow-x:auto}
 code{background:var(--panel);padding:.08rem .32rem;border-radius:4px;font-size:12.5px;
@@ -110,13 +120,22 @@ def main():
         items = cands.get(key, [])
         blocks = []
         for i, c in enumerate(items):
+            adir = f"{ASSETS}/{key}/{c['object']}_{c['touch']}"
             if key == "method":
-                figs = sorted(glob.glob(os.path.join(ROOT, c["dir"], "*_matches.png")))
-                pick = [p for p in figs if os.path.basename(p).startswith(f"{c['touch']}_")]
-                src = b64(pick[0] if pick else (figs[0] if figs else ""))
+                src = b64(f"{adir}/figure.png")
+                if src is None:
+                    figs = sorted(glob.glob(os.path.join(ROOT, c["dir"], "*_matches.png")))
+                    pick = [p for p in figs if os.path.basename(p).startswith(f"{c['touch']}_")]
+                    src = b64(pick[0] if pick else (figs[0] if figs else ""))
             else:
-                src = b64(c["preview"])
+                # spaced version first, tight original only if it has not been built yet
+                src = b64(c["preview"].replace("preview.png", "preview_spaced.png")) \
+                    or b64(c["preview"])
             line = "  ".join(f"{s}={fmt(c[s])}" for s in stats if s in c and c[s] is not None)
+            has_assets = os.path.isdir(os.path.join(ROOT, adir))
+            files = f"""
+  <div class="files">raw frames <code>{adir}/panels/</code>
+    &middot; PDF <code>{adir}/figure.pdf</code></div>""" if has_assets else ""
             blocks.append(f"""
 <div class="cand{' top' if i == 0 else ''}">
   <div class="hdr">
@@ -125,12 +144,17 @@ def main():
     <span class="stats">{esc(line)}</span>
   </div>
   <div class="scroll">{f'<img src="{src}" alt="candidate preview">' if src else
-                       '<p class="stats">preview missing</p>'}</div>
+                       '<p class="stats">preview missing</p>'}</div>{files}
 </div>""")
+        allpdf = f"{ASSETS}/{key}/{key}_all_candidates.pdf"
+        pdfline = (f'<p class="spec">All {len(items)} candidates as one PDF, a page each: '
+                   f'<code>{allpdf}</code></p>'
+                   if os.path.exists(os.path.join(ROOT, allpdf)) else "")
         secs.append(f"""
 <h2>{esc(title)}</h2>
 <p class="spec"><code>paper_source/figures/{tex}</code> &mdash; {esc(spec)}</p>
 <div class="how"><strong>How these were chosen.</strong> {esc(how)}</div>
+{pdfline}
 {''.join(blocks) if blocks else '<p class="stats">no candidates generated</p>'}""")
 
     html = f"""<title>Figure candidates &mdash; Tactile Analogies</title>
@@ -144,12 +168,20 @@ numbers behind each pick</p>
 this benchmark are the flattest, most featureless contacts &mdash; easy to predict and
 uninformative to look at. Each figure below therefore ranks on its own objective, combining how
 much there is to see with how well the method did. All candidates are on distinct objects.</p>
-<p style="margin:.5rem 0 .2rem"><strong>Where the assets are.</strong> Every candidate's
-individual panels (not just the preview) are under
-<code>log/paper_figure_candidates/&lt;figure&gt;/&lt;object&gt;_&lt;touch&gt;/</code>, so a chosen
-candidate can be laid out without re-running anything. Scores are in
+<p style="margin:.5rem 0 .2rem"><strong>Where the assets are.</strong> Everything needed to
+lay a chosen candidate out in the paper, without re-running anything, is under
+<code>log/paper_figure_assets/&lt;figure&gt;/&lt;object&gt;_&lt;touch&gt;/</code>:
+<code>panels/</code> holds the individual frames at 320&times;240 with the caption text
+removed (these are the ones to put in LaTeX, so labels can be set in the document),
+<code>figure.png</code> is the spaced layout shown below, and <code>figure.pdf</code> is
+the same layout as a PDF page. Each figure also has a single
+<code>&lt;figure&gt;_all_candidates.pdf</code> with one candidate per page.
+<code>log/paper_figure_assets/manifest.json</code> indexes all of it. Scores stay in
 <code>log/paper_figure_candidates/candidates.json</code>, per-touch descriptors in
 <code>descriptors.json</code>.</p>
+<p style="margin:.5rem 0 .2rem"><strong>About the spacing.</strong> The previews below put
+white space between neighbouring frames, so it is clear where one frame ends and the next
+begins. The gap is only in the preview; the frames in <code>panels/</code> are untouched.</p>
 </div>
 {''.join(secs)}
 <footer>Generated {datetime.datetime.now():%Y-%m-%d %H:%M} &middot;
