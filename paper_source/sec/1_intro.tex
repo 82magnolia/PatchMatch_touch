@@ -25,7 +25,7 @@ We represent a touch as a \emph{tactile normal video}, a sequence of frames that
 the visuo-tactile sensor's deformable gel over the duration of a press. 
 Tactile normal videos are easy to obtain in practice, because the mapping from the raw color measurements of a modern visuo-tactile 
 sensor to gel normals is by design nearly one-to-one. Sensor manufacturers such as
-GelSight~\cite{gelsight} ship colour-to-normal conversion as part of their SDK. To
+GelSight~\cite{gelsight} ship color-to-normal conversion as part of their SDK. To
 predict gel normals at a new location, we render surface normal maps at both the reference and
 query sensor poses over multiple scales, and compare these renderings to recover a
 mapping that transfers reference tactile videos to the query location.

@@ -32,8 +32,12 @@ C_REF = (0.12, 0.44, 0.71)      # same blue as the "given" row of the teaser
 C_QRY = (0.76, 0.27, 0.16)      # same red as the "predicted" row
 
 
-def look_at(eye, target, up=np.array([0.0, 1.0, 0.0])):
-    """Camera-to-world matrix for a camera at `eye` looking at `target`."""
+def look_at(eye, target, up=np.array([0.0, 1.0, 0.0]), roll=0.0):
+    """Camera-to-world matrix for a camera at `eye` looking at `target`.
+
+    roll tilts the camera about its own viewing axis, in degrees, which slants
+    the object in the frame without moving the viewpoint.
+    """
     f = target - eye
     f = f / np.linalg.norm(f)
     if abs(np.dot(f, up)) > 0.999:
@@ -41,6 +45,9 @@ def look_at(eye, target, up=np.array([0.0, 1.0, 0.0])):
     r = np.cross(f, up)
     r = r / np.linalg.norm(r)
     u = np.cross(r, f)
+    if roll:
+        a = np.deg2rad(roll)
+        r, u = np.cos(a) * r + np.sin(a) * u, -np.sin(a) * r + np.cos(a) * u
     m = np.eye(4)
     m[:3, 0], m[:3, 1], m[:3, 2], m[:3, 3] = r, u, -f, eye
     return m
@@ -76,15 +83,25 @@ def main():
     ap.add_argument("--views", type=int, default=6)
     ap.add_argument("--elev", type=float, default=12.0, help="camera elevation, degrees")
     ap.add_argument("--start_az", type=float, default=0.0)
+    ap.add_argument("--roll", type=float, default=0.0,
+                    help="tilt the camera about its viewing axis, in degrees, to slant "
+                         "the object in the frame")
     ap.add_argument("--size", type=int, nargs=2, default=[900, 900])
     ap.add_argument("--margin", type=float, default=1.12,
                     help="how much room to leave around the object (1.0 = tight fit)")
+    ap.add_argument("--ambient", type=float, default=0.45,
+                    help="ambient light level; raise it for dark objects")
+    ap.add_argument("--light", type=float, default=3.0, help="key light intensity")
     ap.add_argument("--untextured", action="store_true",
                     help="render plain grey instead of the object's albedo")
     ap.add_argument("--mark_ref", type=int, nargs="*", default=None,
                     help="reference touch indices to mark (from the object's own point set)")
     ap.add_argument("--mark_query", type=int, nargs="*", default=None,
                     help="query touch indices to mark")
+    ap.add_argument("--mark_ref_ply", default=None,
+                    help="mark points of this .ply in the reference colour (e.g. a "
+                         "re-simulated, shifted reference touch)")
+    ap.add_argument("--mark_ref_ply_idx", type=int, nargs="*", default=None)
     ap.add_argument("--mark_query_ply", default=None,
                     help="mark points of this .ply instead (e.g. moved query points)")
     ap.add_argument("--mark_query_ply_idx", type=int, nargs="*", default=None,
@@ -124,7 +141,8 @@ def main():
     diag = float(np.linalg.norm(bounds.max(axis=0) - bounds.min(axis=0)))
     radius = diag / 2
 
-    scene = pyrender.Scene(bg_color=[1.0, 1.0, 1.0, 1.0], ambient_light=[0.45] * 3)
+    scene = pyrender.Scene(bg_color=[1.0, 1.0, 1.0, 1.0],
+                           ambient_light=[args.ambient] * 3)
     for g in geoms:
         scene.add(pyrender.Mesh.from_trimesh(g, smooth=False))
 
@@ -141,6 +159,9 @@ def main():
     if args.mark_query:
         for p in points_of(f"{QUERY_PTS}/{args.obj}/picked_points_query.ply", args.mark_query):
             scene.add(marker(p, rad, C_QRY))
+    if args.mark_ref_ply:
+        for p in points_of(args.mark_ref_ply, args.mark_ref_ply_idx):
+            scene.add(marker(p, rad, C_REF))
     if args.mark_query_ply:
         for p in points_of(args.mark_query_ply, args.mark_query_ply_idx):
             scene.add(marker(p, rad, C_QRY))
@@ -154,7 +175,7 @@ def main():
     yfov = np.deg2rad(35.0)
     cam = pyrender.PerspectiveCamera(yfov=yfov)
     cam_node = scene.add(cam, pose=np.eye(4))
-    key = pyrender.DirectionalLight(color=np.ones(3), intensity=3.0)
+    key = pyrender.DirectionalLight(color=np.ones(3), intensity=args.light)
     key_node = scene.add(key, pose=np.eye(4))
 
     r = pyrender.OffscreenRenderer(args.size[0], args.size[1])
@@ -167,7 +188,7 @@ def main():
         eye = centre + dist * np.array([np.cos(el) * np.sin(az),
                                         np.sin(el),
                                         np.cos(el) * np.cos(az)])
-        pose = look_at(eye, centre)
+        pose = look_at(eye, centre, roll=args.roll)
         scene.set_pose(cam_node, pose)
         scene.set_pose(key_node, pose)      # light follows the camera
         colour, _ = r.render(scene)

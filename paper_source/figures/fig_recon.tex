@@ -1,25 +1,22 @@
 %% 3D surface reconstruction and visuo-tactile sensor simulation (two columns).
-%% The graphic is a matrix of images:
-%%   row 1 -- reference tactile normal video (the example transferred from)
-%%   row 2 -- predicted tactile normal video after refinement network inference
-%%   row 3 -- 3D point cloud / shaded relief of the heightmap integrated from row 2, per frame
-%%   row 4 -- RGB visuo-tactile video frames simulated from the same heightmap
-%%   columns -- frames of the video, sampled from the in-contact portion of the press
-%% Assets: log/paper_job03_recon_visuotactile/figure_951_5.png (alternates 977_1, 981_3,
-%%         969_5, 967_1, 965_3).
-%% Replace the \rule placeholder below with the actual graphic.
+%% Graphic: figures/recon.png
+%% Two examples stacked vertically (a monitor arm and a chair). For each, the left
+%% column renders the object and the right side holds three labeled rows of six frames:
+%%   row 1 -- our predicted tactile normal video at the query location
+%%   row 2 -- the 3D surface relief integrated from row 1 with a Poisson solver, per frame
+%%   row 3 -- RGB visuo-tactile frames simulated from that same heightmap
+%% Columns are frames sampled from the in-contact portion of the press.
+%% Row labels and object names are baked into the image.
 \begin{figure*}[t]
   \centering
-  % \includegraphics[width=\linewidth]{figures/recon_visuotactile.pdf}
-  \rule{\linewidth}{7.0cm}% PLACEHOLDER -- remove when the real figure is dropped in
+  \includegraphics[width=\linewidth]{figures/recon.png}
   \caption{\textbf{3D surface reconstruction and visuo-tactile sensor simulation from predicted
-    touches.} Columns are frames of a single press. Row~1: the reference tactile normal video the
-    prediction is transferred from. Row~2: our predicted tactile normal video at the query
-    location. Row~3: the 3D surface relief obtained by integrating the predicted normals into a
-    heightmap with a Poisson solver. Row~4: the colour image a vision-based tactile sensor would
-    have measured, simulated from the same heightmap with Taxim's calibrated optical model. Rows~3
-    and~4 are deterministic post-processing of Row~2 and require no ground truth, so the whole
-    chain runs at deployment time from a single reference touch. Frames are sampled from the
-    in-contact portion of the press, since frames with no contact carry no signal to integrate.}
+    touches.} Two examples are shown, each with the object on the left and three rows of video
+    frames on the right. Columns are frames of a single press at a location the sensor never
+    physically touched. \emph{Tactile normal predictions:} our refined output at that location.
+    \emph{3D surface reconstructions:} the surface relief obtained by integrating those predicted
+    normals into a heightmap with a Poisson solver. \emph{Simulated visuo-tactile sensor
+    measurements:} the color image a vision-based tactile sensor would have measured, produced
+    from the same heightmap using an optical tactile simulator, Taxim~\cite{taxim}'s internal optical model.}
   \label{fig:recon}
 \end{figure*}

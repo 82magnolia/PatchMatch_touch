@@ -22,7 +22,7 @@ dataset~\cite{objectfolder}. For every object we generate a set of tactile norma
 the gel normal changes over time, simulated with the Taxim tactile simulator~\cite{taxim} using a
 scaled GelSight Mini calibration at $240\times320$ resolution. Each touch is a 50-frame video at
 5\,fps following a press-in-then-withdraw depth schedule. Every touch is accompanied by
-view-space renderings of the surface at the sensor pose, namely RGB colour, heightmap, surface
+view-space renderings of the surface at the sensor pose, namely RGB color, heightmap, surface
 normal, curvature and shape index, at $1\times$, $2\times$ and $4\times$ the sensor footprint. In total
 the benchmark comprises 17{,}522 touch locations and 876{,}100 tactile frames across all 1000
 ObjectFolder objects. Objects 1--950 form the training split and objects 951--1000 the evaluation
@@ -85,7 +85,7 @@ in the right position, and the network supplies the gel dynamics and cleans up t
 misalignment that the warp leaves behind.
 
 The gap to the baselines is largest on LPIPS, the metric most sensitive to perceptual structure.
-Quilting synthesises a plausible tactile texture but has no mechanism to make it agree with the
+Quilting synthesizes a plausible tactile texture but has no mechanism to make it agree with the
 particular surface under the sensor, so it scores 0.4833. The implicit representation is fitted
 per sample and therefore reproduces the reference touches it was trained on, but it must
 extrapolate to an unseen location from pixel coordinates alone, which is exactly where the
@@ -129,7 +129,7 @@ Table~\ref{tab:ablation} reports PSNR, SSIM and LPIPS. We study three groups of 
 
 First, the \emph{modality} used for retrieval and for feature matching during initial alignment,
 with the field of view fixed at $4\times$ the sensor footprint: surface normals (our default),
-RGB colour, curvature, and height map. Second, the \emph{field of view} used for retrieval and
+RGB color, curvature, and height map. Second, the \emph{field of view} used for retrieval and
 matching: $1\times$, $2\times$ and $4\times$. Third, the components of the refinement stage: no
 neural refinement at all (i.e.\ the coarse transfer), no temporal FiLM conditioning, and no normal
 map concatenation. Fig.~\ref{fig:ablation} compares predictions from the last three variants
@@ -153,7 +153,7 @@ off. A narrow field of view sees only the contact patch, so when it matches at a
 precisely, which PSNR rewards. A wide field of view sees the surrounding surface, which makes the
 match more likely to be found and better conditioned but spreads the correspondences over pixels
 the tactile video never covers. We keep $4\times$ as the default because the perceptual metrics
-favour it and because the wider context is what makes retrieval reliable.
+favor it and because the wider context is what makes retrieval reliable.
 
 \paragraph{Refinement.}
 This is where the largest effects are. Adding the refinement network to the coarse transfer gains
@@ -182,12 +182,12 @@ touched. Such reconstructions let an embodied agent reason about fine-grained sh
 previously untouched regions, and can drive haptic rendering.
 
 Going one step further, feeding the same heightmap through Taxim's calibrated optical
-model~\cite{taxim} produces the colour image a camera-based tactile sensor would have measured,
+model~\cite{taxim} produces the color image a camera-based tactile sensor would have measured,
 that is, a virtual visuo-tactile measurement. This could aid manipulation policies that are trained
 directly on visuo-tactile sensor readings: an agent could, for instance, rehearse a grasp by
 predicting the tactile videos at candidate contact points before touching the object at all.
 Fig.~\ref{fig:recon} shows the full chain, from reference touch through predicted tactile normal
-video to the reconstructed 3D relief and the simulated colour frames. Both steps after the network
+video to the reconstructed 3D relief and the simulated color frames. Both steps after the network
 are deterministic post-processing of the predicted normals, so the whole chain runs at deployment
 time from a single reference touch.
 

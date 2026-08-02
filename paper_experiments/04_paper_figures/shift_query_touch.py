@@ -1,4 +1,11 @@
-"""Move a benchmark query touch to a nearby spot on the object and re-simulate it.
+"""Move a benchmark touch to a nearby spot on the object and re-simulate it.
+
+Works on either side of a pair: --which query moves a query touch (the teaser
+case, where the reference is held fixed), --which ref moves a reference touch
+(the reconstruction-figure case, where the query is held fixed). The two sets
+were generated with slightly different settings -- the query touches got a small
+random sensor rotation, the reference touches did not -- and this script keeps
+whichever convention it is reproducing.
 
 The teaser reads as more of a challenge when the query location is clearly not
 the reference location. Rather than hunting for a better pair among the touches
@@ -35,6 +42,7 @@ import trimesh
 ROOT = "/home/junhokim/Projects/PatchMatch_gpu"
 OBJ_DIR = f"{ROOT}/Taxim/data/ObjectFolder"
 QUERY_PTS = f"{ROOT}/Taxim/results/object_folder_touch_query"
+REF_PTS = f"{ROOT}/Taxim/results/object_folder_touch"
 OUT = f"{ROOT}/log/paper_job04_paper_figures/shifted"
 GEN = f"{ROOT}/Taxim/OpticalSimulation/gen_contact_video.py"
 CALIB = f"{ROOT}/Taxim/calibs/gelsight_pseudo_mini"
@@ -74,22 +82,27 @@ def shifted_points(mesh, origin, dists, n_dirs):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--obj", type=int, default=951)
-    ap.add_argument("--touch", type=int, default=7, help="query touch index to move")
+    ap.add_argument("--which", default="query", choices=["query", "ref"],
+                    help="which side of the benchmark pair to move")
+    ap.add_argument("--touch", type=int, default=7, help="touch index to move")
     ap.add_argument("--dists", type=float, nargs="+", default=[0.02, 0.04],
                     help="how far to move, as a fraction of the object's bounding-box diagonal")
     ap.add_argument("--n_dirs", type=int, default=4)
     ap.add_argument("--tag", default=None)
     args = ap.parse_args()
 
-    tag = args.tag or f"{args.obj}_t{args.touch}"
+    tag = args.tag or f"{args.obj}_{args.which}{args.touch}"
     save_dir = f"{OUT}/{tag}"
     os.makedirs(save_dir, exist_ok=True)
 
     mesh = trimesh.load(f"{OBJ_DIR}/{args.obj}/model.obj", force="mesh")
-    pcd = o3d.io.read_point_cloud(f"{QUERY_PTS}/{args.obj}/picked_points_query.ply")
+    pts_file = (f"{QUERY_PTS}/{args.obj}/picked_points_query.ply" if args.which == "query"
+                else f"{REF_PTS}/{args.obj}/picked_points_fps.ply")
+    pcd = o3d.io.read_point_cloud(pts_file)
     origin = np.asarray(pcd.points)[args.touch]
     pts, labels = shifted_points(mesh, origin, args.dists, args.n_dirs)
-    print(f"object {args.obj}, query touch {args.touch} at {origin.round(3)}")
+    print(f"object {args.obj}, {args.which} touch {args.touch} at {origin.round(3)} "
+          f"(from {os.path.basename(pts_file)})")
 
     # Anchors first, shifted points after: the anchors reproduce the original
     # point spread, which is what sets the render scale (see the note above).
@@ -126,7 +139,10 @@ def main():
            "--contact_ply", ply,
            "--mode", "back_forth_press",
            "--depth_range_info", "0.", "10.", "50",
-           "--rand_contact_theta", "--rand_contact_theta_mag", "0.26179938779",
+           # the benchmark's query touches were simulated with a small random
+           # sensor rotation, its reference touches without one
+           *(["--rand_contact_theta", "--rand_contact_theta_mag", "0.26179938779"]
+             if args.which == "query" else []),
            "--modalities", "tactile_normal",
            "--save_dir", f"{save_dir}/{args.obj}",
            "--obj_scale_factor", "100.", "50.", "25.",

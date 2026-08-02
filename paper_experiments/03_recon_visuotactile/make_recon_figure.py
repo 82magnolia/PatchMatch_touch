@@ -174,10 +174,21 @@ def main():
     ap.add_argument("--n_cols", type=int, default=6,
                     help="How many frames of the touch to show as columns.")
     ap.add_argument("--out_dir", default=f"{ROOT}/log/paper_job03_recon_visuotactile")
+    ap.add_argument("--transfer_dir", default=TRANSFER,
+                    help="root of the coarse transfers to refine (default: the "
+                         "ground-truth-retrieval run)")
+    ap.add_argument("--cond_dir", default=COND,
+                    help="root holding {obj}/{idx}_scale100_normal.jpg for the query")
+    ap.add_argument("--layout", default="flat", choices=["flat", "nested"],
+                    help="'flat' is {transfer_dir}/{obj}/, 'nested' is "
+                         "{transfer_dir}/{obj}/transfer/ as transfer_pipeline.py writes it")
+    ap.add_argument("--tag", default=None,
+                    help="name for the output files (default: {obj}_{pair})")
     ap.add_argument("--video", action="store_true", help="Also write the full-length MP4.")
     args = ap.parse_args()
 
-    asset = os.path.join(args.out_dir, "assets", f"{args.obj}_{args.pair}")
+    tag = args.tag or f"{args.obj}_{args.pair}"
+    asset = os.path.join(args.out_dir, "assets", tag)
     os.makedirs(asset, exist_ok=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -188,10 +199,21 @@ def main():
     model.eval()
     print(f"loaded refinement net @ epoch {ck.get('epoch')}")
 
-    ds = TactileTransferDataset(TRANSFER, [args.obj], split="test", cond_dir=COND,
-                                film_modality="normal", film_scale=100,
-                                geom_concat=True, video_type="tactile_normal",
-                                time_cond="film")
+    class Flexible(TactileTransferDataset):
+        """Same dataset, but able to read transfer_pipeline.py's nested layout."""
+
+        def __init__(self, *a, **k):
+            self.NUM_PAIRS = 32
+            super().__init__(*a, **k)
+
+        def _obj_dir(self, obj_id):
+            base = os.path.join(self.transfer_dir, str(obj_id))
+            return os.path.join(base, "transfer") if args.layout == "nested" else base
+
+    ds = Flexible(args.transfer_dir, [args.obj], split="test", cond_dir=args.cond_dir,
+                  film_modality="normal", film_scale=100,
+                  geom_concat=True, video_type="tactile_normal",
+                  time_cond="film")
     if not ds.lq_video_exists(args.obj, args.pair):
         raise SystemExit(f"no transferred video for {args.obj}_{args.pair}")
 
@@ -206,7 +228,7 @@ def main():
     print(f"{n} frames")
 
     # Reference video frames (the example the prediction was transferred from)
-    ref_path = os.path.join(TRANSFER, str(args.obj), f"{args.pair}_ref_tactile_normal.mp4")
+    ref_path = os.path.join(ds._obj_dir(args.obj), f"{args.pair}_ref_tactile_normal.mp4")
     cap = cv2.VideoCapture(ref_path)
     refs = []
     while True:
@@ -272,14 +294,14 @@ def main():
     cv2.putText(hdr, f"object {args.obj}, touch {args.pair} - frames "
                      f"{idxs[0]}..{idxs[-1]} of {n} (press in, then withdraw)",
                 (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
-    out_png = os.path.join(args.out_dir, f"figure_{args.obj}_{args.pair}.png")
+    out_png = os.path.join(args.out_dir, f"figure_{tag}.png")
     cv2.imwrite(out_png, np.vstack([hdr, grid]))
     print("wrote", out_png)
 
     # ---- full-length video (optional) -------------------------------------
     if args.video:
-        raw = os.path.join(args.out_dir, f"video_{args.obj}_{args.pair}_raw.mp4")
-        out_mp4 = os.path.join(args.out_dir, f"video_{args.obj}_{args.pair}.mp4")
+        raw = os.path.join(args.out_dir, f"video_{tag}_raw.mp4")
+        out_mp4 = os.path.join(args.out_dir, f"video_{tag}.mp4")
         vw = None
         for t in range(n):
             pred = preds[t]
