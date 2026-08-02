@@ -148,11 +148,15 @@ class Page:
                                     shrinkA=0, shrinkB=0))
         return a
 
-    def line(self, pts, color=C_LINE, lw=0.7, ls="-", z=4, alpha=1.0):
+    def line(self, pts, color=C_LINE, lw=0.7, ls="-", z=4, alpha=1.0,
+             marker=None, ms=2.0, mfc=None):
         a = self._overlay(z)
         xs = [p[0] / self.w for p in pts]
         ys = [1 - p[1] / self.h for p in pts]
         a.plot(xs, ys, color=color, lw=lw, ls=ls, alpha=alpha,
+               marker=marker, markersize=ms,
+               markerfacecolor=mfc if mfc is not None else color,
+               markeredgewidth=0,
                transform=a.transAxes, solid_capstyle="round")
         return a
 

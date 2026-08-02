@@ -24,24 +24,75 @@ from figlib import ASSETS, C_QRY, C_REF, Page, load, load_normal, sensor_box
 OUT = "/home/junhokim/Projects/PatchMatch_gpu/log/paper_job04_paper_figures"
 C_MATCH = "#f2c200"
 C_NET = "#5b4b8a"
+# Fill of the box behind each step. The faint grey separates the steps from the
+# page, but a white fill keeps the whole figure on one background, which reads
+# better once the normal renders themselves are on white too (see load_normal).
+PANEL_FACE = "#f4f5f7"
+PANEL_EDGE = "#d5d8dd"
 C_FILM_E = "#c9a227"
 C_FILM_F = "#fdf3d6"
 C_FILM_T = "#6b5300"
 
 
 # --------------------------------------------------------------------- pieces
-def draw_matches(p, xl, yl, xr, yr, w, h, md, n_lines=14, lw=0.45):
-    """Draw real inlier correspondences between two already-placed renders."""
+def seg_hits_rect(p0, p1, rect):
+    """Does the segment p0 -> p1 touch the axis-aligned rect (x0, y0, x1, y1)?
+
+    Liang-Barsky clipping: walk the four edges, narrowing the slice of the
+    segment that could still be inside. An empty slice means it misses.
+    """
+    x0, y0, x1, y1 = rect
+    dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+    t0, t1 = 0.0, 1.0
+    for num, den in ((-dx, p0[0] - x0), (dx, x1 - p0[0]),
+                     (-dy, p0[1] - y0), (dy, y1 - p0[1])):
+        if num == 0:                    # parallel to this edge
+            if den < 0:
+                return False
+            continue
+        t = den / num
+        if num < 0:
+            if t > t1:
+                return False
+            t0 = max(t0, t)
+        else:
+            if t < t0:
+                return False
+            t1 = min(t1, t)
+    return t0 <= t1
+
+
+def draw_matches(p, xl, yl, xr, yr, w, h, md, n_lines=14, lw=0.45, box_scale=25,
+                 marker="D", ms=1.3, flip=False):
+    """Draw real inlier correspondences between two already-placed renders.
+
+    Correspondences whose line would cross either sensor-footprint box are left
+    out, so the red boxes stay readable. Each drawn line gets a small diamond at
+    both ends, marking the two points that were actually matched. `flip` says the
+    query render is the one on the left, so its coordinates go with (xl, yl).
+    """
     im_h, im_w = load(f"{ASSETS}/{md['tag']}_match_left.png").shape[:2]
-    keep = np.where(md["inlier"])[0]
+    near, far = ("xy_r", "xy_l") if flip else ("xy_l", "xy_r")
+
+    def pts(i):
+        ax, ay = md[near][i]
+        bx, by = md[far][i]
+        return ((xl + ax / im_w * w, yl + ay / im_h * h),
+                (xr + bx / im_w * w, yr + by / im_h * h))
+
+    # the drawn footprint of each red box, in page inches
+    half = 100.0 / float(box_scale) * 2      # box side is 1/(100/scale) of the image
+    boxes = [(x + w / 2 - w / half, y + h / 2 - h / half,
+              x + w / 2 + w / half, y + h / 2 + h / half)
+             for x, y in ((xl, yl), (xr, yr))]
+
+    keep = [i for i in np.where(md["inlier"])[0]
+            if not any(seg_hits_rect(*pts(i), b) for b in boxes)]
     if len(keep) > n_lines:
-        keep = keep[np.linspace(0, len(keep) - 1, n_lines).round().astype(int)]
+        keep = [keep[j] for j in np.linspace(0, len(keep) - 1, n_lines).round().astype(int)]
     for i in keep:
-        ax, ay = md["xy_l"][i]
-        bx, by = md["xy_r"][i]
-        p.line([(xl + ax / im_w * w, yl + ay / im_h * h),
-                (xr + bx / im_w * w, yr + by / im_h * h)],
-               color=C_MATCH, lw=lw, z=6, alpha=0.95)
+        p.line(list(pts(i)), color=C_MATCH, lw=lw, z=6, alpha=0.95,
+               marker=marker, ms=ms)
     return len(keep)
 
 
@@ -82,7 +133,7 @@ def v1(d, out):
     L, R = 0.09, 3.26
 
     # ------------------------------------------------------------ 1 retrieval
-    p.panel(0.04, 0.06, 3.27, 1.44)
+    p.panel(0.04, 0.06, 3.27, 1.44, facecolor=PANEL_FACE, edgecolor=PANEL_EDGE)
     p.text(L, 0.19, "1", size=7.5, weight="bold", color=C_NET)
     p.text(L + 0.09, 0.19, "Retrieve the most similar reference touch", size=5.6,
            color="0.15")
@@ -91,7 +142,7 @@ def v1(d, out):
 
     qw, qh = 0.60, 0.45
     qx, qy = L, 0.46
-    p.img(qx, qy, qw, qh, sensor_box(load_normal(ret["qimg"])), edge=C_QRY, lw=0.9)
+    p.img(qx, qy, qw, qh, load_normal(ret["qimg"]), edge=C_QRY, lw=0.9)
     p.text(qx, qy - 0.06, "query location", size=4.8, color=C_QRY)
     p.text(qx, qy + qh + 0.09, "geometry only,\nnever touched", size=4.3, color="0.45")
 
@@ -122,20 +173,26 @@ def v1(d, out):
            color="0.45")
 
     # ------------------------------------------------------ 2 coarse alignment
-    p.panel(0.04, 1.58, 3.27, 1.42)
+    p.panel(0.04, 1.58, 3.27, 1.42, facecolor=PANEL_FACE, edgecolor=PANEL_EDGE)
     p.text(L, 1.71, "2", size=7.5, weight="bold", color=C_NET)
     p.text(L + 0.09, 1.71, "Line the two geometry renders up", size=5.6, color="0.15")
 
     mw, mh, my = 1.05, 0.79, 1.98
     mxl, mxr = L, L + mw + 0.28
-    p.img(mxl, my, mw, mh, load_normal(f"{ASSETS}/{tag}_match_left.png"), edge=C_REF, lw=0.9)
-    p.img(mxr, my, mw, mh, load_normal(f"{ASSETS}/{tag}_match_right.png"), edge=C_QRY, lw=0.9)
-    shown = draw_matches(p, mxl, my, mxr, my, mw, mh, md)
-    p.text(mxl, my - 0.06, "best match", size=4.6, color=C_REF)
-    p.text(mxr, my - 0.06, "query", size=4.6, color=C_QRY)
-    p.text(mxl, my + mh + 0.09,
-           f"geometry at 4x the sensor; {shown} of the {int(md['inlier'].sum())} agreeing "
-           f"SuperPoint + SuperGlue correspondences drawn", size=4.2, color="0.45")
+    # query first, then the reference it was matched against. Both renders cover
+    # 4x the sensor, so the red box marks the quarter-size centre patch the
+    # sensor actually sits on.
+    p.img(mxl, my, mw, mh, sensor_box(load_normal(f"{ASSETS}/{tag}_match_right.png")),
+          edge="black", lw=0.9)
+    p.img(mxr, my, mw, mh, sensor_box(load_normal(f"{ASSETS}/{tag}_match_left.png")),
+          edge=C_REF, lw=0.9)
+    shown = draw_matches(p, mxl, my, mxr, my, mw, mh, md, flip=True)
+    p.text(mxl, my - 0.06, "query", size=4.6, color=C_QRY)
+    p.text(mxr, my - 0.06, "best match", size=4.6, color=C_REF)
+    p.text(mxl, my + mh + 0.12,
+           "geometry at 4x the sensor; the red box marks the sensor itself\n"
+           f"{shown} of the {int(md['inlier'].sum())} agreeing SuperPoint + SuperGlue "
+           f"correspondences drawn", size=4.2, color="0.45", linespacing=1.4)
 
     cx, cw, ch = 2.60, 0.55, 0.41
     p.text(cx, my + 0.06, "fit one warp\n(homography),\nwarp the video", size=4.4, color="0.25")
@@ -145,7 +202,7 @@ def v1(d, out):
     p.arrow(mxr + mw + 0.02, my + mh / 2, cx - 0.02, my + mh / 2, lw=0.8, mut=4)
 
     # ---------------------------------------------------------- 3 refinement
-    p.panel(0.04, 3.08, 3.27, 1.52)
+    p.panel(0.04, 3.08, 3.27, 1.52, facecolor=PANEL_FACE, edgecolor=PANEL_EDGE)
     p.text(L, 3.20, "3", size=7.5, weight="bold", color=C_NET)
     p.text(L + 0.09, 3.20, "Refine with a small network", size=5.6, color="0.15")
 
@@ -153,7 +210,10 @@ def v1(d, out):
     p.text(L, 3.37, "the coarse frames and the query normal map, stacked as channels",
            size=4.2, color="0.45")
     ys = [3.46, 3.815, 4.17]
-    p.img(L, ys[0], tw, th, load(f"{ASSETS}/{tag}_coarse_{mid - 1:03d}.png"), edge="0.55")
+    # the two stills are spaced by d["gap"] purely so they read as two different
+    # pictures; the network itself is fed consecutive frames
+    p.img(L, ys[0], tw, th, load(f"{ASSETS}/{tag}_coarse_{mid - d['gap']:03d}.png"),
+          edge="0.55")
     p.img(L, ys[1], tw, th, load(f"{ASSETS}/{tag}_coarse_{mid:03d}.png"), edge="0.55")
     p.img(L, ys[2], tw, th, load_normal(f"{ASSETS}/{tag}_querynorm_scale100.png"), edge=C_QRY)
 
@@ -269,7 +329,7 @@ def v3(d, out):
               "2   Line the two geometry renders up",
               "3   Refine with a small network"]
     for x, w, t in zip(cols, widths, titles):
-        p.panel(x, 0.06, w, 2.22)
+        p.panel(x, 0.06, w, 2.22, facecolor=PANEL_FACE, edgecolor=PANEL_EDGE)
         p.text(x + 0.08, 0.19, t, size=6.0, color="0.15")
 
     # --- 1 retrieval
@@ -344,6 +404,30 @@ def v3(d, out):
     p.save(out)
 
 
+def figure_inputs(tag, ret_tag, n_db, mid, gap=1):
+    """Everything a version function draws, resolved from the cached assets.
+
+    Kept as one function so that anything else which needs to know exactly what
+    a figure shows -- export_method_assets.py, for one -- asks the same question
+    and cannot drift from what is actually drawn.
+    """
+    r = pickle.load(open(f"{ASSETS}/{ret_tag}_retrieval.pkl", "rb"))
+    scores = [(i, float(s)) for i, s in zip(r["idxs"], r["loo_scores"]) if np.isfinite(s)]
+    scores.sort(key=lambda t: -t[1])
+    # the best match plus a spread of weaker ones, so the bars differ visibly
+    picks = [scores[0]] + [scores[int(round(q * (len(scores) - 1)))]
+                           for q in np.linspace(0.35, 1.0, n_db - 1)]
+    qimg = f"{ASSETS}/{ret_tag}_query_normal.png"
+    if not os.path.exists(qimg):        # leave-one-out variant keeps the query in the set
+        qimg = f"{ASSETS}/{ret_tag}_db{r['query_idx']}_normal.png"
+    ret = dict(tag=ret_tag, qimg=qimg, top1=r["order"][0], show=picks,
+               n_db=len(scores))
+
+    md = pickle.load(open(f"{ASSETS}/{tag}_matches.pkl", "rb"))
+    md["tag"] = tag
+    return dict(ret=ret, md=md, tag=tag, mid=mid, gap=gap)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tag", default="1000_7")
@@ -353,24 +437,20 @@ def main():
     ap.add_argument("--versions", nargs="+", default=["v1", "v2", "v3"])
     ap.add_argument("--name", default="method",
                     help="output stem; files are <name>_<version>.pdf/.png")
+    ap.add_argument("--panel", default="shaded", choices=["shaded", "white"],
+                    help="fill of the box behind each step")
+    ap.add_argument("--frame_gap", type=int, default=1,
+                    help="how many frames apart the two coarse stills in step 3 are. "
+                         "The network is fed consecutive frames (dataset.py builds "
+                         "[previous, current]), so 1 is what it actually sees; a larger "
+                         "gap only makes the two thumbnails easier to tell apart")
     args = ap.parse_args()
 
-    r = pickle.load(open(f"{ASSETS}/{args.ret_tag}_retrieval.pkl", "rb"))
-    scores = [(i, float(s)) for i, s in zip(r["idxs"], r["loo_scores"]) if np.isfinite(s)]
-    scores.sort(key=lambda t: -t[1])
-    # the best match plus a spread of weaker ones, so the bars differ visibly
-    picks = [scores[0]] + [scores[int(round(q * (len(scores) - 1)))]
-                           for q in np.linspace(0.35, 1.0, args.n_db - 1)]
-    qimg = f"{ASSETS}/{args.ret_tag}_query_normal.png"
-    if not os.path.exists(qimg):        # leave-one-out variant keeps the query in the set
-        qimg = f"{ASSETS}/{args.ret_tag}_db{r['query_idx']}_normal.png"
-    ret = dict(tag=args.ret_tag, qimg=qimg, top1=r["order"][0], show=picks,
-               n_db=len(scores))
+    if args.panel == "white":
+        global PANEL_FACE, PANEL_EDGE
+        PANEL_FACE, PANEL_EDGE = "white", "#c8ccd2"
 
-    md = pickle.load(open(f"{ASSETS}/{args.tag}_matches.pkl", "rb"))
-    md["tag"] = args.tag
-
-    d = dict(ret=ret, md=md, tag=args.tag, mid=args.mid)
+    d = figure_inputs(args.tag, args.ret_tag, args.n_db, args.mid, args.frame_gap)
     os.makedirs(OUT, exist_ok=True)
     for v in args.versions:
         {"v1": v1, "v2": v2, "v3": v3}[v](d, f"{OUT}/{args.name}_{v}")
