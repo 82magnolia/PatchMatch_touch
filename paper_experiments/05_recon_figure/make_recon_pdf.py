@@ -54,12 +54,17 @@ ROWS = [("pred", "Predicted tactile normal (ours)"),
 
 
 def render_relief(H, out_path, z_scale=0.16, light_gain=None, size=(4.2, 3.15), dpi=150,
-                  bg="black"):
+                  bg="black", contrast=1.35, ambient=0.10):
     """Shaded relief of a heightmap, with a squashable height axis.
 
     z_scale sets how tall the surface is drawn relative to its width. The shading
     is computed from the same exaggeration, so a flattened surface also looks
     flatter rather than keeping the shadows of a tall one.
+
+    Flattening the surface also flattens its shading, which left the relief a
+    narrow band of greys. contrast stretches the shading about its mid-tone and
+    ambient sets how dark the darkest facets are allowed to go, so the surface
+    keeps its range once squashed.
 
     The relief sits on black by default: the grey surface reads far better against
     it than against the white of the page, which is how the earlier version of
@@ -67,7 +72,10 @@ def render_relief(H, out_path, z_scale=0.16, light_gain=None, size=(4.2, 3.15), 
     text.
     """
     if light_gain is None:
-        light_gain = 9.0 * (z_scale / 0.42)
+        # Shading strength is kept at the value the original (un-flattened) figure
+        # used. Scaling it down with z_scale did keep shading and geometry
+        # consistent, but it left the squashed surface a narrow band of greys.
+        light_gain = 9.0
     Hn = H - H.min()
     Hn = Hn / (Hn.max() + 1e-8)
     Hn = gaussian_filter(Hn, sigma=2.6)      # smooth the integration stepping
@@ -80,7 +88,8 @@ def render_relief(H, out_path, z_scale=0.16, light_gain=None, size=(4.2, 3.15), 
     lgt = np.array([-0.5, -0.6, 0.7])
     lgt /= np.linalg.norm(lgt)
     inten = np.clip((nrm * lgt).sum(2), 0, 1)
-    shaded = cm.gray(0.28 + 0.72 * inten)
+    inten = np.clip(0.5 + contrast * (inten - 0.5), 0, 1)
+    shaded = cm.gray(ambient + (1.0 - ambient) * inten)
 
     fig = plt.figure(figsize=size, dpi=dpi, facecolor=bg)
     ax = fig.add_subplot(111, projection="3d")
@@ -180,6 +189,14 @@ def main():
     ap.add_argument("--gap", type=float, default=0.055, help="white gap between frames")
     ap.add_argument("--bottom", type=float, default=0.24,
                     help="white space left below the last row, in inches")
+    ap.add_argument("--relief_light", type=float, default=None,
+                    help="shading strength of the relief (default 9.0, the value the "
+                         "un-flattened figure used)")
+    ap.add_argument("--relief_contrast", type=float, default=1.35,
+                    help="how far the relief's shading is stretched about its mid-tone; "
+                         "1.0 is the unstretched shading")
+    ap.add_argument("--relief_ambient", type=float, default=0.10,
+                    help="how dark the darkest facets of the relief may go")
     ap.add_argument("--relief_bg", default="black", choices=["black", "white"],
                     help="background behind the 3D relief only; the page itself stays white")
     ap.add_argument("--transfer_dir", default=TRANSFER)
@@ -210,7 +227,9 @@ def main():
         p_rgb = f"{cells}/col{j:02d}_f{t:03d}_row3_simulated_rgb.png"
         cv2.imwrite(p_pred, cv2.cvtColor((np.clip(pred, 0, 1) * 255).astype(np.uint8),
                                          cv2.COLOR_RGB2BGR))
-        relief = render_relief(Hs, p_rel, z_scale=args.z_scale, bg=args.relief_bg)
+        relief = render_relief(Hs, p_rel, z_scale=args.z_scale, bg=args.relief_bg,
+                               light_gain=args.relief_light,
+                               contrast=args.relief_contrast, ambient=args.relief_ambient)
         rgb = taxim_rgb(Hs)
         cv2.imwrite(p_rgb, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
 

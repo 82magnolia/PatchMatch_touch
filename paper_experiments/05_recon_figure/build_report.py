@@ -83,6 +83,15 @@ in the caption.</p>
 earlier version, and the shading is recomputed at the same exaggeration so a flatter surface also
 casts flatter shadows. <code>--z_scale</code> changes it.</p>
 
+<p>The relief's shading was washed out after the surface was flattened: squashing the height axis
+also squashes the range of surface angles, so everything landed in a narrow band of greys. Two
+changes fix it. The shading strength is back at the value the un-flattened figure used
+(<code>--relief_light</code>, default 9.0) rather than being scaled down with the height, and the
+shading is stretched about its mid-tone by <code>--relief_contrast</code> (default 1.35) with the
+darkest facets allowed down to <code>--relief_ambient</code> 0.10. Pushing the stretch much past
+1.5 starts to blow out the lit faces, so the gain does most of the work and the stretch only
+finishes it.</p>
+
 <p>The relief keeps its black backdrop &mdash; the grey surface reads far better against black than
 against the white of the page. Only that row is dark; the page, the labels and the gaps are white
 and black as before. <code>--relief_bg white</code> switches it if that is ever wanted.</p>
