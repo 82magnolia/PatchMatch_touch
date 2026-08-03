@@ -274,14 +274,17 @@ This produces 3,800 training, 1,900 validation, and 1,900 test samples. Objects
 are shared across splits; touch role and parity are held out. No real RGB,
 height, mask, or tactile video is read.
 
-The released `img2touch.ckpt` predicts shadow/RGB tactile appearance, so its
-diffusion UNet, EMA, and RGB-D conditioner weights are **not loaded** for this
-model. Those components start randomly with the same upstream TaRF structure.
-TaRF freezes its first-stage latent autoencoder, however, so a frozen random
-autoencoder would make diffusion training invalid. The launcher therefore
-extracts only `first_stage_model.*` from the released checkpoint into
-`pretrained_models/img2touch_first_stage.ckpt`. It does not transfer the
-shadow-trained diffusion mapping.
+`train_img2touch_tactile_normal.sh` is the structure-only ablation. The
+released `img2touch.ckpt` predicts shadow/RGB tactile appearance, so this
+launcher deliberately does **not** load its diffusion UNet, EMA, or RGB-D
+conditioner weights. Those components start randomly with the same upstream
+TaRF structure. TaRF freezes its first-stage latent autoencoder, however, so a
+frozen random autoencoder would make diffusion training invalid. The launcher
+therefore extracts only `first_stage_model.*` from the released checkpoint
+into `pretrained_models/img2touch_first_stage.ckpt`. It does not transfer the
+shadow-trained diffusion mapping. This ablation requires substantially more
+training to converge and is not the recommended checkpoint for tactile-normal
+inference.
 
 Before using GPUs, the launcher prints `nvidia-smi` and chooses four idle GPUs:
 
@@ -313,9 +316,8 @@ TARF_RESUME=/absolute/path/to/checkpoints/last.ckpt \
 bash baselines/TaRF/scripts/train_img2touch_tactile_normal.sh
 ```
 
-To compare random tactile-normal diffusion initialization against transfer from
-the released shadow/RGB TaRF model, launch the upstream-initialized experiment
-separately:
+For the recommended tactile-normal model, fine-tune the complete released
+shadow/RGB TaRF checkpoint:
 
 ```bash
 TARF_GPUS=4,5,6,7 \
@@ -325,10 +327,10 @@ bash baselines/TaRF/scripts/train_img2touch_tactile_normal_finetune.sh
 
 This uses the same tactile-normal manifest, reference-even training touches,
 query-odd validation/test touches, background, optimizer settings, and 30-epoch
-schedule. Unlike `train_img2touch_tactile_normal.sh`, it loads the complete
-released `pretrained_models/img2touch.ckpt` before epoch 0. It starts a new
-optimizer and epoch counter; `TARF_RESUME` is reserved for resuming a checkpoint
-from this new run. Outputs are written to a distinct timestamped
+schedule. Unlike the structure-only ablation, it loads the complete released
+`pretrained_models/img2touch.ckpt` before epoch 0. It starts a new optimizer and
+epoch counter; `TARF_RESUME` is reserved for resuming a checkpoint from this new
+run. Outputs are written to a distinct timestamped
 `patchmatch_sim_tactile_normal_finetune_ref_even_query_odd` run.
 
 After training, pass the selected tactile-normal diffusion checkpoint to the
@@ -520,22 +522,7 @@ cd ../..
   conditions.
 - Full diffusion inference is computationally heavy and is impractical on CPU.
 - Research runs use the default eight diffusion candidates and 200 DDIM steps.
-  CPU-only comparison runs may set `TARF_N_SAMPLES=1` while retaining all 200
-  steps; such results must be labeled as one-candidate validation results.
-
-To regenerate only the TaRF rows of the eight-object real/sim comparison:
-
-```bash
-TARF_DEVICE=cuda \
-  test_scripts/run_tarf_comparison_objects.sh 1 2 10 25 50 75 99 100
-```
-
-For a CPU validation comparison, use
-`TARF_DEVICE=cpu TARF_N_SAMPLES=1`; this changes only candidate count, not the
-200-step diffusion schedule. Then rebuild metrics and videos with
-`test_scripts/compare_baseline_suite.py`. The evaluator rejects smoke outputs,
-always recomputes TaRF metrics, and records each run's sampling and actual
-close-view geometry in `tarf_run_settings.json`.
+  A one-candidate run may be used for an explicitly labeled integration check.
 - The pretrained assets are not redistributed here and retain their original
   licenses.
 - The source checkout's Nerfstudio viewer remains available, but this adapter

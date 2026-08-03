@@ -58,9 +58,9 @@ conda env create -f baselines/RandomQuiltingTactile/environment.yml
 The run scripts automatically use the `RandomQuiltingTactile` environment.
 Set `RQT_PYTHON=/path/to/python` to override that behavior.
 
-Evaluation uses the dependencies already required by `PatchMatch_touch`:
-PyTorch, LPIPS, and scikit-image. The full mode has separate, older
-ObjectFolder and Tactile DreamFusion environments; follow
+The environment also includes PyTorch, torchvision, LPIPS, and scikit-image
+for the common MSE/PSNR/SSIM/LPIPS evaluation stage. The full mode has
+separate, older ObjectFolder and Tactile DreamFusion environments; follow
 `ObjectFolder/environment.yml` and `TactileDreamFusion/requirements.txt`.
 Tactile DreamFusion also requires its external model checkpoints and CUDA
 renderer dependencies.
