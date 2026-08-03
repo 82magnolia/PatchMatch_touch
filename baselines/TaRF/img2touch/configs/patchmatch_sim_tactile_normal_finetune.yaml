@@ -1,0 +1,52 @@
+model:
+  params:
+    # Fine-tune every compatible weight from the released shadow/RGB TaRF model.
+    # This is intentionally a separate experiment from the tactile-normal run
+    # that initializes only the frozen first-stage autoencoder upstream.
+    ckpt_path: pretrained_models/img2touch.ckpt
+    first_stage_config:
+      params:
+        # img2touch.ckpt already contains the first-stage autoencoder weights.
+        ckpt_path: null
+
+data:
+  params:
+    batch_size: 1
+    num_workers: 4
+    train:
+      target: ldm.patchmatch_sim_data.PatchMatchSimDataset
+      params:
+        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd/manifest.json
+        split: train
+        background_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd/tactile_normal_background.jpg
+        size: 256
+    validation:
+      target: ldm.patchmatch_sim_data.PatchMatchSimDataset
+      params:
+        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd/manifest.json
+        split: val
+        background_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd/tactile_normal_background.jpg
+        size: 256
+    test:
+      target: ldm.patchmatch_sim_data.PatchMatchSimDataset
+      params:
+        manifest_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd/manifest.json
+        split: test
+        background_path: ../../../log/baselines/tarf_training/patchmatch_sim_tactile_normal_ref_even_query_odd/tactile_normal_background.jpg
+        size: 256
+
+lightning:
+  callbacks:
+    image_logger:
+      target: main.ImageLogger
+      params:
+        batch_frequency: 200
+        max_images: 1
+        increase_log_steps: false
+        max_validation_image_batches: 1
+  logger:
+    target: pytorch_lightning.loggers.CSVLogger
+    params:
+      name: csv
+  trainer:
+    max_epochs: 30

@@ -313,6 +313,24 @@ TARF_RESUME=/absolute/path/to/checkpoints/last.ckpt \
 bash baselines/TaRF/scripts/train_img2touch_tactile_normal.sh
 ```
 
+To compare random tactile-normal diffusion initialization against transfer from
+the released shadow/RGB TaRF model, launch the upstream-initialized experiment
+separately:
+
+```bash
+TARF_GPUS=4,5,6,7 \
+TARF_NUM_GPUS=4 \
+bash baselines/TaRF/scripts/train_img2touch_tactile_normal_finetune.sh
+```
+
+This uses the same tactile-normal manifest, reference-even training touches,
+query-odd validation/test touches, background, optimizer settings, and 30-epoch
+schedule. Unlike `train_img2touch_tactile_normal.sh`, it loads the complete
+released `pretrained_models/img2touch.ckpt` before epoch 0. It starts a new
+optimizer and epoch counter; `TARF_RESUME` is reserved for resuming a checkpoint
+from this new run. Outputs are written to a distinct timestamped
+`patchmatch_sim_tactile_normal_finetune_ref_even_query_odd` run.
+
 After training, pass the selected tactile-normal diffusion checkpoint to the
 tactile-normal inference wrapper instead of the released shadow checkpoint:
 
