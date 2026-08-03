@@ -1,1 +1,148 @@
 \section{Method}
+\label{sec:method}
+
+\input{figures/fig_method}
+
+\subsection{Overview}
+
+As shown in Fig.~\ref{fig:method}, our method takes as input (i) a set of reference tactile normal
+videos together with surface normal maps rendered at the same tactile sensor poses, and (ii) a set
+of query tactile sensor poses at which we wish to predict tactile normal videos. We render normal
+maps at the query poses as well, and use them as the geometric context for prediction.
+
+Formally, let $\mathcal{R} = \{ (V_i, N_i) \}_{i=1}^{N}$ be the reference set, where
+$V_i = (V_i^1, \dots, V_i^T)$ is a tactile normal video of $T$ frames and $N_i$ is the normal
+map rendered at the pose of touch $i$. Given a query normal map $N_q$, our goal is to produce a
+predicted video $\hat{V}_q$.
+
+Obtaining the normal renderings does not require a mesh of the object at deployment time. In
+practice one can (i) obtain a depth map from a commodity sensor such as a stereo camera,
+(ii) take spatial gradients of the depth map to get a normal map in the camera frame, and
+(iii) project those normals into the tactile sensor frame, using the relative pose between the
+sensor and the camera. That relative pose is available either from forward kinematics, when both
+are mounted on a robot, or from fiducial markers such as an ArUco tag attached to the back of the
+sensor.
+
+We then take a coarse-to-fine approach with three steps. We first retrieve the most promising
+reference touch using DINOv3 features (Sec.~\ref{sec:retrieval}). We then coarsely align the two
+normal maps to obtain a homography that gives an initial transfer of the reference tactile video
+(Sec.~\ref{sec:coarse}). Finally, we refine that initial transfer with a neural network
+(Sec.~\ref{sec:refine}).
+
+\subsection{Retrieval}
+\label{sec:retrieval}
+
+A reference touch is useful only if the surface it was taken on resembles the surface at the
+query pose. We measure this resemblance in the space of a self-supervised visual descriptor.
+Concretely, we render normal maps over a field of view larger than the sensor footprint, four
+times the sensor's extent by default, so that the descriptor sees the surrounding surface
+context and not just the small contact patch, and we extract the class-token feature of a
+pre-trained DINOv3 encoder~\cite{dinov3}:
+\begin{equation}
+  f_i \;=\; \frac{\phi(N_i)}{\lVert \phi(N_i) \rVert_2},
+  \qquad
+  f_q \;=\; \frac{\phi(N_q)}{\lVert \phi(N_q) \rVert_2},
+\end{equation}
+where $\phi(\cdot)$ denotes the encoder. The retrieved reference is the one whose feature is most
+similar in the cosine sense,
+\begin{equation}
+  i^{*} \;=\; \arg\max_{i \in \{1,\dots,N\}} \; f_i^{\top} f_q .
+  \label{eq:retrieval}
+\end{equation}
+We use the top-1 result throughout. The descriptor is frozen and the features of the reference set
+can be computed once and cached, so retrieval reduces to a single matrix--vector product at query
+time.
+
+\subsection{Coarse Alignment}
+\label{sec:coarse}
+
+Retrieval tells us \emph{which} reference to use, and alignment tells us \emph{how} to place it.
+Using the top-1 retrieval $N_{i^{*}}$, we run a local feature matcher, namely SuperPoint
+keypoints~\cite{superpoint} matched by SuperGlue~\cite{superglue}, between $N_{i^{*}}$ and
+$N_q$, obtaining a set of $K$ two-dimensional pixel correspondences
+$\{(\mathbf{p}_k, \mathbf{q}_k)\}_{k=1}^{K}$. From these we estimate a homography
+$\mathbf{H} \in \mathbb{R}^{3\times 3}$ under RANSAC~\cite{ransac}:
+\begin{equation}
+  \mathbf{H} \;=\; \arg\min_{\mathbf{H}} \sum_{k=1}^{K}
+  \rho\!\left( \bigl\lVert \pi\bigl(\mathbf{H}\,\tilde{\mathbf{p}}_k\bigr) - \mathbf{q}_k
+  \bigr\rVert_2 \right),
+  \label{eq:homography}
+\end{equation}
+where $\tilde{\mathbf{p}}_k$ is $\mathbf{p}_k$ in homogeneous coordinates,
+$\pi([x, y, w]^{\top}) = [x/w, y/w]^{\top}$ is the perspective division, and $\rho$ is the RANSAC
+inlier--outlier cost.
+
+Applying $\mathbf{H}$ to every frame of the retrieved reference video gives the initial transfer
+\begin{equation}
+  W^{t} \;=\; \mathcal{W}\bigl( V_{i^{*}}^{t}; \, \mathbf{H} \bigr),
+  \qquad t = 1, \dots, T,
+  \label{eq:warp}
+\end{equation}
+where $\mathcal{W}$ denotes image warping. Note that a \emph{single} geometric transform is shared
+by all frames: the sensor pose does not move relative to the surface during a press, so what
+changes across the video is the gel deformation, not the alignment.
+
+\subsection{Learning-based Refinement}
+\label{sec:refine}
+
+The initial transfer is geometrically plausible but may be physically inaccurate.
+Specifically, the initial transfer carries the gel dynamics the \emph{reference press} happened to exhibit,
+inherits any residual misalignment left by Eq.~\ref{eq:homography}, and 
+knows nothing about the surface geometry at the query pose beyond what survived the homography-based alignment.
+Our final step corrects these artifacts using a neural network. Since we target
+prediction fast enough for AR/VR and robotics, we deliberately balance refinement accuracy against
+efficiency.
+
+\paragraph{Architecture.}
+Our refinement network is based on ReBotNet~\cite{rebotnet}, a lightweight architecture for video
+enhancement. ReBotNet processes a pair of consecutive frames through two branches, a
+ConvNeXt-style~\cite{convnext} spatio-temporal branch and a per-frame token branch, and merges them in a shared
+decoder, with a global residual connection that adds the current input frame back to the
+prediction. It was originally designed to remove blur and compression artifacts from natural
+video, so we adapt it in two ways.
+
+\emph{Normal map concatenation.} We concatenate the query normal render $N_q$ to the input as
+three additional aligned channels, broadcast across both frames of the pair. This makes the
+network aware of the rough surface geometry at the query location, which is exactly the
+information the warped reference cannot supply.
+
+\emph{Temporal conditioning with FiLM.} The normal map is static, since it is rendered once at the
+query pose and does not change over the press, so on its own it gives the network no sense of
+where in the press it currently is. We therefore inject the frame's normalized timestamp
+$\tau_t = (t-1)/(T-1) \in [0,1]$, which runs from no contact through deepest press to take-off.
+Following the standard diffusion-model recipe~\cite{ldm}, a fixed sinusoidal embedding of $\tau_t$
+is passed through a small multi-layer perceptron and mapped to a per-stage scale and shift, applied
+as feature-wise linear modulation (FiLM)~\cite{film}:
+\begin{equation}
+  \mathrm{FiLM}(\mathbf{h}_s; \tau_t) \;=\;
+  \bigl(1 + \gamma_s(\tau_t)\bigr) \odot \mathbf{h}_s + \beta_s(\tau_t),
+\end{equation}
+where $\mathbf{h}_s$ are the features at stage $s$. The heads producing $\gamma_s$ and $\beta_s$
+are zero-initialized, so the module starts as an exact identity and departs from it only as
+training justifies.
+
+Writing the refinement network as $\mathcal{F}$, the prediction for frame $t$ is
+\begin{equation}
+  \hat{V}_q^{\,t} \;=\; \mathcal{F}\bigl( [\,W^{t-1}, W^{t}\,] \oplus N_q ; \; \tau_t \bigr),
+  \label{eq:refine}
+\end{equation}
+with $\oplus$ denoting channel concatenation and $W^{0} := W^{1}$ for the first frame.
+
+\paragraph{Training loss.}
+We supervise with a Charbonnier loss, a smooth approximation to the $\ell_1$ distance that is less
+sensitive to outliers than a squared error,
+\begin{equation}
+  \mathcal{L}_{\mathrm{ch}} \;=\;
+  \frac{1}{|\Omega|}\sum_{x \in \Omega}
+  \sqrt{\bigl(\hat{V}_q^{\,t}(x) - V_q^{t}(x)\bigr)^2 + \epsilon^2},
+\end{equation}
+evaluated on the region $\Omega$ where the ground-truth query frame differs from the warped input,
+i.e.\ the part of the frame the network is actually being asked to change. We obtain $\Omega$ by
+thresholding the per-pixel difference between the two,
+\begin{equation}
+  \Omega \;=\; \bigl\{\, x \;:\; \max_{c} \, \bigl\lvert V_q^{t}(x, c) - W^{t}(x, c) \bigr\rvert
+  \;>\; \delta \,\bigr\},
+  \label{eq:lossmask}
+\end{equation}
+where the maximum runs over the three normal channels and $\delta = 10^{-2}$. Pixels at which the warped input already agrees with the ground truth carry no training
+signal, and keeping them would let the large, unchanged background dominate the loss.

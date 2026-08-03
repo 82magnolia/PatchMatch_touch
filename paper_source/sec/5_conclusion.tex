@@ -1,1 +1,15 @@
 \section{Conclusion}
+\label{sec:conclusion}
+
+In this paper we introduced \emph{tactile analogies}, the task of synthesizing tactile videos at
+untouched locations from a set of reference touches, and proposed an example-driven pipeline that
+solves it. Given a handful of reference touches on an object, our method retrieves the most
+relevant one using self-supervised features of surface normal renderings, aligns it to the query
+sensor pose with a pre-trained local feature matcher, and refines the warped video with a
+lightweight network conditioned on the query geometry and on where in the press it is. Experiments
+on a benchmark we build from ObjectFolder show that our method outperforms all tested baselines in
+video prediction accuracy, while remaining fast enough for interactive use. We also demonstrate
+that the predicted tactile normals can be used for 3D surface reconstruction and for simulating
+visuo-tactile measurements without direct physical contact.
+We project our work to serve as an important first step towards building models
+that can accurately perceive and understand the complex dynamics of touch.

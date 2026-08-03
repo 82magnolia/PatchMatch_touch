@@ -1,0 +1,76 @@
+<title>Job 4 — Runtime analysis</title>
+<style>
+:root { --bg:#ffffff; --fg:#1a1a1a; --muted:#606060; --line:#e2e2e2;
+        --accent:#1f5fa8; --ok:#0f7b3f; --pend:#a06000; --panel:#f7f8fa; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#15171a; --fg:#e8e8e8; --muted:#9aa0a6; --line:#2c3036;
+          --accent:#7db3f0; --ok:#5fd08a; --pend:#e0a640; --panel:#1c1f24; }
+}
+* { box-sizing:border-box; }
+body { margin:0; padding:2rem 1.25rem 4rem; background:var(--bg); color:var(--fg);
+       font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+.wrap { max-width:1080px; margin:0 auto; }
+h1 { font-size:1.75rem; margin:0 0 .25rem; letter-spacing:-.01em; }
+h2 { font-size:1.25rem; margin:2.5rem 0 .75rem; padding-bottom:.35rem;
+     border-bottom:1px solid var(--line); }
+h3 { font-size:1.02rem; margin:1.75rem 0 .5rem; }
+.sub { color:var(--muted); margin:0 0 1.5rem; }
+table { border-collapse:collapse; width:100%; margin:.75rem 0 1rem; font-size:14px; }
+th,td { padding:.5rem .6rem; text-align:right; border-bottom:1px solid var(--line); }
+th:first-child, td:first-child { text-align:left; }
+th { font-weight:600; color:var(--muted); font-size:12.5px; text-transform:uppercase;
+     letter-spacing:.04em; }
+tr.best td { font-weight:650; color:var(--accent); }
+tr.sep td { border-top:2px solid var(--line); }
+.scroll { overflow-x:auto; }
+.badge { display:inline-block; padding:.1rem .5rem; border-radius:999px;
+         font-size:12px; font-weight:600; }
+.badge.done { background:color-mix(in srgb,var(--ok) 16%,transparent); color:var(--ok); }
+.badge.pend { background:color-mix(in srgb,var(--pend) 16%,transparent); color:var(--pend); }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+         padding:.9rem 1.1rem; margin:1rem 0; }
+.panel p:first-child { margin-top:0; } .panel p:last-child { margin-bottom:0; }
+code { background:var(--panel); padding:.1rem .35rem; border-radius:4px;
+       font-size:13px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+pre { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+      padding:.8rem 1rem; overflow-x:auto; font-size:13px; }
+img { max-width:100%; height:auto; border-radius:6px; border:1px solid var(--line); }
+ul { padding-left:1.2rem; } li { margin:.25rem 0; }
+footer { margin-top:3rem; padding-top:1rem; border-top:1px solid var(--line);
+         color:var(--muted); font-size:13px; }
+</style>
+<div class="wrap"><h1>Job 4 — Runtime analysis</h1><p class="sub">Dirac experiment batch</p>
+<div class="panel">
+<p><strong>What this measures.</strong> How long one touch prediction takes, given
+6 reference touches and 1 query, on a single
+NVIDIA GeForce RTX 3090. Each number excludes a generic feature-extraction cost so that
+what is timed is our own machinery: the retrieval number excludes DINOv3 feature
+extraction, and the coarse-alignment number excludes the local feature matching.</p>
+<p><strong>Status:</strong> <span class="badge done">complete</span></p>
+</div>
+<div class="scroll"><table>
+<tr><th>Stage</th><th>Time</th></tr>
+<tr><td>Retrieval, after DINOv3 feature extraction</td>
+    <td>0.08 ms</td></tr>
+<tr><td>Coarse alignment, after local feature matching</td>
+    <td>0.021 s</td></tr>
+<tr><td>Network refinement, per frame</td>
+    <td>8.5 ms</td></tr>
+<tr><td>Network refinement, per 50-frame touch video</td>
+    <td>0.42 s</td></tr>
+</table></div>
+<p>For reference, the excluded steps cost
+0.06 s
+(DINOv3 features for 6 references + 1 query) and
+0.08 s
+(local feature matching).</p>
+
+<p>The same measurement on the benchmark's largest reference set
+(27 reference touches) gives
+0.07 ms retrieval,
+0.019 s coarse alignment and
+8.6 ms per frame &mdash; essentially unchanged,
+so within the range this benchmark covers the cost does not grow with the number
+of reference touches. Retrieval is a dot product against N cached feature vectors;
+everything after it depends only on the single retrieved reference.</p>
+<footer>Generated 2026-08-02 03:49 on dirac &middot; sources under <code>paper_experiments/</code> and <code>log/</code></footer></div>

@@ -25,6 +25,13 @@
 
 \usepackage{cag}
 \usepackage{framed,multirow}
+\usepackage{xcolor}
+\usepackage{url}   %% provides \path, used by the bibliography style for DOIs
+%% Content added beyond paper_assets/paper_outline.md is wrapped in \new{...} and
+%% typeset in red so it is easy to spot and remove.
+\newcommand{\new}[1]{\textcolor{red}{#1}}
+%% Placeholder for a number that is not measured yet.
+\newcommand{\tbd}{\textcolor{red}{\textbf{[TBD]}}}
 
 %% Use the option review to obtain double line spacing
 %% \documentclass[authoryear,preprint,review,12pt]{elsarticle}

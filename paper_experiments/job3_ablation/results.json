@@ -1,0 +1,148 @@
+{
+  "subset_objects": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20
+  ],
+  "coarse": {
+    "mod_normal": {
+      "label": "Modality: surface normal (4x)  [default]",
+      "n_objects": 20,
+      "missing": [],
+      "metrics": {
+        "PSNR": 27.709677460133925,
+        "SSIM": 0.8243900150060653,
+        "LPIPS": 0.27969207770927296,
+        "MSE": 0.01876187913679657
+      }
+    },
+    "mod_color": {
+      "label": "Modality: RGB colour (4x)",
+      "n_objects": 20,
+      "missing": [],
+      "metrics": {
+        "PSNR": 26.01066547456847,
+        "SSIM": 0.8211016893386841,
+        "LPIPS": 0.28725098811634353,
+        "MSE": 0.019179524838956734
+      }
+    },
+    "mod_curvature": {
+      "label": "Modality: curvature (4x)",
+      "n_objects": 20,
+      "missing": [],
+      "metrics": {
+        "PSNR": 27.031821084330325,
+        "SSIM": 0.8172351896762848,
+        "LPIPS": 0.2895011664660993,
+        "MSE": 0.01957095221073716
+      }
+    },
+    "mod_height": {
+      "label": "Modality: height map (4x)",
+      "n_objects": 20,
+      "missing": [],
+      "metrics": {
+        "PSNR": 26.608990836626493,
+        "SSIM": 0.8152526408433914,
+        "LPIPS": 0.2852830216616638,
+        "MSE": 0.019456811535989993
+      }
+    },
+    "scale_1x": {
+      "label": "Scale: 1x sensor",
+      "n_objects": 20,
+      "missing": [],
+      "metrics": {
+        "PSNR": 28.485818419161536,
+        "SSIM": 0.8236080557107925,
+        "LPIPS": 0.2918678490026353,
+        "MSE": 0.019991723386712172
+      }
+    },
+    "scale_2x": {
+      "label": "Scale: 2x sensor",
+      "n_objects": 20,
+      "missing": [],
+      "metrics": {
+        "PSNR": 28.362784769819303,
+        "SSIM": 0.8215983420610428,
+        "LPIPS": 0.2907522853651646,
+        "MSE": 0.019815499287249023
+      }
+    },
+    "scale_4x": {
+      "label": "Scale: 4x sensor  [default, same run as mod_normal]",
+      "n_objects": 20,
+      "missing": [],
+      "metrics": {
+        "PSNR": 27.709677460133925,
+        "SSIM": 0.8243900150060653,
+        "LPIPS": 0.27969207770927296,
+        "MSE": 0.01876187913679657
+      }
+    }
+  },
+  "refined": {
+    "wo_refinement": {
+      "label": "w/o neural-network refinement",
+      "n_objects": 20,
+      "metrics": {
+        "PSNR": 27.709677460133925,
+        "SSIM": 0.8243900150060653,
+        "LPIPS": 0.27969207770927296,
+        "MSE": 0.01876187913679657
+      }
+    },
+    "ours": {
+      "label": "Ours (full model)",
+      "n_objects": 20,
+      "metrics": {
+        "MSE": 0.007211519076699683,
+        "PSNR": 31.397317493902715,
+        "SSIM": 0.9074334800243378,
+        "LPIPS": 0.15218823420925917
+      },
+      "source": "log/paper_job3_refine_ours_mod_normal"
+    },
+    "wo_film": {
+      "label": "w/o temporal FiLM",
+      "n_objects": 20,
+      "metrics": {
+        "MSE": 0.008016246440121635,
+        "PSNR": 29.903261825551358,
+        "SSIM": 0.9022248685359955,
+        "LPIPS": 0.17353469673076535
+      },
+      "source": "log/paper_job3_refine_wo_film_mod_normal"
+    },
+    "wo_cat": {
+      "label": "w/o normal concatenation",
+      "n_objects": 20,
+      "metrics": {
+        "MSE": 0.014985702291656005,
+        "PSNR": 25.375532183862767,
+        "SSIM": 0.8540443778038025,
+        "LPIPS": 0.27220085291360857
+      },
+      "source": "log/paper_job3_refine_wo_cat_mod_normal"
+    }
+  }
+}

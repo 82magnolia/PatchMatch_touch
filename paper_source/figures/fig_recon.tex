@@ -1,0 +1,22 @@
+%% 3D surface reconstruction and visuo-tactile sensor simulation (two columns).
+%% Graphic: figures/recon.png
+%% Two examples stacked vertically (a monitor arm and a chair). For each, the left
+%% column renders the object and the right side holds three labeled rows of six frames:
+%%   row 1 -- our predicted tactile normal video at the query location
+%%   row 2 -- the 3D surface relief integrated from row 1 with a Poisson solver, per frame
+%%   row 3 -- RGB visuo-tactile frames simulated from that same heightmap
+%% Columns are frames sampled from the in-contact portion of the press.
+%% Row labels and object names are baked into the image.
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/recon.png}
+  \caption{\textbf{3D surface reconstruction and visuo-tactile sensor simulation from predicted
+    touches.} Two examples are shown, each with the object on the left and three rows of video
+    frames on the right. Columns are frames of a single press at a location the sensor never
+    physically touched. \emph{Tactile normal predictions:} our refined output at that location.
+    \emph{3D surface reconstructions:} the surface relief obtained by integrating those predicted
+    normals into a heightmap with a Poisson solver. \emph{Simulated visuo-tactile sensor
+    measurements:} the color image a vision-based tactile sensor would have measured, produced
+    from the same heightmap using an optical tactile simulator, Taxim~\cite{taxim}'s internal optical model.}
+  \label{fig:recon}
+\end{figure*}

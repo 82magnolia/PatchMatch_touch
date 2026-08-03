@@ -1,0 +1,27 @@
+{
+  "gpu": "NVIDIA GeForce RTX 3090",
+  "object": "48",
+  "query_idx": 6,
+  "ref_idx": 0,
+  "repeats": 10,
+  "retrieval": {
+    "n_reference_touches": 27,
+    "extraction_plus_ranking_s": 0.14077043631114067,
+    "ranking_after_extraction_s": 7.284986786544323e-05,
+    "ranking_after_extraction_std_s": 4.189833857133075e-06
+  },
+  "coarse_alignment": {
+    "n_frames": 50,
+    "fit_after_matching_s": 0.006305284937843681,
+    "frame_warping_s": 0.012431911146268248,
+    "coarse_after_matching_s": 0.01873719608411193,
+    "coarse_after_matching_std_s": 0.0005518208989744361,
+    "including_matching_s": 0.09868324883282184
+  },
+  "refinement": {
+    "frames_timed": 50,
+    "refinement_per_frame_s": 0.008568241021595896,
+    "refinement_per_frame_std_s": 8.787887903960569e-05,
+    "refinement_per_video_s": 0.4284120510797948
+  }
+}

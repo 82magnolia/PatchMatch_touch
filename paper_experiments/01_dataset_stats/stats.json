@@ -1,0 +1,201 @@
+{
+  "scale_to_x": {
+    "100": "1x",
+    "50": "2x",
+    "25": "4x"
+  },
+  "datasets": {
+    "ref": {
+      "name": "ref",
+      "rel_path": "gen_contact_full_tactile_normal_pseudo_mini",
+      "n_objects": 1000,
+      "obj_id_min": 1,
+      "obj_id_max": 1000,
+      "touches_per_object": {
+        "min": 8,
+        "max": 8,
+        "mean": 8.0,
+        "hist": {
+          "8": 1000
+        }
+      },
+      "total_touches": 8000,
+      "video_kinds": {
+        "mask": 8000,
+        "render_mask": 8000,
+        "tactile_normal": 8000
+      },
+      "modality_scale_counts": {
+        "color@scale100": 8000,
+        "color@scale25": 8000,
+        "color@scale50": 8000,
+        "curvature@scale100": 8000,
+        "curvature@scale25": 8000,
+        "curvature@scale50": 8000,
+        "height@scale100": 8000,
+        "height@scale25": 8000,
+        "height@scale50": 8000,
+        "normal@scale100": 8000,
+        "normal@scale25": 8000,
+        "normal@scale50": 8000,
+        "shapeindex@scale100": 8000,
+        "shapeindex@scale25": 8000,
+        "shapeindex@scale50": 8000
+      },
+      "tactile_video": {
+        "probed_objects": 40,
+        "n_probed": 320,
+        "frames_min": 50,
+        "frames_max": 50,
+        "frames_mean": 50.0,
+        "height": 240,
+        "width": 320,
+        "fps": 5.0
+      },
+      "npz_shapes": {
+        "normal@scale100": "(240, 320, 3)",
+        "height@scale100": "(240, 320)",
+        "normal@scale50": "(240, 320, 3)",
+        "height@scale50": "(240, 320)",
+        "normal@scale25": "(240, 320, 3)",
+        "height@scale25": "(240, 320)"
+      },
+      "disk_bytes": 7111921695
+    },
+    "query": {
+      "name": "query",
+      "rel_path": "gen_contact_full_query_tactile_normal_pseudo_mini",
+      "n_objects": 1000,
+      "obj_id_min": 1,
+      "obj_id_max": 1000,
+      "touches_per_object": {
+        "min": 8,
+        "max": 8,
+        "mean": 8.0,
+        "hist": {
+          "8": 1000
+        }
+      },
+      "total_touches": 8000,
+      "video_kinds": {
+        "mask": 8000,
+        "render_mask": 8000,
+        "tactile_normal": 8000
+      },
+      "modality_scale_counts": {
+        "color@scale100": 8000,
+        "color@scale25": 8000,
+        "color@scale50": 8000,
+        "curvature@scale100": 8000,
+        "curvature@scale25": 8000,
+        "curvature@scale50": 8000,
+        "height@scale100": 8000,
+        "height@scale25": 8000,
+        "height@scale50": 8000,
+        "normal@scale100": 8000,
+        "normal@scale25": 8000,
+        "normal@scale50": 8000,
+        "shapeindex@scale100": 8000,
+        "shapeindex@scale25": 8000,
+        "shapeindex@scale50": 8000
+      },
+      "tactile_video": {
+        "probed_objects": 40,
+        "n_probed": 320,
+        "frames_min": 50,
+        "frames_max": 50,
+        "frames_mean": 50.0,
+        "height": 240,
+        "width": 320,
+        "fps": 5.0
+      },
+      "npz_shapes": {
+        "normal@scale100": "(240, 320, 3)",
+        "height@scale100": "(240, 320)",
+        "normal@scale50": "(240, 320, 3)",
+        "height@scale50": "(240, 320)",
+        "normal@scale25": "(240, 320, 3)",
+        "height@scale25": "(240, 320)"
+      },
+      "disk_bytes": 7465012239
+    },
+    "raw_eval": {
+      "name": "raw_eval",
+      "rel_path": "gen_contact_raw_eval_tactile_normal_pseudo_mini",
+      "n_objects": 100,
+      "obj_id_min": 1,
+      "obj_id_max": 100,
+      "touches_per_object": {
+        "min": 6,
+        "max": 31,
+        "mean": 15.22,
+        "hist": {
+          "10": 13,
+          "13": 11,
+          "14": 10,
+          "17": 7,
+          "7": 1,
+          "11": 4,
+          "12": 8,
+          "16": 10,
+          "23": 2,
+          "15": 9,
+          "20": 4,
+          "9": 1,
+          "25": 2,
+          "19": 4,
+          "31": 2,
+          "28": 3,
+          "21": 3,
+          "18": 2,
+          "6": 2,
+          "8": 1,
+          "22": 1
+        }
+      },
+      "total_touches": 1522,
+      "video_kinds": {
+        "mask": 1522,
+        "render_mask": 1522,
+        "tactile_normal": 1522
+      },
+      "modality_scale_counts": {
+        "color@scale100": 1522,
+        "color@scale25": 1522,
+        "color@scale50": 1522,
+        "curvature@scale100": 1522,
+        "curvature@scale25": 1522,
+        "curvature@scale50": 1522,
+        "height@scale100": 1522,
+        "height@scale25": 1522,
+        "height@scale50": 1522,
+        "normal@scale100": 1522,
+        "normal@scale25": 1522,
+        "normal@scale50": 1522,
+        "shapeindex@scale100": 1522,
+        "shapeindex@scale25": 1522,
+        "shapeindex@scale50": 1522
+      },
+      "tactile_video": {
+        "probed_objects": 40,
+        "n_probed": 540,
+        "frames_min": 50,
+        "frames_max": 50,
+        "frames_mean": 50.0,
+        "height": 240,
+        "width": 320,
+        "fps": 5.0
+      },
+      "npz_shapes": {
+        "normal@scale100": "(240, 320, 3)",
+        "height@scale100": "(240, 320)",
+        "normal@scale50": "(240, 320, 3)",
+        "height@scale50": "(240, 320)",
+        "normal@scale25": "(240, 320, 3)",
+        "height@scale25": "(240, 320)"
+      },
+      "disk_bytes": 2246781389
+    }
+  },
+  "objectfolder_meshes": 1000
+}

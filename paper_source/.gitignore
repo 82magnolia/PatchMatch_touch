@@ -1,0 +1,34 @@
+# LaTeX build products for main.tex. The sources (main.tex, sec/, figures/,
+# tables/, references.bib) and the Elsevier template files stay tracked.
+#
+# Note: *.log is already ignored by the repository root .gitignore.
+
+# The compiled paper itself
+main.pdf
+
+# BibTeX
+main.bbl
+main.blg
+
+# Cross-references, floats, and section/table-of-contents bookkeeping
+main.aux
+main.out
+main.toc
+main.lof
+main.lot
+
+# elsarticle's short-title / running-head scratch file
+main.spl
+
+# latexmk bookkeeping
+main.fls
+main.fdb_latexmk
+main.synctex.gz
+main.synctex\(busy\)
+
+# Other tools that may run over the manuscript
+main.nav
+main.snm
+main.vrb
+main.run.xml
+main-blx.bib

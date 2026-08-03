@@ -1,1 +1,64 @@
 \section{Related Work}
+\label{sec:related}
+
+\subsection{Tactile Perception}
+
+Driven by rapid progress in tactile sensor hardware~\cite{gelsight}, tactile perception has
+developed quickly in recent years as a complement to vision-based perception. A variety of tasks
+have been tackled with touch, generally targeting situations in which vision alone is
+insufficient.
+
+\paragraph{Object and texture recognition.}
+One line of work uses touch where fine-grained surface detail is what distinguishes one category
+from another, so that a camera at arm's length simply cannot resolve the relevant
+evidence~\cite{textureuneven,glovetactile,triboelectrictactile,bagoffeatures,dotsim}.
+
+\paragraph{3D reconstruction.}
+A second line addresses cases where purely visual 3D reconstruction fails. Occlusion is one such
+case: during a grasp the gripper hides much of the object from the camera, and tactile
+measurements recover the hidden geometry~\cite{neuralfeels,touchsdf}. Glossy and transparent
+surfaces are another, since specular reflections violate the photometric assumptions that
+multi-view reconstruction relies on, while a contact-based sensor is unaffected by
+them~\cite{snaptapsplat,splattouch,touchgs}. Beyond these failure cases, tactile sensors resolve
+surface detail far below what a camera can see, which can be accumulated into highly detailed
+reconstructions~\cite{gelslam}.
+
+\paragraph{Touch localization.}
+A tactile measurement carries a signature of the local material and surface geometry, so it
+can also be used to localize the sensor itself, either against an image or against a pre-built
+3D map of the object~\cite{tacloc,splattouch,normalflow}.
+
+Our paper tackles a different and, to our knowledge, new task: predicting tactile \emph{videos} at
+locations that have not been touched. This is complementary to the works above, since it can
+augment an already collected set of touches and thereby improve downstream tactile tasks such as
+object recognition or 3D reconstruction.
+
+\subsection{Predicting Sensory Signals from Examples}
+
+\paragraph{Vision.}
+A large body of prior work studies example-based image synthesis. In its usual form, one is given
+a pair of images related by an unknown transformation, such as a change of style or of texture,
+and must synthesize, for a new target image, what its transformed version would look like. Early
+approaches recover this mapping using classical image matching~\cite{imageanalogies,patchmatch}.
+Modern approaches instead use diffusion models, or establish dense correspondences between the
+source images using learned descriptors and
+matchers~\cite{ldm,lightglue,asic}. Our task can be seen as an extension of this
+setting in which the source images are the normal maps at each tactile sensor location, and the
+target ``images'' are the high-dimensional tactile videos we aim to generate.
+
+\paragraph{Audio and touch.}
+Inspired by the image literature, recent work has attempted example-based synthesis for other
+sensory signals. For audio, several methods generate spectrograms by jointly conditioning on
+video frames and reference audio~\cite{foleyanalogies,foleycrafter,audiotextureanalogy}. For
+touch, recent work mainly generates a single tactile image at the moment of contact from
+reference touch data. Tactile DreamFusion~\cite{tactiledreamfusion} uses image quilting to tile a
+single tactile measurement across the remaining surface of an object. Tactile-Augmented Radiance
+Fields~\cite{tarf} trains a diffusion model on reference touches, conditioned on nearby image
+captures, to predict tactile images at new locations. ObjectFolder~\cite{objectfolder} and
+ObjectFolder 2.0~\cite{objectfolder2} train an implicit neural representation, per object, that
+takes pixel coordinates and a pressing depth as input and outputs the tactile image at that
+location.
+
+We extend this last strand from images to videos. This is substantially more demanding, because a
+video requires modeling how the sensor's gel deforms over the course of a press rather than only
+its state at one instant.
