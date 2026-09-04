@@ -1,0 +1,164 @@
+\section{Experiments}
+\label{sec:exp}
+\input{figures/fig_full_pipeline}
+
+\subsection{Experimental Setup}
+
+\paragraph{Implementation details}
+For retrieval we use a DINOv3 ViT-B/16 encoder~\cite{dinov3} on normal renderings at four times
+the sensor footprint, resized to $224\times224$, and rank references by cosine similarity between
+$\ell_2$-normalized class-token features. Coarse alignment uses SuperPoint
+keypoints~\cite{superpoint} matched by SuperGlue~\cite{superglue} on the same $4\times$ normal
+renderings, with a homography fitted by RANSAC~\cite{ransac}. The refinement network is based on the smallest ReBotNet variant~\cite{rebotnet}. We train for 20 epochs with AdamW~\cite{adamw}, batch size
+8, and learning rate $2\times10^{-4}$ with a cosine schedule~\cite{cosine_schedule}. Training runs on a single RTX 3090 GPU and takes
+approximately 32 hours.
+
+\paragraph{Benchmark}
+We create a benchmark for evaluating tactile analogies using the ObjectFolder
+dataset~\cite{objectfolder}. For every object we generate a set of tactile normal videos recording
+the gel normal changes over time, simulated with the Taxim tactile simulator~\cite{taxim}. 
+Each touch is a 50-frame video at 5\,fps following a press-in-then-withdraw format. 
+Every touch is accompanied by view-space renderings of the object surface at the sensor pose, namely RGB color, surface normal, curvature, heightmap at $1\times$, $2\times$ and $4\times$ the sensor size. In total the benchmark comprises 17{,}522 touch locations and 876{,}100 tactile frames across all 1000
+ObjectFolder objects. Objects 1--950 form the training split and objects 951--1000 the evaluation
+split.
+
+We define two benchmark settings.
+
+\emph{Ground-truth retrieval benchmark.} Each item is a pair of touches, one designated query and
+one designated reference, with their tactile videos and normal renderings. Since the pairing
+is given, this setting isolates the coarse alignment and refinement stages from retrieval error.
+We simulate 8 reference and 8 query touches per object, giving 16{,}000 touch locations.
+The evaluation split contains 400 query touches.
+
+\emph{Full pipeline benchmark.} Here we evaluate the complete pipeline including retrieval. We
+collect $K$ touches per object, on average 15.2 touches on each of 100 objects, and 1{,}522
+locations in total. We then hold out four touches per
+object as queries, three when an object has fewer than nine touches, drawn with a fixed random
+seed. This gives 396 query touches evaluated against 1{,}121 reference touches.
+
+\paragraph{Baselines}
+Since the task is new, we adapt techniques from prior work in tactile perception.
+
+\emph{Tactile normal quilting}, adapted from Tactile DreamFusion~\cite{tactiledreamfusion}, uses
+image quilting to tile the tactile normal of the reference touch across the entire object mesh
+surface, renders the view-space normal at the query sensor pose, integrates the normals into a
+height field, and renders a tactile video with Taxim~\cite{taxim}.
+
+\emph{Implicit neural representations}, adapted from ObjectFolder~\cite{objectfolder}, train a
+NeRF-like implicit representation that takes pixel coordinates and pressing depth as input and
+outputs the tactile normal. The representation is fitted per sample on the reference touches and
+evaluated at the query locations.
+
+We report PSNR, SSIM and LPIPS, averaged over all frames of all evaluation touches.
+
+\subsection{Performance Comparison}
+
+\subsubsection{Ground-truth retrieval}
+
+\input{tables/tab_gt_retrieval}
+
+Table~\ref{tab:gt_retrieval} reports quantitative results on the ground-truth retrieval benchmark,
+separately for the coarse transfer produced by feature-matching alignment alone and for the final
+refined transfer. Fig.~\ref{fig:gt_retrieval} shows qualitative results at a range of touch
+locations: for each row we show the reference touch, the reference and query normal renderings,
+the coarse transfer, our refined prediction, and the ground-truth query touch.
+
+Both stages of our method matter, and both outperform the baselines. The coarse transfer alone already
+reaches 22.90\,dB, which is 4.6\,dB above the stronger baseline, the implicit neural
+representation, and 8.3\,dB above tactile normal quilting. This implies that simply finding the right
+geometric correspondence between two normal renderings and warping the reference video through it
+recovers most of what the query touch looks like, without any learning on the tactile signal
+itself. The refinement network then adds a further 8.3\,dB, halving LPIPS from 0.2102 to 0.1085.
+The two contributions are complementary rather than redundant: the warp places the tactile pattern
+in the rouhgly right position, and the network supplies the gel dynamics and corrects the residual
+misalignment that the warp leaves behind.
+
+The gap to the baselines is largest on LPIPS, the metric most sensitive to perceptual structure.
+Tactile quilting synthesizes a plausible surface texture but has no mechanism to make it agree with the
+particular surface under the sensor, so it scores 0.4833. The implicit representation is fitted
+per sample and therefore reproduces the reference touches it was trained on, but it must
+extrapolate to an unseen location from pixel coordinates and the query location coordinates alone, which could be difficult for previously unseen touch locations.
+
+\subsubsection{Full pipeline}
+
+\input{tables/tab_full_pipeline}
+
+Table~\ref{tab:full_pipeline} reports results on the full pipeline benchmark, which includes
+retrieval error, again split into coarse and refined transfer.
+Fig.~\ref{fig:full_pipeline} compares our predictions against the baselines frame by frame.
+
+Similar to the ground-truth retrieval case, our refined prediction again outperforms the tested baselines. To elaborate, our refined result does not degrade relative to the ground-truth retrieval setting, despite the larger rotation deviation that exists in the benchmark and reference touches now being chosen automatically via DINOv3.
+Further, the margin of our coarse transfer over the implicit neural representation largely reduces,
+21.60\,dB against 21.11\,dB, even though the same comparison was 4.6\,dB in the ground-truth
+retrieval setting. 
+We hypothesize that this is due to the fact that the benchmark provides multiple reference touches per object, which is the regime the per-object implicit representation is designed for. Our refined prediction nonetheless performs consistently, implying that the combination of a coarse warp with a network that has learned how the gel behaves leads to accurate tactile prediction.
+
+\subsection{Ablation Study}
+
+\input{tables/tab_ablation}
+
+We ablate the key components of our method to show their contribution to accurate tactile
+transfer. All ablations are run on a 20-object subset of the full pipeline benchmark, and
+Table~\ref{tab:ablation} reports PSNR, SSIM and LPIPS. We study three groups of choices.
+
+First, the \emph{modality} used for retrieval and for feature matching during initial alignment,
+with the field of view fixed at $4\times$ the sensor size: surface normals (our default),
+RGB color, curvature, and height map. Second, the \emph{field of view} used for retrieval and
+matching: $1\times$, $2\times$ and $4\times$. Third, the components of the refinement stage: no
+neural refinement at all (i.e.\ the coarse transfer), no temporal FiLM conditioning, and no normal
+map concatenation. Fig.~\ref{fig:ablation} compares predictions from the last three variants
+visually.
+
+\input{figures/fig_ablation}
+
+\paragraph{Modality}
+Surface normals are the best of the four modalities on all three metrics, but the spread is
+narrow, 1.7\,dB between the best and the worst, and only 0.010 in LPIPS. Normals are nonetheless a sensible default as it outperforms other modalities, and unlike RGB they are unaffected by the object's
+appearance.
+
+\paragraph{Field of view}
+The three fields of view disagree about which is best depending on the metric, and thus there is not a clear winner. Matching at $1\times$ gives the highest PSNR, 0.8\,dB above $4\times$,
+while $4\times$ gives the best SSIM and LPIPS.
+A narrow field of view sees only the contact patch, whereas a wide field of view sees the surrounding surface, which makes the match more likely to be found and better conditioned.
+We keep $4\times$ as the default because the perceptual metric and SSIM favor it.
+
+\paragraph{Refinement}
+We find that the benefits of refinement is quite large compared to the aforementioned attributes for the ablation study. Adding the refinement network to the coarse transfer gains
+3.7\,dB and cuts LPIPS almost in half, from 0.2797 to 0.1522. Removing the temporal FiLM
+conditioning costs 1.5\,dB and raises LPIPS to 0.1735, confirming that the network genuinely uses
+the timestamp: without it, a single static normal map has to explain frames at every stage of the
+press, and the network can only predict something close to their average. Removing the normal map
+concatenation is by far the most damaging variant, at 25.38\,dB, which falls below even the
+unrefined coarse transfer on PSNR while remaining better on LPIPS.
+Therefore each component of the refinement network is crucial for accurate tactile transfer.
+
+\subsection{Application in 3D Surface Reconstruction and Visuo-tactile Sensor Simulation}
+
+\input{figures/fig_recon}
+
+Our method predicts tactile surface normals, so its
+output can be turned into surface geometry with no additional supervision. We integrate the predicted normals and convert them into a heightmap with a Poisson solver following the heightmap extraction procedure of Gelsight~\cite{gelsight}. The
+result is a 3D reconstruction of the object surface at a location that was never physically
+touched. Such reconstructions let an embodied agent reason about fine-grained shape properties of
+previously untouched regions, and can aid haptic rendering.
+
+Going one step further, feeding the same heightmap through an optical tactile simulator, Taxim's optical
+model~\cite{taxim} produces the color image a visuo-tactile sensor would have measured,
+namely a virtual visuo-tactile measurement. This could aid manipulation policies that are trained
+directly on visuo-tactile sensor readings: an agent could, for instance, rehearse a grasp by
+predicting the tactile videos at candidate contact points before touching the object at all.
+Fig.~\ref{fig:recon} shows the full chain, from predicted tactile normal
+video to the reconstructed 3D surface height map and the simulated color frames. Both steps after the network are post-processing of the predicted normals, so the whole chain runs at deployment
+time from a single reference touch.
+
+\subsection{Runtime Analysis}
+
+We report the runtime of our full pipeline, measured on an RTX 3090 GPU as the mean of ten timed
+repeats after a warm-up pass. Given $N=5$ reference touches and one query, producing a touch
+prediction takes 0.08\,ms for the retrieval phase after DINOv3 feature extraction, 0.021\,s for
+coarse alignment after local feature matching, and 8.5\,ms per frame for neural refinement, which
+is 0.42\,s for a 50-frame touch video. In addition, for feature extraction it takes 0.06\,s for DINOv3 and 0.08\,s for local feature matching, both of which are single
+forward passes of pre-trained networks. End to end, a complete prediction therefore takes
+roughly 0.6\,s.
+Thus our method is lightweight and well suited to runtime-critical applications such as AR/VR
+and robotics.

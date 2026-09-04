@@ -1,0 +1,63 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{times}
+
+% numbers option provides compact numerical references in the text. 
+\usepackage[numbers]{natbib}
+\usepackage{multicol}
+\usepackage[bookmarks=true]{hyperref}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx} 
+\usepackage{booktabs}
+\usepackage{bbm}
+\usepackage{multirow}
+\usepackage{pifont}
+\usepackage{amssymb}
+\usepackage{overpic}
+\usepackage{makecell}
+\usepackage{tabularx}
+\usepackage{ragged2e}
+\newcolumntype{C}{>{\Centering\hspace{0pt}}X}
+\usepackage[small]{caption}
+
+\pdfinfo{
+   /Author (Junho Kim, Junwon Yang, and Young Min Kim)
+   /Title  (Robots: Our new overlords)
+   /CreationDate (D:20101201120000)
+   /Subject (Robots)
+   /Keywords (Robots;)
+}
+
+\begin{document}
+
+% paper title
+\title{Tactile Analogies: Example-Driven Synthesis of Tactile Videos}
+
+% You will get a Paper-ID when submitting a pdf file to the conference system
+\author{Author Names Omitted for Anonymous Review. Paper-ID XX}
+
+\if 0
+\author{Junho Kim\textsuperscript{1,2}, Junwon Yang\textsuperscript{2}, and Young Min Kim\textsuperscript{1,2} \\
+\textsuperscript{1}{\small Institute of New Media and Communications, Seoul National University} \\
+\textsuperscript{2}{\small Dept. of Electrical and Computer Engineering, Seoul National University}
+}
+\fi
+
+\maketitle
+
+\input{sec/0_abstract}
+\input{sec/1_intro}
+\input{sec/3_method}
+\input{sec/4_exp}
+\input{sec/5_conclusion}
+
+
+\IEEEpeerreviewmaketitle
+
+%% Use plainnat to work nicely with natbib. 
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
+
+
