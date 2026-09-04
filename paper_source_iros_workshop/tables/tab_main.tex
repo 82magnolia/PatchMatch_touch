@@ -1,0 +1,29 @@
+%% Merged main results table: ground-truth retrieval benchmark (top block) and
+%% full pipeline benchmark (bottom block). Numbers from
+%% paper_experiments/job1_gt_retrieval/ and paper_experiments/job2_full_pipeline/.
+\begin{table}[t]
+  \centering
+  \small
+  \caption{\textbf{Main results}, averaged over all evaluation touches and all frames. The
+    \emph{ground-truth retrieval} benchmark supplies the reference touch by construction, excluding
+    retrieval error, while the \emph{full pipeline} benchmark evaluates retrieval, alignment and
+    refinement together. Best result of each block in \textbf{bold}.}
+  \label{tab:main}
+  \begin{tabular}{l c c c}
+    \hline
+    Method & PSNR $\uparrow$ & SSIM $\uparrow$ & LPIPS $\downarrow$ \\
+    \hline
+    \multicolumn{4}{l}{\emph{Ground-truth retrieval benchmark}} \\
+    Tactile normal quilting~\cite{tactiledreamfusion} & 14.58 & 0.7227 & 0.4833 \\
+    Implicit neural representation~\cite{objectfolder} & 18.26 & 0.8166 & 0.3821 \\
+    Ours (coarse transfer)                        & 22.90 & 0.8363 & 0.2102 \\
+    Ours (refined)                                & \textbf{31.21} & \textbf{0.9224} & \textbf{0.1085} \\
+    \hline
+    \multicolumn{4}{l}{\emph{Full pipeline benchmark}} \\
+    Tactile normal quilting~\cite{tactiledreamfusion} & 15.94 & 0.7145 & 0.4874 \\
+    Implicit neural representation~\cite{objectfolder} & 21.11 & 0.8331 & 0.3769 \\
+    Ours (coarse transfer)                        & 21.60 & 0.7858 & 0.3304 \\
+    Ours (refined)                                & \textbf{31.58} & \textbf{0.9182} & \textbf{0.1212} \\
+    \hline
+  \end{tabular}
+\end{table}

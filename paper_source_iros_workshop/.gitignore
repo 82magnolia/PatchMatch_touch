@@ -1,0 +1,35 @@
+# LaTeX build products for main.tex. The sources (main.tex, sec/, figures/,
+# tables/, references.bib) and the IEEEtran template file stay tracked.
+#
+# Note: *.log is already ignored by the repository root .gitignore.
+
+# The compiled paper itself
+main.pdf
+
+# BibTeX
+main.bbl
+main.blg
+
+# Cross-references, floats, hyperref anchors, and table-of-contents bookkeeping
+main.aux
+main.out
+main.toc
+main.lof
+main.lot
+
+# latexmk bookkeeping
+main.fls
+main.fdb_latexmk
+main.synctex.gz
+main.synctex\(busy\)
+
+# Other tools that may run over the manuscript
+main.spl
+main.nav
+main.snm
+main.vrb
+main.run.xml
+main-blx.bib
+
+# pdflatex fallback log when a build is started without a file name
+texput.log

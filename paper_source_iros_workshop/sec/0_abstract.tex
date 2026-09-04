@@ -1,18 +1,17 @@
 \begin{abstract}
 We introduce \emph{tactile analogies}, an example-based synthesis paradigm for tactile videos.
-Given a small set of reference touches recorded on an object, we predict the tactile signal that
-a visuo-tactile sensor would record at a new, previously untouched location. 
-We represent a touch as a \emph{tactile normal video}, which records how the gel surface of the
-sensor deforms over the course of a press. 
-Then, we bridge the reference and query locations through surface normal maps rendered at these locations over multiple scales. 
-Our approach leverages a coarse-to-fine pipeline for tactile video prediction, where (i) 2D foundation model features are compared  
-to choose the most promising reference touch, (ii) a pre-trained local feature matcher aligns the two normal renderings and warps
-the reference tactile video into the query frame, and (iii) a lightweight refinement network edits the warped video into the final prediction. 
-As our task is new, we build a new benchmark based on a large database of 3D objects, containing hundreds of query / reference pairs for evaluation.
-Our method outperforms baselines adapted from prior work in tactile prediction while exhibiting a short runtime of 0.6s, making it suitable for interactive applications in AR/VR and robotics.
-Finally, we show that the predicted normals can be integrated into heightmaps for fine-grained 3D surface reconstruction,
-and further processed using an optical tactile simulator to produce virtual visuo-tactile measurements at
-locations that were never physically touched.
-We thus project our method to serve as the first step for developing machines that can understand and 
-predict subtle surface geometry and contact dynamics of touch.
+Given a small set of reference touches recorded on an object, we predict the tactile signal that a
+visuo-tactile sensor would record at a new, previously untouched location. We represent a touch as
+a \emph{tactile normal video}, which records how the gel surface of the sensor deforms over the
+course of a press, and we bridge the reference and query locations through surface normal maps
+rendered at the two sensor poses. Our coarse-to-fine pipeline (i) compares 2D foundation model features to choose the most promising
+reference touch, (ii) aligns the two renderings with a pre-trained local feature matcher and warps
+the reference video into the query frame, and (iii) edits the warped video into the final
+prediction with a lightweight refinement network.
+As the task is new, we build a benchmark on a large database of 3D objects, on which our method
+outperforms baselines adapted from prior work in tactile prediction while running in 0.6\,s per
+prediction, making it suitable for interactive applications in AR/VR and robotics. We further
+outline how the predicted normals could be integrated into heightmaps to estimate 3D surface
+geometry, and passed through an optical tactile simulator to approximate visuo-tactile measurements
+at locations that were never touched.
 \end{abstract}

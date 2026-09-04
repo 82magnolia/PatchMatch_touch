@@ -6,60 +6,45 @@
 Humans have a remarkable ability to imagine what it would feel like to touch an object at a
 particular location. Looking at a ceramic mug, we already know that its glazed side will feel
 smooth and that the unglazed ring at its base will feel rough and gritty, long before our fingers
-arrive there. This ability lets one to plan a grasp, avoid an obstacle, and build a holistic picture of the
-fine-grained surface detail of a scene without having to physically touch every location.
-One important aspect to note here is that the touch one imagines is \textit{not} a single snapshot in time.
-Rather, it is a mental simulation on the continous dynamics of how our non-rigid skin would progressively deform during contact.
-
-Why is this possible at all for humans? 
-One key reason is due to the fact that tactile information is highly repetitive and predictable. 
-Object surfaces are often made of a small number of materials and recurring geometric motifs,
-so a handful of touches already reveals most of what the rest of an object will feel like. 
-What remains is to work out \emph{which} previously felt sensation applies at a new
-location, and \emph{how} it should be transformed to account for the change in surface geometry.
+arrive there. This lets one plan a grasp or build a picture of the fine-grained surface detail of a
+scene without physically touching every location. Importantly, the touch one imagines is not a
+single snapshot in time: it is a mental simulation of how our non-rigid skin would progressively
+deform during contact. Such imagination is possible because tactile information is highly
+repetitive. Object surfaces are made of a small number of materials and recurring geometric motifs,
+so a handful of touches already reveals most of what the rest of an object will feel like. What
+remains is to work out which previously felt sensation applies at a new location, and how it should
+be transformed to account for the change in surface geometry.
 
 In this paper we aim to teach machines the same capacity. We introduce the task of finding
-\emph{tactile analogies}: given a set of reference touches captured on an object during contact,
-the goal of tacile analogies is to predict the tactile signal at new, untouched locations (Fig.~\ref{fig:teaser}).
-We represent a touch as a \emph{tactile normal video}, a sequence of frames that encodes the surface normals of
-the visuo-tactile sensor's deformable gel over the duration of a press. 
-Tactile normal videos are easy to obtain in practice, because the mapping from the raw color measurements of a modern visuo-tactile 
-sensor to gel normals is by design nearly one-to-one. Sensor manufacturers such as
-GelSight~\cite{gelsight} ship color-to-normal conversion as part of their SDK. To
-predict gel normals at a new location, we render surface normal maps at both the reference and
-query sensor poses over multiple scales, and compare these renderings to recover a
+\emph{tactile analogies}: given a set of reference touches captured on an object, the goal is to
+predict the tactile signal at new, untouched locations (Fig.~\ref{fig:teaser}). We represent a
+touch as a \emph{tactile normal video}, a sequence of frames encoding the surface normals of the
+visuo-tactile sensor's deformable gel over the duration of a press. Such videos are easy to obtain
+in practice, as the mapping from the raw color measurements of a modern visuo-tactile sensor to gel
+normals is by design nearly one-to-one, and manufacturers such as GelSight~\cite{gelsight} ship
+color-to-normal conversion in their SDK. To predict gel normals at a new location, we render
+surface normal maps at both the reference and query sensor poses and compare them to recover a
 mapping that transfers reference tactile videos to the query location.
 
-Our task therefore resonates with the \emph{analogy-based synthesis} idea of the seminal Image
-Analogies paper~\cite{imageanalogies}: observe a transformation on one pair of images, then predict how the transformation would unfold in a new input. 
-For our setting, the observed side is the normal map rendered at each sensor pose, and the target to synthesize 
-is a \emph{high-dimensional tactile video} rather than a still image. 
-Put differently, we ask for an analogy between surface geometry and the temporal signal (i.e., touch) that arises through interaction with that geometry.
+Our task therefore resonates with the analogy-based synthesis idea of Image
+Analogies~\cite{imageanalogies}: observe a transformation on one pair of images, then predict how it
+would unfold on a new input. Here the observed side is the normal map rendered at each sensor pose
+and the target is a high-dimensional tactile video rather than a still image, so we ask for an
+analogy between surface geometry and the temporal signal that arises through interaction with it.
+This distinguishes our setting from prior example-based tactile synthesis, which predicts a single
+tactile image at the moment of contact~\cite{tactiledreamfusion,tarf,objectfolder}. The task is
+challenging on several counts: the gel deforms non-rigidly and its response depends on material
+properties not observable from geometry alone, the search space is large as one must decide which
+reference is relevant and how to map it onto the query pose, and there is no large-scale dataset of
+paired touches on which a model could be trained end-to-end.
 
-There exist several factors that make our task challenging.
-First of all, the physics of contact is complicated, since the gel deforms
-non-rigidly and its response depends on material properties that are not observable from geometry
-alone.
-Secondly, the search space is large: one must decide which of the available reference touches is relevant 
-\emph{and} how that reference should be mapped onto the query sensor pose.
-Finally, there is no large-scale dataset of paired touches at controlled locations on which a model could simply be
-trained end-to-end.
-
-To address these problems, our solution takes a modular approach, where retrieval and coarse prediction reduces the large search space 
-and the learning-based refinement focuses on enhancing video predictions to accurately model gel dynamics.
-As the first step, our method compares 2D foundation model features~\cite{dinov3} between the reference 
-normal renders and the query to obtain a single promising reference location.
-Then for coarse alignment, we use pre-trained local feature matchers on the
-normal map renderings, which show highly accurate match success rates despite being out of
-distribution with respect to the multi-view RGB imagery the matchers are trained on. The local
-feature matches are used to find a homography that aligns the two normal maps, reference and
-query, which is further used to warp the tactile videos to produce an initial transfer. For
-refinement, we propose training a refinement network that takes initially warped tactile normal
-videos and is trained to regress the ground-truth query tactile video. The network is responsible
-for learning the subtle gel deformation dynamics and for correcting the misalignments from the
-initial transfer.
-
-Our experiments show that our pipeline outperforms all the tested baselines, while exhibiting a
-small runtime. We further demonstrate applications in 3D reconstruction and visuo-tactile sensor
-simulation, which could be used for fine-grained surface understanding and could help embodied
-agents that are pre-trained on visuo-tactile sensor inputs.
+Our solution is therefore modular: retrieval and coarse prediction reduce the large search space,
+and a learning-based refinement stage models gel dynamics. We first compare 2D foundation model
+features~\cite{dinov3} between the reference normal renders and the query to obtain one promising
+reference location. We then run pre-trained local feature matchers on the normal renderings, which
+match accurately despite being out of distribution with respect to the multi-view RGB imagery they
+were trained on. The matches give a homography that warps the reference video into an initial
+transfer, which a refinement network edits to regress the ground-truth query video, learning the
+gel deformation dynamics and correcting residual misalignment. Our experiments show that the
+pipeline outperforms all tested baselines at a small runtime, and we outline potential applications
+in 3D surface reconstruction and visuo-tactile sensor simulation.
